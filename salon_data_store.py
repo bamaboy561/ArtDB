@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -10,11 +11,12 @@ import uuid
 
 import pandas as pd
 
+from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
 from sales_analytics import load_input_file, prepare_sales_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR / "data"))).resolve()
 UPLOADS_DIR = DATA_DIR / "uploads"
 SALONS_PATH = DATA_DIR / "salons.json"
 MANIFEST_PATH = DATA_DIR / "upload_manifest.csv"
@@ -41,6 +43,10 @@ class ArchiveLoadResult:
 
 
 def ensure_store() -> None:
+    if database_enabled():
+        ensure_database_ready()
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        return
     DATA_DIR.mkdir(exist_ok=True)
     UPLOADS_DIR.mkdir(exist_ok=True)
 
@@ -59,6 +65,11 @@ def _slugify(value: str) -> str:
 
 def load_salons() -> list[str]:
     ensure_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT name FROM salons ORDER BY LOWER(name)")
+                return [str(row.get("name", "")).strip() for row in cursor.fetchall() if str(row.get("name", "")).strip()]
     try:
         salons = json.loads(SALONS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -76,6 +87,19 @@ def save_salon(salon_name: str) -> None:
     ensure_store()
     salon_name = salon_name.strip()
     if not salon_name:
+        return
+
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO salons (name, created_at)
+                    VALUES (%s, %s)
+                    ON CONFLICT (name) DO NOTHING
+                    """,
+                    (salon_name, datetime.now().isoformat(timespec="seconds")),
+                )
         return
 
     salons = load_salons()
@@ -122,8 +146,13 @@ def delete_salon(salon_name: str, *, remove_uploads: bool = False) -> dict[str, 
         manifest = manifest.loc[manifest.index.difference(matching_manifest.index)].copy()
         save_manifest(manifest)
 
-    salons = [item for item in salons if item.casefold() != normalized_name.casefold()]
-    SALONS_PATH.write_text(json.dumps(sorted(salons), ensure_ascii=False, indent=2), encoding="utf-8")
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM salons WHERE LOWER(name) = LOWER(%s)", (normalized_name,))
+    else:
+        salons = [item for item in salons if item.casefold() != normalized_name.casefold()]
+        SALONS_PATH.write_text(json.dumps(sorted(salons), ensure_ascii=False, indent=2), encoding="utf-8")
 
     salon_dir = UPLOADS_DIR / _slugify(normalized_name)
     if salon_dir.exists():
@@ -141,6 +170,46 @@ def delete_salon(salon_name: str, *, remove_uploads: bool = False) -> dict[str, 
 
 def load_manifest() -> pd.DataFrame:
     ensure_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        upload_id,
+                        salon,
+                        report_date,
+                        source_filename,
+                        stored_path,
+                        uploaded_at,
+                        csv_separator,
+                        csv_encoding,
+                        COALESCE(sheet_name, '') AS sheet_name,
+                        mapping_json
+                    FROM uploads
+                    ORDER BY salon, report_date, uploaded_at
+                    """
+                )
+                rows = cursor.fetchall()
+        if not rows:
+            return pd.DataFrame(columns=MANIFEST_COLUMNS)
+        manifest_rows = []
+        for row in rows:
+            manifest_rows.append(
+                {
+                    "upload_id": str(row.get("upload_id", "")).strip(),
+                    "salon": str(row.get("salon", "")).strip(),
+                    "report_date": str(row.get("report_date", "")),
+                    "source_filename": str(row.get("source_filename", "")).strip(),
+                    "stored_path": str(row.get("stored_path", "")).strip(),
+                    "uploaded_at": isoformat_seconds(row.get("uploaded_at")),
+                    "csv_separator": str(row.get("csv_separator", "") or ";"),
+                    "csv_encoding": str(row.get("csv_encoding", "") or "utf-8"),
+                    "sheet_name": str(row.get("sheet_name", "") or ""),
+                    "mapping_json": json.dumps(row.get("mapping_json") or {}, ensure_ascii=False),
+                }
+            )
+        return pd.DataFrame(manifest_rows, columns=MANIFEST_COLUMNS)
     manifest = pd.read_csv(MANIFEST_PATH, encoding="utf-8-sig")
     for column in MANIFEST_COLUMNS:
         if column not in manifest.columns:
@@ -150,6 +219,51 @@ def load_manifest() -> pd.DataFrame:
 
 def save_manifest(manifest: pd.DataFrame) -> None:
     ensure_store()
+    if database_enabled():
+        normalized = manifest.copy()
+        for column in MANIFEST_COLUMNS:
+            if column not in normalized.columns:
+                normalized[column] = ""
+        normalized = normalized[MANIFEST_COLUMNS]
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM uploads")
+                for row in normalized.to_dict(orient="records"):
+                    mapping_value = row.get("mapping_json", "{}")
+                    try:
+                        mapping_json = json.loads(mapping_value) if mapping_value else {}
+                    except (TypeError, json.JSONDecodeError):
+                        mapping_json = {}
+                    cursor.execute(
+                        """
+                        INSERT INTO uploads (
+                            upload_id,
+                            salon,
+                            report_date,
+                            source_filename,
+                            stored_path,
+                            uploaded_at,
+                            csv_separator,
+                            csv_encoding,
+                            sheet_name,
+                            mapping_json
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        """,
+                        (
+                            str(row.get("upload_id", "")).strip(),
+                            str(row.get("salon", "")).strip(),
+                            str(row.get("report_date", "")).strip(),
+                            str(row.get("source_filename", "")).strip(),
+                            str(row.get("stored_path", "")).strip(),
+                            str(row.get("uploaded_at", "")).strip() or datetime.now().isoformat(timespec="seconds"),
+                            str(row.get("csv_separator", "") or ";"),
+                            str(row.get("csv_encoding", "") or "utf-8"),
+                            str(row.get("sheet_name", "") or ""),
+                            json.dumps(mapping_json, ensure_ascii=False),
+                        ),
+                    )
+        return
     manifest[MANIFEST_COLUMNS].to_csv(MANIFEST_PATH, index=False, encoding="utf-8-sig")
 
 

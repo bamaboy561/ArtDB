@@ -1,0 +1,144 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sales_analytics}
+      POSTGRES_USER: ${POSTGRES_USER:-sales_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+      TZ: ${APP_TIMEZONE:-Asia/Omsk}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sales_app} -d ${POSTGRES_DB:-sales_analytics}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:1.25.1-p0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-sales_analytics}
+      DB_USER: ${POSTGRES_USER:-sales_app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      AUTH_TYPE: scram-sha-256
+      ADMIN_USERS: ${POSTGRES_USER:-sales_app}
+      SERVER_RESET_QUERY: DISCARD ALL
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER:-sales_app} -d ${POSTGRES_DB:-sales_analytics}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_DATA_DIR: /app/data
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
+      TZ: ${APP_TIMEZONE:-Asia/Omsk}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sales_app}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB:-sales_analytics}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    volumes:
+      - app_data:/app/data
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["python", "scripts/telegram_notifier.py", "daemon"]
+    env_file:
+      - .env
+    environment:
+      APP_DATA_DIR: /app/data
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
+      TZ: ${APP_TIMEZONE:-Asia/Omsk}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sales_app}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB:-sales_analytics}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    volumes:
+      - app_data:/app/data:ro
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/production/nginx/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:?DOMAIN_NAME is required}
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot_www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - certbot_www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    entrypoint: /bin/sh -c
+    command: "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet --non-interactive; sleep 12h; done"
+
+  backup:
+    build:
+      context: .
+      dockerfile: deploy/production/backup/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
+      TZ: ${APP_TIMEZONE:-Asia/Omsk}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-sales_analytics}
+      POSTGRES_USER: ${POSTGRES_USER:-sales_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_CRON: ${BACKUP_CRON:-15 3 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - app_data:/app-data:ro
+      - backups:/backups
+
+volumes:
+  postgres_data:
+  app_data:
+  certbot_www:
+  letsencrypt:
+  backups:
+

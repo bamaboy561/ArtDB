@@ -4,14 +4,17 @@ from datetime import datetime, timedelta
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 from typing import Any
 
+from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR / "data"))).resolve()
 USERS_PATH = DATA_DIR / "users.json"
 SESSIONS_PATH = DATA_DIR / "auth_sessions.json"
 PBKDF2_ITERATIONS = 120_000
@@ -21,6 +24,9 @@ SESSION_TTL_DAYS = 30
 
 
 def ensure_user_store() -> None:
+    if database_enabled():
+        ensure_database_ready()
+        return
     DATA_DIR.mkdir(exist_ok=True)
     if not USERS_PATH.exists():
         USERS_PATH.write_text("[]", encoding="utf-8")
@@ -30,6 +36,44 @@ def ensure_user_store() -> None:
 
 def _load_raw_users() -> list[dict[str, Any]]:
     ensure_user_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        username,
+                        display_name,
+                        role,
+                        COALESCE(salon, '') AS salon,
+                        COALESCE(email, '') AS email,
+                        COALESCE(phone, '') AS phone,
+                        salt,
+                        iterations,
+                        password_hash,
+                        created_at,
+                        is_active
+                    FROM users
+                    ORDER BY
+                        CASE role
+                            WHEN 'admin' THEN 0
+                            WHEN 'manager' THEN 1
+                            WHEN 'salon' THEN 2
+                            ELSE 99
+                        END,
+                        LOWER(username)
+                    """
+                )
+                rows = cursor.fetchall()
+        return [
+            _normalize_record(
+                {
+                    **row,
+                    "created_at": isoformat_seconds(row.get("created_at")),
+                }
+            )
+            for row in rows
+        ]
     try:
         users = json.loads(USERS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -43,11 +87,86 @@ def _load_raw_users() -> list[dict[str, Any]]:
 
 def _save_raw_users(users: list[dict[str, Any]]) -> None:
     ensure_user_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                usernames = [str(record.get("username", "")).strip() for record in users if str(record.get("username", "")).strip()]
+                for record in users:
+                    cursor.execute(
+                        """
+                        INSERT INTO users (
+                            username,
+                            display_name,
+                            role,
+                            salon,
+                            email,
+                            phone,
+                            salt,
+                            iterations,
+                            password_hash,
+                            created_at,
+                            is_active
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (username) DO UPDATE SET
+                            display_name = EXCLUDED.display_name,
+                            role = EXCLUDED.role,
+                            salon = EXCLUDED.salon,
+                            email = EXCLUDED.email,
+                            phone = EXCLUDED.phone,
+                            salt = EXCLUDED.salt,
+                            iterations = EXCLUDED.iterations,
+                            password_hash = EXCLUDED.password_hash,
+                            created_at = EXCLUDED.created_at,
+                            is_active = EXCLUDED.is_active
+                        """,
+                        (
+                            str(record.get("username", "")).strip(),
+                            str(record.get("display_name", "")).strip(),
+                            str(record.get("role", "")).strip().lower(),
+                            str(record.get("salon", "")).strip(),
+                            normalize_email(str(record.get("email", ""))) or None,
+                            normalize_phone(str(record.get("phone", ""))) or None,
+                            str(record.get("salt", "")),
+                            int(record.get("iterations", PBKDF2_ITERATIONS)),
+                            str(record.get("password_hash", "")),
+                            str(record.get("created_at", "")).strip() or datetime.now().isoformat(timespec="seconds"),
+                            bool(record.get("is_active", True)),
+                        ),
+                    )
+                if usernames:
+                    cursor.execute(
+                        "DELETE FROM users WHERE username <> ALL(%s)",
+                        (usernames,),
+                    )
+                else:
+                    cursor.execute("DELETE FROM users")
+        return
     USERS_PATH.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_raw_sessions() -> list[dict[str, Any]]:
     ensure_user_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT token, username, created_at, expires_at
+                    FROM auth_sessions
+                    ORDER BY created_at
+                    """
+                )
+                rows = cursor.fetchall()
+        return [
+            {
+                "token": str(row.get("token", "")).strip(),
+                "username": str(row.get("username", "")).strip(),
+                "created_at": isoformat_seconds(row.get("created_at")),
+                "expires_at": isoformat_seconds(row.get("expires_at")),
+            }
+            for row in rows
+        ]
     try:
         sessions = json.loads(SESSIONS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -57,6 +176,24 @@ def _load_raw_sessions() -> list[dict[str, Any]]:
 
 def _save_raw_sessions(sessions: list[dict[str, Any]]) -> None:
     ensure_user_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM auth_sessions")
+                for record in sessions:
+                    cursor.execute(
+                        """
+                        INSERT INTO auth_sessions (token, username, created_at, expires_at)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (
+                            str(record.get("token", "")).strip(),
+                            str(record.get("username", "")).strip(),
+                            str(record.get("created_at", "")).strip() or datetime.now().isoformat(timespec="seconds"),
+                            str(record.get("expires_at", "")).strip(),
+                        ),
+                    )
+        return
     SESSIONS_PATH.write_text(json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
