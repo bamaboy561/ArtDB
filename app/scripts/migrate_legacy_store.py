@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import shutil
+import re
 import sys
 
 import pandas as pd
@@ -33,6 +35,46 @@ def hash_identifier(value: str | None) -> str | None:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def slugify_salon_name(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9а-яА-Я]+", "-", value.strip().casefold(), flags=re.UNICODE)
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+    return normalized or "salon"
+
+
+def extract_path_name(path_value: str) -> str:
+    raw = str(path_value).strip()
+    if not raw:
+        return ""
+    if "\\" in raw:
+        return PureWindowsPath(raw).name
+    return Path(raw).name
+
+
+def resolve_legacy_upload_path(legacy_uploads_dir: Path, salon_name: str, stored_path: str) -> Path:
+    raw = str(stored_path).strip()
+    if not raw:
+        return Path()
+
+    posix_candidate = Path(raw)
+    if posix_candidate.exists():
+        return posix_candidate
+
+    filename = extract_path_name(raw)
+    if not filename:
+        return Path()
+
+    salon_dir = legacy_uploads_dir / slugify_salon_name(salon_name)
+    salon_candidate = salon_dir / filename
+    if salon_candidate.exists():
+        return salon_candidate
+
+    direct_candidate = legacy_uploads_dir / filename
+    if direct_candidate.exists():
+        return direct_candidate
+
+    return Path()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Migrate legacy JSON/CSV storage into PostgreSQL.")
     parser.add_argument("--truncate", action="store_true", help="Clear PostgreSQL tables before import.")
@@ -44,6 +86,8 @@ def main() -> int:
     ensure_database_ready()
 
     legacy_dir = Path(os.getenv("LEGACY_DATA_DIR", os.getenv("APP_DATA_DIR", "data"))).resolve()
+    app_uploads_dir = Path(os.getenv("APP_UPLOADS_DIR", str(legacy_dir / "uploads"))).resolve()
+    legacy_uploads_dir = legacy_dir / "uploads"
     users_path = legacy_dir / "users.json"
     sessions_path = legacy_dir / "auth_sessions.json"
     salons_path = legacy_dir / "salons.json"
@@ -63,6 +107,8 @@ def main() -> int:
         salon_names.update(str(item).strip() for item in manifest["salon"].dropna().astype(str) if str(item).strip())
 
     pgcrypto_key = get_pgcrypto_key()
+    copied_uploads = 0
+    skipped_uploads = 0
 
     with get_db_connection() as connection:
         with connection.cursor() as cursor:
@@ -153,6 +199,29 @@ def main() -> int:
                             mapping_payload = {}
                     else:
                         mapping_payload = mapping_json or {}
+
+                    salon_name = str(row.get("salon", "")).strip()
+                    source_path = resolve_legacy_upload_path(
+                        legacy_uploads_dir,
+                        salon_name,
+                        str(row.get("stored_path", "")).strip(),
+                    )
+                    upload_filename = extract_path_name(str(row.get("stored_path", "")).strip())
+                    if not upload_filename:
+                        upload_filename = f"{str(row.get('report_date', '')).strip()}__{str(row.get('upload_id', '')).strip()}"
+
+                    target_dir = app_uploads_dir / slugify_salon_name(salon_name)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    target_path = target_dir / upload_filename
+
+                    if source_path:
+                        if source_path.resolve() != target_path.resolve():
+                            shutil.copy2(source_path, target_path)
+                        copied_uploads += 1
+                    elif target_path.exists():
+                        copied_uploads += 1
+                    else:
+                        skipped_uploads += 1
                     cursor.execute(
                         """
                         INSERT INTO uploads (
@@ -173,10 +242,10 @@ def main() -> int:
                         """,
                         (
                             str(row.get("upload_id", "")).strip(),
-                            str(row.get("salon", "")).strip(),
+                            salon_name,
                             str(row.get("report_date", "")).strip(),
                             str(row.get("source_filename", "")).strip(),
-                            str(row.get("stored_path", "")).strip(),
+                            str(target_path),
                             str(row.get("uploaded_at", "")).strip() or None,
                             str(row.get("csv_separator", "") or ";"),
                             str(row.get("csv_encoding", "") or "utf-8"),
@@ -189,6 +258,8 @@ def main() -> int:
     print(f"Imported users: {len(users)}")
     print(f"Imported sessions: {len(sessions)}")
     print(f"Imported uploads: {0 if manifest.empty else len(manifest)}")
+    print(f"Copied upload files: {copied_uploads}")
+    print(f"Uploads without source file: {skipped_uploads}")
     return 0
 
 
