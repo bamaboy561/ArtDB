@@ -12,15 +12,21 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "date": (
         "дата",
         "дата продажи",
+        "дата отчета",
+        "дата отчёта",
         "период",
         "документ дата",
+        "дата документа",
         "sale date",
         "date",
     ),
     "product": (
         "номенклатура",
+        "номенклатура товара",
         "товар",
         "наименование",
+        "наименование товара",
+        "название товара",
         "продукт",
         "product",
         "item",
@@ -489,37 +495,44 @@ def parse_dates(series: pd.Series) -> pd.Series:
 
 
 def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> PreparedSalesData:
-    if not mapping.get("date") or not mapping.get("product"):
+    resolved_mapping = dict(mapping)
+    guessed_mapping = guess_column_mapping(frame.columns.astype(str).tolist())
+
+    for field, guessed_column in guessed_mapping.items():
+        if not resolved_mapping.get(field) and guessed_column in frame.columns:
+            resolved_mapping[field] = guessed_column
+
+    if not resolved_mapping.get("date") or not resolved_mapping.get("product"):
         raise ValueError("Нужно указать хотя бы колонки с датой и названием товара.")
 
     prepared = frame.copy()
     warnings: list[str] = []
 
-    raw_date = _series_from_mapping(prepared, mapping, "date")
-    raw_product = _series_from_mapping(prepared, mapping, "product")
+    raw_date = _series_from_mapping(prepared, resolved_mapping, "date")
+    raw_product = _series_from_mapping(prepared, resolved_mapping, "product")
 
     prepared["date"] = parse_dates(raw_date)
     prepared["product"] = raw_product.astype(str).str.strip()
 
-    if category := mapping.get("category"):
+    if category := resolved_mapping.get("category"):
         prepared["category"] = prepared[category].astype(str).str.strip()
     else:
         prepared["category"] = "Без категории"
 
-    if manager := mapping.get("manager"):
+    if manager := resolved_mapping.get("manager"):
         prepared["manager"] = prepared[manager].astype(str).str.strip()
     else:
         prepared["manager"] = "Не указан"
 
-    quantity = coerce_numeric(_series_from_mapping(prepared, mapping, "quantity"), fill_value=0)
+    quantity = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "quantity"), fill_value=0)
     if quantity is None:
         quantity = pd.Series(0, index=prepared.index, dtype="float64")
 
-    unit_price = coerce_numeric(_series_from_mapping(prepared, mapping, "unit_price"))
-    unit_cost = coerce_numeric(_series_from_mapping(prepared, mapping, "unit_cost"))
-    revenue = coerce_numeric(_series_from_mapping(prepared, mapping, "revenue"))
-    cost = coerce_numeric(_series_from_mapping(prepared, mapping, "cost"))
-    margin = coerce_numeric(_series_from_mapping(prepared, mapping, "margin"))
+    unit_price = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "unit_price"))
+    unit_cost = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "unit_cost"))
+    revenue = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "revenue"))
+    cost = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "cost"))
+    margin = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "margin"))
 
     if revenue is None and unit_price is not None:
         revenue = unit_price * quantity
