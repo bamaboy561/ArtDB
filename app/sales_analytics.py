@@ -668,6 +668,115 @@ def build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return monthly
 
 
+def extract_return_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame.iloc[0:0].copy()
+
+    return_mask = (frame["revenue"].fillna(0) < 0) | (frame["quantity"].fillna(0) < 0)
+    return frame.loc[return_mask].copy()
+
+
+def build_returns_overview(frame: pd.DataFrame) -> dict[str, float]:
+    returns = extract_return_rows(frame)
+    positive_revenue = frame.loc[frame["revenue"].fillna(0) > 0, "revenue"].sum()
+    return_revenue = returns["revenue"].abs().sum()
+    return_margin = returns["margin"].abs().sum(min_count=1)
+    return_quantity = returns["quantity"].abs().sum()
+
+    return {
+        "return_lines": float(len(returns)),
+        "return_revenue": float(return_revenue),
+        "return_margin": float(return_margin) if pd.notna(return_margin) else float("nan"),
+        "return_quantity": float(return_quantity),
+        "return_product_count": float(returns["product"].nunique()) if not returns.empty else 0.0,
+        "return_month_count": float(returns["month_label"].nunique()) if not returns.empty else 0.0,
+        "return_share_pct": float(return_revenue / positive_revenue * 100) if positive_revenue else float("nan"),
+    }
+
+
+def build_return_groups(frame: pd.DataFrame, group_column: str = "product") -> pd.DataFrame:
+    returns = extract_return_rows(frame)
+    if returns.empty or group_column not in returns.columns:
+        return pd.DataFrame(
+            columns=[
+                "group_name",
+                "return_revenue",
+                "return_margin",
+                "return_quantity",
+                "return_lines",
+                "last_return_date",
+                "return_share_pct",
+            ]
+        )
+
+    grouped = returns.copy()
+    grouped["return_revenue"] = grouped["revenue"].abs()
+    grouped["return_margin"] = grouped["margin"].abs()
+    grouped["return_quantity"] = grouped["quantity"].abs()
+
+    summary = (
+        grouped.groupby(group_column, dropna=False)
+        .agg(
+            return_revenue=("return_revenue", "sum"),
+            return_margin=("return_margin", "sum"),
+            return_quantity=("return_quantity", "sum"),
+            return_lines=("product", "size"),
+            last_return_date=("date", "max"),
+        )
+        .reset_index()
+        .rename(columns={group_column: "group_name"})
+    )
+
+    total_return_revenue = summary["return_revenue"].sum()
+    summary["return_share_pct"] = (
+        summary["return_revenue"] / total_return_revenue * 100 if total_return_revenue else 0.0
+    )
+    return summary.sort_values(["return_revenue", "return_lines"], ascending=[False, False], ignore_index=True)
+
+
+def build_return_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    returns = extract_return_rows(frame)
+    if returns.empty:
+        return pd.DataFrame(
+            columns=[
+                "month",
+                "month_label",
+                "return_revenue",
+                "return_margin",
+                "return_quantity",
+                "return_lines",
+                "return_share_pct",
+            ]
+        )
+
+    monthly = returns.copy()
+    monthly["return_revenue"] = monthly["revenue"].abs()
+    monthly["return_margin"] = monthly["margin"].abs()
+    monthly["return_quantity"] = monthly["quantity"].abs()
+
+    summary = (
+        monthly.groupby(["month", "month_label"], as_index=False)
+        .agg(
+            return_revenue=("return_revenue", "sum"),
+            return_margin=("return_margin", "sum"),
+            return_quantity=("return_quantity", "sum"),
+            return_lines=("product", "size"),
+        )
+        .sort_values("month")
+        .reset_index(drop=True)
+    )
+
+    positive_monthly_revenue = (
+        frame.loc[frame["revenue"].fillna(0) > 0]
+        .groupby(["month", "month_label"], as_index=False)
+        .agg(gross_revenue=("revenue", "sum"))
+    )
+    summary = summary.merge(positive_monthly_revenue, on=["month", "month_label"], how="left")
+    summary["return_share_pct"] = summary["return_revenue"] / summary["gross_revenue"].replace(0, pd.NA) * 100
+    summary = summary.drop(columns=["gross_revenue"])
+    return summary
+
+
 def build_plan_fact_summary(monthly_summary: pd.DataFrame, plan_summary: pd.DataFrame) -> pd.DataFrame:
     if monthly_summary.empty and plan_summary.empty:
         return pd.DataFrame()

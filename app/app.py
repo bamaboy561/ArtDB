@@ -41,8 +41,12 @@ from sales_analytics import (
     build_overview_metrics,
     build_product_summary,
     build_rfm_summary,
+    build_return_groups,
+    build_return_monthly_summary,
+    build_returns_overview,
     build_yoy_comparison,
     detect_anomalies,
+    extract_return_rows,
     guess_column_mapping,
     list_excel_sheets,
     load_input_file,
@@ -2686,6 +2690,7 @@ def build_insights(
     manager_summary: pd.DataFrame,
     product_summary: pd.DataFrame,
     abc_data: pd.DataFrame,
+    returns_overview: dict[str, float] | None = None,
     salon_summary: pd.DataFrame | None = None,
     anomalies: list[tuple[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
@@ -3144,6 +3149,10 @@ category_summary = build_product_summary(data, "category")
 manager_summary = build_product_summary(data, "manager")
 salon_summary = build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
 monthly_summary = build_monthly_summary(data)
+returns_overview = build_returns_overview(data)
+return_product_summary = build_return_groups(data, "product")
+return_monthly_summary = build_return_monthly_summary(data)
+return_salon_summary = build_return_groups(data, "salon") if "salon" in data.columns else pd.DataFrame()
 plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
 abc_data = build_abc_analysis(product_summary, "revenue")
 forecast_data = build_forecast(monthly_summary)
@@ -3225,16 +3234,27 @@ with tab_dashboard:
         "Обзор бизнеса",
         "Главный рабочий экран по текущему срезу продаж. Здесь собраны самые важные зоны для руководителя: динамика, структура бизнеса, ключевые риски по марже и товары-лидеры.",
     )
-    insights = build_insights(
-        overview,
-        monthly_summary,
-        category_summary,
-        manager_summary,
-        product_summary,
-        abc_data,
-        salon_summary,
-        anomalies=revenue_anomalies,
+insights = build_insights(
+    overview,
+    monthly_summary,
+    category_summary,
+    manager_summary,
+    product_summary,
+    abc_data,
+    returns_overview=returns_overview,
+    salon_summary=salon_summary,
+    anomalies=revenue_anomalies,
+)
+if returns_overview["return_lines"] > 0:
+    insights.append(
+        (
+            "Возвраты в текущем контуре",
+            f"Возвратных строк: {format_number(returns_overview['return_lines'])}, "
+            f"сумма возвратов {format_money(returns_overview['return_revenue'])}, "
+            f"доля от валовой выручки {format_percent(returns_overview['return_share_pct'])}.",
+        )
     )
+    insights = insights[:6]
     latest_month = monthly_summary.iloc[-1]
     top_products = product_summary.head(15)
     margin_risk_table = product_summary[product_summary["margin_pct"].notna()].sort_values("margin_pct", ascending=True).head(12)
@@ -3444,6 +3464,37 @@ with tab_dashboard:
             salon_chart.update_layout(xaxis_tickangle=-20)
             polish_figure(salon_chart, height=480)
             st.plotly_chart(salon_chart, use_container_width=True)
+
+    if returns_overview["return_lines"] > 0:
+        with st.container(border=True):
+            render_panel_header(
+                "Возвраты в текущем контуре",
+                "Короткая управленческая сводка по возвратам. Она помогает сразу понять, насколько возвраты заметны в текущем периоде и нужно ли углубляться в детальный разбор по товарам и салонам.",
+            )
+            render_snapshot_strip(
+                [
+                    {
+                        "label": "Сумма возвратов",
+                        "value": format_money(returns_overview["return_revenue"]),
+                        "hint": "Абсолютный объём возвратов по выручке в текущем срезе",
+                    },
+                    {
+                        "label": "Доля возвратов",
+                        "value": format_percent(returns_overview["return_share_pct"]),
+                        "hint": "Часть возвратов от всей положительной выручки",
+                    },
+                    {
+                        "label": "Возвратных строк",
+                        "value": format_number(returns_overview["return_lines"]),
+                        "hint": "Сколько операций возврата попало в анализ",
+                    },
+                    {
+                        "label": "SKU с возвратами",
+                        "value": format_number(returns_overview["return_product_count"]),
+                        "hint": "Сколько товаров дали возвраты в текущем периоде",
+                    },
+                ]
+            )
 
     second_left, second_right = st.columns(2, gap="large")
 
@@ -4668,6 +4719,153 @@ with tab_advanced:
                     "Помесячная расшифровка прогнозных значений. Удобно использовать для обсуждения плана и сверки с фактическими данными позже.",
                 )
                 st.dataframe(forecast_table, use_container_width=True, hide_index=True)
+
+    with st.container(border=True):
+        render_panel_header(
+            "Возвраты",
+            "Отдельный блок для контроля возвратов. Он показывает масштаб возвратов, их динамику по месяцам и товары, которые чаще всего дают обратное движение по выручке.",
+        )
+        if returns_overview["return_lines"] <= 0:
+            st.success("В текущем срезе возвраты не обнаружены. Это значит, что все операции в выборке выглядят как обычные продажи.")
+        else:
+            render_metric_cards(
+                [
+                    {
+                        "label": "Сумма возвратов",
+                        "value": format_money(returns_overview["return_revenue"]),
+                        "delta": "",
+                    },
+                    {
+                        "label": "Доля возвратов",
+                        "value": format_percent(returns_overview["return_share_pct"]),
+                        "delta": "От валовой положительной выручки",
+                    },
+                    {
+                        "label": "Возвратных строк",
+                        "value": format_number(returns_overview["return_lines"]),
+                        "delta": "",
+                    },
+                    {
+                        "label": "Товаров с возвратами",
+                        "value": format_number(returns_overview["return_product_count"]),
+                        "delta": "",
+                    },
+                ]
+            )
+
+            returns_left, returns_right = st.columns(2, gap="large")
+
+            with returns_left:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Динамика возвратов по месяцам",
+                        "Показывает, в какие месяцы возвраты были особенно заметны. Хорошо подходит для поиска всплесков после акций, пересменок или проблемных партий товара.",
+                    )
+                    monthly_returns_chart = go.Figure()
+                    monthly_returns_chart.add_trace(
+                        go.Bar(
+                            x=return_monthly_summary["month_label"],
+                            y=return_monthly_summary["return_revenue"],
+                            name="Сумма возвратов",
+                            marker_color="#991B1B",
+                        )
+                    )
+                    monthly_returns_chart.add_trace(
+                        go.Scatter(
+                            x=return_monthly_summary["month_label"],
+                            y=return_monthly_summary["return_share_pct"],
+                            name="Доля возвратов, %",
+                            mode="lines+markers",
+                            line=dict(color="#B45309", width=3),
+                            yaxis="y2",
+                        )
+                    )
+                    monthly_returns_chart.update_layout(
+                        xaxis_title="Месяц",
+                        yaxis_title="Сумма возвратов",
+                        yaxis2=dict(title="Доля возвратов, %", overlaying="y", side="right"),
+                    )
+                    polish_figure(monthly_returns_chart, height=420)
+                    st.plotly_chart(monthly_returns_chart, use_container_width=True)
+
+            with returns_right:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Товары с наибольшими возвратами",
+                        "Показывает товары, которые сильнее всего влияют на возвратную часть выручки. Это хороший старт для разбора качества товара, ошибок продаж или спорных чеков.",
+                    )
+                    top_return_items = return_product_summary.head(12).sort_values("return_revenue", ascending=True)
+                    return_chart = px.bar(
+                        top_return_items,
+                        x="return_revenue",
+                        y="group_name",
+                        orientation="h",
+                        color="return_share_pct",
+                        color_continuous_scale=["#FECACA", "#F97316", "#991B1B"],
+                        labels={"group_name": "Товар", "return_revenue": "Сумма возвратов", "return_share_pct": "Доля возвратов, %"},
+                        title="",
+                    )
+                    return_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+                    polish_figure(return_chart, height=420)
+                    st.plotly_chart(return_chart, use_container_width=True)
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Таблица возвратов по товарам",
+                    "Подробная расшифровка по товарам: сколько денег и количества вернулось, сколько строк возврата было и когда возврат по товару встречался в последний раз.",
+                )
+                return_product_table = return_product_summary.copy()
+                if not return_product_table.empty:
+                    return_product_table["last_return_date"] = pd.to_datetime(
+                        return_product_table["last_return_date"], errors="coerce"
+                    )
+                st.dataframe(
+                    format_display_frame(
+                        return_product_table,
+                        rename_map={
+                            "group_name": "Товар",
+                            "return_revenue": "Сумма возвратов",
+                            "return_margin": "Возврат по марже",
+                            "return_quantity": "Возврат по количеству",
+                            "return_lines": "Строк возврата",
+                            "return_share_pct": "Доля возвратов, %",
+                            "last_return_date": "Последний возврат",
+                        },
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=460,
+                )
+                st.download_button(
+                    "Скачать возвраты по товарам",
+                    data=to_csv_bytes(return_product_summary),
+                    file_name="returns_by_product.csv",
+                    mime="text/csv",
+                )
+
+            if is_network_role(current_user["role"]) and not return_salon_summary.empty and len(return_salon_summary) > 1:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Возвраты по салонам",
+                        "Сравнение салонов по возвратам. Помогает быстро увидеть точки, где возвраты системно выше и где нужен управленческий разбор на уровне команды или процесса.",
+                    )
+                    st.dataframe(
+                        format_display_frame(
+                            return_salon_summary,
+                            rename_map={
+                                "group_name": "Салон",
+                                "return_revenue": "Сумма возвратов",
+                                "return_margin": "Возврат по марже",
+                                "return_quantity": "Возврат по количеству",
+                                "return_lines": "Строк возврата",
+                                "return_share_pct": "Доля возвратов, %",
+                                "last_return_date": "Последний возврат",
+                            },
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=360,
+                    )
 
 with tab_data:
     render_section_intro(
