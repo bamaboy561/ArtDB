@@ -2,6 +2,24 @@
 
 Система анализа продаж на Streamlit для сети салонов.
 
+## Модель доступа
+
+- `admin` — управляет салонами, пользователями и видит всю сеть
+- `manager` — видит все салоны и аналитику по сети, но не управляет учётными записями
+- `salon` — видит только свои данные и свой архив загрузок
+
+В приложении уже действует ролевая модель: салон не может выйти за пределы своего контура, а административные действия доступны только администратору.
+
+## Чек-лист перед первым запуском
+
+- Замените `your-domain.com` и тестовые домены на реальный домен или IP
+- Заполните `.env` сильными паролями и уникальным `STREAMLIT_SERVER_COOKIE_SECRET`
+- Убедитесь, что `.env` не попадёт в Git: файл уже добавлен в [`.gitignore`](./.gitignore)
+- Добавьте SSH-ключ VPS в GitHub, если сервер будет делать `git pull`
+- После запуска выполните `docker compose up -d` и проверьте логи `docker compose logs -f app`
+- Настройте `cron` для [backup.sh](./backup.sh)
+- В приложении уже нет хардкодных паролей и токенов в `app.py`, а загрузка файлов валидируется по имени, расширению, размеру и сигнатуре
+
 ## Структура проекта
 
 ```text
@@ -32,7 +50,7 @@ ArtDB/
 - `app/auth_store.py` — пользователи, роли, сессии
 - `app/salon_data_store.py` — салоны и архив выгрузок
 - `app/sales_analytics.py` — расчёты и аналитика
-- `app/db.py` — PostgreSQL-слой
+- `app/db.py` — PostgreSQL-слой и шифрование чувствительных полей через `pgcrypto`
 - `app/scripts/init_db.py` — инициализация БД и создание первого админа
 - `app/scripts/migrate_legacy_store.py` — перенос старых JSON/CSV данных в PostgreSQL
 - `app/scripts/telegram_notifier.py` — Telegram-уведомления
@@ -62,6 +80,21 @@ sudo usermod -aG docker $USER
 
 Перезайдите в SSH.
 
+### 1.1. Ограничение доступа через UFW
+
+Для сервера достаточно открыть только SSH, HTTP и HTTPS. Порт Streamlit `8501` и порт PostgreSQL `5432` наружу открывать не нужно.
+
+```bash
+sudo apt install -y ufw
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+sudo ufw status verbose
+```
+
 ### 2. Клонирование проекта
 
 ```bash
@@ -83,6 +116,12 @@ DB_NAME=artdb
 DB_USER=artdb_user
 DB_PASSWORD=change-me-very-strong-password
 STREAMLIT_SERVER_COOKIE_SECRET=change-me-long-random-secret
+APP_PGCRYPTO_KEY=change-me-long-random-pgcrypto-key
+BASIC_AUTH_ENABLED=false
+BASIC_AUTH_USERNAME=
+BASIC_AUTH_PASSWORD=
+BASIC_AUTH_PASSWORD_HASH=
+BASIC_AUTH_REALM=ArtDB Protected Area
 INITIAL_ADMIN_USERNAME=admin
 INITIAL_ADMIN_PASSWORD=change-me-admin
 INITIAL_ADMIN_DISPLAY_NAME=Администратор
@@ -90,6 +129,17 @@ INITIAL_ADMIN_EMAIL=admin@example.com
 TG_BOT_TOKEN=your_bot_token
 TG_CHAT_ID=your_chat_id
 ```
+
+`APP_PGCRYPTO_KEY` обязателен для PostgreSQL-режима: email и телефон пользователей хранятся в базе в зашифрованном виде, а поиск и уникальность работают через хеши.
+
+`BASIC_AUTH_*` — опциональны. Если включить `BASIC_AUTH_ENABLED=true`, то Nginx попросит дополнительный логин/пароль ещё до экрана входа в приложение. Это удобно для закрытого корпоративного контура или временного доступа по VPN/интернету.
+
+Рекомендуемый вариант:
+
+- для быстрого запуска задайте `BASIC_AUTH_USERNAME` и `BASIC_AUTH_PASSWORD`
+- для более строгого варианта задайте `BASIC_AUTH_USERNAME` и `BASIC_AUTH_PASSWORD_HASH`, а поле `BASIC_AUTH_PASSWORD` оставьте пустым
+
+Если используете `BASIC_AUTH_PASSWORD_HASH`, это должен быть готовый `htpasswd`-совместимый bcrypt/APR1 хеш.
 
 ### 4. Первый запуск
 
@@ -116,6 +166,8 @@ DNS домена уже должен смотреть на VPS.
 ./deploy.sh ssl
 ```
 
+После выпуска сертификата `nginx` сам переключится на HTTPS-конфиг и будет проксировать Streamlit только через TLS.
+
 ### 6. Логи
 
 ```bash
@@ -132,6 +184,22 @@ DNS домена уже должен смотреть на VPS.
 ```
 
 Файл бэкапа сохраняется в `/opt/artdb/backups`.
+
+### 7.1. Backup по cron
+
+Если проект лежит в `/opt/artdb/ArtDB`, добавьте задачу в `crontab`:
+
+```bash
+0 2 * * * /opt/artdb/ArtDB/backup.sh >> /var/log/artdb_backup.log 2>&1
+```
+
+Удобнее всего добавить её так:
+
+```bash
+crontab -e
+```
+
+Скрипт уже готов к запуску из `cron`: сам загружает `.env`, использует системный `PATH` и сохраняет архивы в каталог backup.
 
 ### 8. Обновление проекта
 
@@ -157,7 +225,7 @@ docker compose exec app python scripts/migrate_legacy_store.py --truncate
 
 - Streamlit
 - PostgreSQL
-- Nginx
+- Nginx с HTTPS и reverse proxy
 - Certbot / Let's Encrypt
 - Telegram-бот уведомлений
 - cron-бэкапы

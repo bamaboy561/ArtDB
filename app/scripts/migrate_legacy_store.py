@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from db import database_enabled, ensure_database_ready, get_db_connection
+from auth_store import normalize_email, normalize_phone
+from db import database_enabled, ensure_database_ready, get_db_connection, get_pgcrypto_key
 
 
 def read_json_list(path: Path) -> list[dict]:
@@ -23,6 +25,12 @@ def read_json_list(path: Path) -> list[dict]:
     except json.JSONDecodeError:
         return []
     return payload if isinstance(payload, list) else []
+
+
+def hash_identifier(value: str | None) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def main() -> int:
@@ -54,6 +62,8 @@ def main() -> int:
     if not manifest.empty and "salon" in manifest.columns:
         salon_names.update(str(item).strip() for item in manifest["salon"].dropna().astype(str) if str(item).strip())
 
+    pgcrypto_key = get_pgcrypto_key()
+
     with get_db_connection() as connection:
         with connection.cursor() as cursor:
             if args.truncate:
@@ -66,19 +76,28 @@ def main() -> int:
                 )
 
             for record in users:
+                normalized_email = normalize_email(str(record.get("email", ""))) or None
+                normalized_phone = normalize_phone(str(record.get("phone", ""))) or None
                 cursor.execute(
                     """
                     INSERT INTO users (
-                        username, display_name, role, salon, email, phone, salt,
+                        username, display_name, role, salon, email_encrypted, phone_encrypted, email_hash, phone_hash, salt,
                         iterations, password_hash, created_at, is_active
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (
+                        %s, %s, %s, %s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1') END,
+                        CASE WHEN %s IS NULL THEN NULL ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1') END,
+                        %s, %s, %s, %s, %s, %s, %s
+                    )
                     ON CONFLICT (username) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         role = EXCLUDED.role,
                         salon = EXCLUDED.salon,
-                        email = EXCLUDED.email,
-                        phone = EXCLUDED.phone,
+                        email_encrypted = EXCLUDED.email_encrypted,
+                        phone_encrypted = EXCLUDED.phone_encrypted,
+                        email_hash = EXCLUDED.email_hash,
+                        phone_hash = EXCLUDED.phone_hash,
                         salt = EXCLUDED.salt,
                         iterations = EXCLUDED.iterations,
                         password_hash = EXCLUDED.password_hash,
@@ -90,8 +109,14 @@ def main() -> int:
                         str(record.get("display_name", "")).strip(),
                         str(record.get("role", "")).strip().lower(),
                         str(record.get("salon", "")).strip(),
-                        str(record.get("email", "")).strip() or None,
-                        str(record.get("phone", "")).strip() or None,
+                        normalized_email,
+                        normalized_email,
+                        pgcrypto_key,
+                        normalized_phone,
+                        normalized_phone,
+                        pgcrypto_key,
+                        hash_identifier(normalized_email),
+                        hash_identifier(normalized_phone),
                         str(record.get("salt", "")).strip(),
                         int(record.get("iterations", 120000)),
                         str(record.get("password_hash", "")).strip(),

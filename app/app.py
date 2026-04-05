@@ -27,6 +27,7 @@ from auth_store import (
     revoke_auth_session,
     set_user_password,
 )
+from db import log_audit_event
 from sales_analytics import (
     DISPLAY_NAMES,
     build_abc_analysis,
@@ -1157,6 +1158,35 @@ def render_snapshot_strip(items: list[dict[str, str]]) -> None:
     render_html_block(f'<div class="snapshot-strip">{"".join(cards_html)}</div>')
 
 
+ALLOWED_UPLOAD_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
+
+
+def validate_uploaded_file(file_bytes: bytes, filename: str) -> str:
+    normalized_name = Path(filename or "").name.strip()
+    if not normalized_name:
+        raise ValueError("Укажите файл с корректным именем.")
+    if len(normalized_name) > 255:
+        raise ValueError("Имя файла слишком длинное. Используйте имя короче 255 символов.")
+    extension = Path(normalized_name).suffix.casefold()
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise ValueError("Поддерживаются только файлы CSV, XLS и XLSX.")
+    if not file_bytes:
+        raise ValueError("Файл пустой. Загрузите выгрузку с данными.")
+    if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
+        raise ValueError("Файл слишком большой. Максимальный размер загрузки: 50 МБ.")
+
+    header = file_bytes[:8]
+    if extension == ".xlsx" and not header.startswith(b"PK"):
+        raise ValueError("Файл XLSX повреждён или не похож на Excel Open XML.")
+    if extension == ".xls" and not header.startswith(b"\xD0\xCF\x11\xE0"):
+        raise ValueError("Файл XLS повреждён или не похож на классический Excel.")
+    if extension == ".csv" and b"\x00" in file_bytes[:4096]:
+        raise ValueError("CSV содержит бинарные данные. Проверьте формат файла.")
+
+    return normalized_name
+
+
 def save_upload_with_feedback(
     *,
     file_bytes: bytes,
@@ -1168,6 +1198,7 @@ def save_upload_with_feedback(
     csv_encoding: str,
     sheet_name: str | int | None,
     replace_existing: bool,
+    actor_username: str = "",
 ) -> None:
     save_salon(salon_name)
     save_result = register_upload(
@@ -1191,12 +1222,58 @@ def save_upload_with_feedback(
         "report_date": report_date.isoformat(),
         "filename": filename,
     }
+    audit_event(
+        action="upload.save",
+        user_id=actor_username,
+        details={
+            "salon": salon_name,
+            "report_date": report_date.isoformat(),
+            "filename": filename,
+            "replace_existing": replace_existing,
+            "replaced_count": int(save_result["replaced"]),
+            "upload_id": str(save_result["record"].get("upload_id", "")),
+        },
+    )
 
 
 def _query_param_text(value: object) -> str:
     if isinstance(value, list):
         return str(value[0]).strip() if value else ""
     return str(value).strip() if value is not None else ""
+
+
+def get_request_ip() -> str:
+    try:
+        headers = getattr(st.context, "headers", None)
+    except Exception:
+        return ""
+    if not headers:
+        return ""
+
+    forwarded_for = _query_param_text(headers.get("X-Forwarded-For", "") or headers.get("x-forwarded-for", ""))
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    for header_name in ("X-Real-IP", "x-real-ip", "X-Forwarded-Client-Ip", "x-forwarded-client-ip"):
+        header_value = _query_param_text(headers.get(header_name, ""))
+        if header_value:
+            return header_value.strip()
+    return ""
+
+
+def audit_event(*, action: str, user_id: str, details: dict[str, object] | None = None) -> None:
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        return
+    try:
+        log_audit_event(
+            user_id=normalized_user_id,
+            action=action,
+            ip=get_request_ip(),
+            details=details or {},
+        )
+    except Exception as error:
+        print(f"audit log error [{action}]: {error}")
 
 
 def get_persistent_auth_token() -> str:
@@ -1277,7 +1354,7 @@ def generate_temp_password(length: int = 10) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def render_sidebar_admin_quick_actions(registered_salons: list[str]) -> None:
+def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_salons: list[str]) -> None:
     st.divider()
     st.markdown("**Быстрое создание**")
     st.caption("Создайте салон и сразу выдайте сотруднику логин с паролем.")
@@ -1317,6 +1394,14 @@ def render_sidebar_admin_quick_actions(registered_salons: list[str]) -> None:
                 st.warning("Такой салон уже существует.")
             else:
                 save_salon(normalized_salon_name)
+                audit_event(
+                    action="salon.create",
+                    user_id=current_user["username"],
+                    details={
+                        "salon": normalized_salon_name,
+                        "source": "sidebar_quick_action",
+                    },
+                )
                 st.session_state.pop("sidebar_new_salon_name", None)
                 st.session_state["admin_flash_message"] = f"Салон «{normalized_salon_name}» добавлен."
                 st.rerun()
@@ -1404,6 +1489,18 @@ def render_sidebar_admin_quick_actions(registered_salons: list[str]) -> None:
                         "password": password,
                         "contact": email.strip() or phone.strip(),
                     }
+                    audit_event(
+                        action="user.create",
+                        user_id=current_user["username"],
+                        details={
+                            "username": username.strip(),
+                            "role": role_choice,
+                            "salon": selected_salon if role_choice == "salon" else "",
+                            "has_email": bool(email.strip()),
+                            "has_phone": bool(phone.strip()),
+                            "source": "sidebar_quick_action",
+                        },
+                    )
                     for key in (
                         "sidebar_create_username",
                         "sidebar_create_display_name",
@@ -1510,6 +1607,23 @@ def render_auth_gate() -> dict[str, str]:
                         )
                         st.session_state["auth_user"] = user
                         set_persistent_auth_token(create_auth_session(user["username"]))
+                        audit_event(
+                            action="auth.bootstrap_admin",
+                            user_id=user["username"],
+                            details={
+                                "role": user["role"],
+                                "has_email": bool(user.get("email")),
+                                "has_phone": bool(user.get("phone")),
+                            },
+                        )
+                        audit_event(
+                            action="auth.login",
+                            user_id=user["username"],
+                            details={
+                                "method": "bootstrap",
+                                "role": user["role"],
+                            },
+                        )
                         st.success("Руководитель создан. Выполняю вход.")
                         st.rerun()
                     except Exception as error:
@@ -1529,6 +1643,14 @@ def render_auth_gate() -> dict[str, str]:
             else:
                 st.session_state["auth_user"] = user
                 set_persistent_auth_token(create_auth_session(user["username"]))
+                audit_event(
+                    action="auth.login",
+                    user_id=user["username"],
+                    details={
+                        "method": "password",
+                        "role": user["role"],
+                    },
+                )
                 st.rerun()
 
     st.stop()
@@ -2017,6 +2139,14 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                         st.warning("Такой салон уже существует.")
                     else:
                         save_salon(normalized_salon_name)
+                        audit_event(
+                            action="salon.create",
+                            user_id=current_user["username"],
+                            details={
+                                "salon": normalized_salon_name,
+                                "source": "admin_tab",
+                            },
+                        )
                         st.session_state["admin_new_salon_name"] = ""
                         st.session_state["admin_flash_message"] = f"Салон «{normalized_salon_name}» добавлен."
                         st.rerun()
@@ -2087,6 +2217,18 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 delete_result = delete_salon(
                                     str(salon_to_delete),
                                     remove_uploads=delete_salon_uploads,
+                                )
+                                audit_event(
+                                    action="salon.delete",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "salon": str(salon_to_delete),
+                                        "deleted_users": int(deleted_users),
+                                        "deleted_uploads": int(delete_result["deleted_uploads"]),
+                                        "remove_users": bool(delete_salon_users),
+                                        "remove_uploads": bool(delete_salon_uploads),
+                                        "source": "admin_tab",
+                                    },
                                 )
                                 st.session_state["admin_delete_salon_confirm"] = ""
                                 st.session_state["admin_delete_salon_users"] = False
@@ -2186,6 +2328,18 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 phone=phone,
                                 salon=selected_salon,
                             )
+                            audit_event(
+                                action="user.create",
+                                user_id=current_user["username"],
+                                details={
+                                    "username": username.strip(),
+                                    "role": role_choice,
+                                    "salon": selected_salon if role_choice == "salon" else "",
+                                    "has_email": bool(email.strip()),
+                                    "has_phone": bool(phone.strip()),
+                                    "source": "admin_tab",
+                                },
+                            )
                             for key in (
                                 "admin_create_username",
                                 "admin_create_display_name",
@@ -2260,6 +2414,16 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                     str(selected_user_to_delete),
                                     actor_username=current_user["username"],
                                 )
+                                audit_event(
+                                    action="user.delete",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "username": str(deleted_user.get("username", "")),
+                                        "role": str(deleted_user.get("role", "")),
+                                        "salon": str(deleted_user.get("salon", "")),
+                                        "source": "admin_tab",
+                                    },
+                                )
                                 st.session_state["admin_delete_user_confirm"] = ""
                                 st.session_state["admin_flash_message"] = (
                                     f"Пользователь «{deleted_user['display_name']}» удалён."
@@ -2305,6 +2469,14 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     else:
                         try:
                             set_user_password(selected_username, new_password)
+                            audit_event(
+                                action="user.password_reset",
+                                user_id=current_user["username"],
+                                details={
+                                    "username": str(selected_username),
+                                    "source": "admin_tab",
+                                },
+                            )
                             st.session_state.pop("admin_reset_password", None)
                             st.session_state.pop("admin_reset_password_confirm", None)
                             st.session_state["admin_flash_message"] = f"Пароль для пользователя «{selected_username}» обновлён."
@@ -2630,7 +2802,7 @@ with st.sidebar:
 with st.sidebar:
     render_sidebar_navigation(current_user, work_mode)
     if can_manage_access(current_user):
-        render_sidebar_admin_quick_actions(registered_salons)
+        render_sidebar_admin_quick_actions(current_user, registered_salons)
 
 upload_modes = {"Новая выгрузка", "Загрузка салона", "Разовая загрузка"}
 upload_flash_message = st.session_state.pop("upload_flash_message", "")
@@ -2680,12 +2852,16 @@ if work_mode in upload_modes:
                 st.info(
                     f"Контур загрузки: {upload_scope}\n\n"
                     f"Режим: {work_mode}\n\n"
-                    "Поддерживаются форматы Excel и CSV."
+                    "Поддерживаются форматы Excel и CSV. Максимальный размер файла: 50 МБ."
                 )
 
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
-    filename = uploaded_file.name
+    try:
+        filename = validate_uploaded_file(file_bytes, uploaded_file.name)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
 
     with st.sidebar:
         with st.expander("Параметры загрузки", expanded=False):
@@ -2763,6 +2939,7 @@ if uploaded_file is not None:
                             csv_encoding=csv_encoding,
                             sheet_name=sheet_name,
                             replace_existing=replace_existing_upload,
+                            actor_username=current_user["username"],
                         )
                         st.rerun()
                 with helper_col:
@@ -2789,6 +2966,7 @@ if uploaded_file is not None:
                             csv_encoding=csv_encoding,
                             sheet_name=sheet_name,
                             replace_existing=replace_existing_upload,
+                            actor_username=current_user["username"],
                         )
                         st.rerun()
 

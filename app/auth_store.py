@@ -10,7 +10,7 @@ import re
 import secrets
 from typing import Any
 
-from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
+from db import database_enabled, ensure_database_ready, get_db_connection, get_pgcrypto_key, isoformat_seconds
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,6 +37,7 @@ def ensure_user_store() -> None:
 def _load_raw_users() -> list[dict[str, Any]]:
     ensure_user_store()
     if database_enabled():
+        pgcrypto_key = get_pgcrypto_key()
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -46,8 +47,8 @@ def _load_raw_users() -> list[dict[str, Any]]:
                         display_name,
                         role,
                         COALESCE(salon, '') AS salon,
-                        COALESCE(email, '') AS email,
-                        COALESCE(phone, '') AS phone,
+                        COALESCE(pgp_sym_decrypt(email_encrypted, %s), '') AS email,
+                        COALESCE(pgp_sym_decrypt(phone_encrypted, %s), '') AS phone,
                         salt,
                         iterations,
                         password_hash,
@@ -62,7 +63,8 @@ def _load_raw_users() -> list[dict[str, Any]]:
                             ELSE 99
                         END,
                         LOWER(username)
-                    """
+                    """,
+                    (pgcrypto_key, pgcrypto_key),
                 )
                 rows = cursor.fetchall()
         return [
@@ -88,10 +90,13 @@ def _load_raw_users() -> list[dict[str, Any]]:
 def _save_raw_users(users: list[dict[str, Any]]) -> None:
     ensure_user_store()
     if database_enabled():
+        pgcrypto_key = get_pgcrypto_key()
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
                 usernames = [str(record.get("username", "")).strip() for record in users if str(record.get("username", "")).strip()]
                 for record in users:
+                    normalized_email = normalize_email(str(record.get("email", ""))) or None
+                    normalized_phone = normalize_phone(str(record.get("phone", ""))) or None
                     cursor.execute(
                         """
                         INSERT INTO users (
@@ -99,21 +104,45 @@ def _save_raw_users(users: list[dict[str, Any]]) -> None:
                             display_name,
                             role,
                             salon,
-                            email,
-                            phone,
+                            email_encrypted,
+                            phone_encrypted,
+                            email_hash,
+                            phone_hash,
                             salt,
                             iterations,
                             password_hash,
                             created_at,
                             is_active
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            CASE
+                                WHEN %s IS NULL THEN NULL
+                                ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1')
+                            END,
+                            CASE
+                                WHEN %s IS NULL THEN NULL
+                                ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1')
+                            END,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s
+                        )
                         ON CONFLICT (username) DO UPDATE SET
                             display_name = EXCLUDED.display_name,
                             role = EXCLUDED.role,
                             salon = EXCLUDED.salon,
-                            email = EXCLUDED.email,
-                            phone = EXCLUDED.phone,
+                            email_encrypted = EXCLUDED.email_encrypted,
+                            phone_encrypted = EXCLUDED.phone_encrypted,
+                            email_hash = EXCLUDED.email_hash,
+                            phone_hash = EXCLUDED.phone_hash,
                             salt = EXCLUDED.salt,
                             iterations = EXCLUDED.iterations,
                             password_hash = EXCLUDED.password_hash,
@@ -125,8 +154,14 @@ def _save_raw_users(users: list[dict[str, Any]]) -> None:
                             str(record.get("display_name", "")).strip(),
                             str(record.get("role", "")).strip().lower(),
                             str(record.get("salon", "")).strip(),
-                            normalize_email(str(record.get("email", ""))) or None,
-                            normalize_phone(str(record.get("phone", ""))) or None,
+                            normalized_email,
+                            normalized_email,
+                            pgcrypto_key,
+                            normalized_phone,
+                            normalized_phone,
+                            pgcrypto_key,
+                            _hash_identifier(normalized_email),
+                            _hash_identifier(normalized_phone),
                             str(record.get("salt", "")),
                             int(record.get("iterations", PBKDF2_ITERATIONS)),
                             str(record.get("password_hash", "")),
@@ -250,6 +285,12 @@ def normalize_phone(phone: str) -> str:
     if digits.startswith("8") and len(digits) == 11:
         digits = "7" + digits[1:]
     return digits
+
+
+def _hash_identifier(value: str | None) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _normalize_record(record: dict[str, Any]) -> dict[str, Any]:

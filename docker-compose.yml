@@ -11,7 +11,7 @@ services:
       APP_UPLOADS_DIR: /app/uploads
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
       TZ: ${APP_TIMEZONE:-Asia/Omsk}
-      STREAMLIT_SERVER_COOKIE_SECRET: ${STREAMLIT_SERVER_COOKIE_SECRET:-artdb-secret-change-me}
+      STREAMLIT_SERVER_COOKIE_SECRET: ${STREAMLIT_SERVER_COOKIE_SECRET:?STREAMLIT_SERVER_COOKIE_SECRET is required}
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME}
     depends_on:
       db:
