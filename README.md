@@ -1,92 +1,163 @@
-# Аналитика продаж из 1С
+# ArtDB
 
-MVP-приложение на Streamlit для загрузки выгрузки из 1С и быстрого анализа продаж.
-Теперь основной экран оформлен как удобный дашборд с KPI, динамикой, быстрыми инсайтами и детальными вкладками.
-Приложение поддерживает режимы для салона и для руководителя сети.
-При первом запуске система попросит создать первого пользователя-руководителя.
+Система анализа продаж на Streamlit для сети салонов.
 
-## Что уже умеет
+## Структура проекта
 
-- Загружать `xlsx`, `xls`, `csv`.
-- Сохранять ежедневные выгрузки по каждому салону в локальный архив.
-- Открывать режим `Салон` для просмотра только своих данных.
-- Открывать режим `Руководитель` для просмотра всех салонов и общей картины по сети.
-- Разделять права доступа по логину и паролю.
-- Поддерживать вход по email или номеру телефона.
-- Позволять руководителю создавать пользователей салонов и сбрасывать им пароли.
-- Подбирать колонки автоматически и позволять переназначить их вручную.
-- Считать:
-  - выручку;
-  - себестоимость;
-  - маржу и маржу в процентах;
-  - ABC-анализ;
-  - сравнение данных по месяцам;
-  - сводку по товарам.
-- Показывать главный дашборд:
-  - ключевые KPI;
-  - динамику по месяцам;
-  - сравнение салонов;
-  - лидирующие категории и менеджеров;
-  - быстрые выводы и зоны риска.
-- Фильтровать данные по периоду, категории и менеджеру.
-- Выгружать результаты в CSV.
-
-## Быстрый запуск
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
+```text
+ArtDB/
+├── app/                  # Приложение: Streamlit, аналитика, хранилище, скрипты
+│   ├── Dockerfile
+│   ├── uploads/
+│   └── cache/
+├── docker/
+│   ├── backup/
+│   └── nginx/
+│       └── default.conf
+├── certbot/
+│   ├── conf/
+│   └── www/
+├── docker-compose.yml
+├── .env.example
+├── .gitignore
+├── deploy.sh
+├── backup.sh
+└── README.md
 ```
 
-После запуска откроется локальный адрес, обычно `http://localhost:8501`.
+## Что внутри
 
-## Как устроен доступ
+- `app/app.py` — основной интерфейс Streamlit
+- `app/Dockerfile` — Docker-образ приложения
+- `app/auth_store.py` — пользователи, роли, сессии
+- `app/salon_data_store.py` — салоны и архив выгрузок
+- `app/sales_analytics.py` — расчёты и аналитика
+- `app/db.py` — PostgreSQL-слой
+- `app/scripts/init_db.py` — инициализация БД и создание первого админа
+- `app/scripts/migrate_legacy_store.py` — перенос старых JSON/CSV данных в PostgreSQL
+- `app/scripts/telegram_notifier.py` — Telegram-уведомления
+- `docker-compose.yml` — прод-стек: Streamlit, PostgreSQL, Nginx, Certbot, backup, Telegram
+- `deploy.sh` — быстрые команды для запуска, SSL и обновления
+- `backup.sh` — ручной запуск backup
 
-- При первом входе создаётся первый пользователь с ролью руководителя.
-- Руководитель может открыть вкладку `Доступ` и создать пользователей салонов с email или телефоном.
-- Пользователь салона после входа видит только свой салон и не может переключиться на другие.
-- Руководитель видит всю сеть и может фильтровать отчёт по нужным салонам.
+## Локальный запуск без Docker
 
-## Куда загружать файл
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r app/requirements.txt
+streamlit run app/app.py
+```
 
-- В режиме салона или в режиме загрузки для руководителя на главной странице появляется отдельный блок `Загрузка файла`.
-- Файл больше не спрятан в боковой панели: загрузка вынесена в основной контент.
+## VPS Ubuntu 22.04: copy-paste
 
-## Какие колонки лучше иметь в файле
+### 1. Установка Docker
 
-Обязательно:
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl git docker.io docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
 
-- `Дата`
-- `Товар`
+Перезайдите в SSH.
 
-Для выручки:
+### 2. Клонирование проекта
 
-- `Выручка`
+```bash
+git clone git@github.com:bamaboy561/ArtDB.git /opt/artdb
+cd /opt/artdb
+cp .env.example .env
+```
 
-или:
+### 3. Заполните `.env`
 
-- `Цена за единицу`
-- `Количество`
+Минимум:
 
-Для маржинальности:
+```env
+DOMAIN_NAME=analytics.example.com
+LETSENCRYPT_EMAIL=admin@example.com
+DB_HOST=db
+DB_PORT=5432
+DB_NAME=artdb
+DB_USER=artdb_user
+DB_PASSWORD=change-me-very-strong-password
+STREAMLIT_SERVER_COOKIE_SECRET=change-me-long-random-secret
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=change-me-admin
+INITIAL_ADMIN_DISPLAY_NAME=Администратор
+INITIAL_ADMIN_EMAIL=admin@example.com
+TG_BOT_TOKEN=your_bot_token
+TG_CHAT_ID=your_chat_id
+```
 
-- `Себестоимость`
+### 4. Первый запуск
 
-или:
+```bash
+mkdir -p app/uploads app/cache certbot/conf certbot/www backups
+chmod +x deploy.sh backup.sh
+./deploy.sh up
+```
 
-- `Маржа`
+Что поднимется:
 
-Дополнительно:
+- `app` — Streamlit-приложение
+- `db` — база данных PostgreSQL
+- `nginx` — reverse proxy
+- `certbot` — обновление сертификатов
+- `telegram-bot` — уведомления
+- `backup` — cron-бэкапы
 
-- `Категория`
-- `Менеджер`
+### 5. Выпуск HTTPS
 
-## Идеи для следующей версии
+DNS домена уже должен смотреть на VPS.
 
-- XYZ-анализ.
-- План/факт по менеджерам.
-- Отдельный отчёт по клиентам.
-- Загрузка нескольких файлов сразу.
-- Экспорт в Excel с несколькими листами.
+```bash
+./deploy.sh ssl
+```
+
+### 6. Логи
+
+```bash
+./deploy.sh logs app
+./deploy.sh logs nginx
+./deploy.sh logs db
+./deploy.sh logs telegram-bot
+```
+
+### 7. Ручной backup
+
+```bash
+./backup.sh
+```
+
+Файл бэкапа сохраняется в `/opt/artdb/backups`.
+
+### 8. Обновление проекта
+
+```bash
+./deploy.sh update
+```
+
+Скрипт сам:
+
+- делает `git pull origin main`
+- пересобирает контейнеры через `docker compose up -d --build`
+- очищает неиспользуемые Docker-образы
+
+## Миграция старых данных
+
+Если нужно перенести старые `users.json`, `salons.json`, `upload_manifest.csv` и архив загрузок:
+
+```bash
+docker compose exec app python scripts/migrate_legacy_store.py --truncate
+```
+
+## Прод-стек
+
+- Streamlit
+- PostgreSQL
+- Nginx
+- Certbot / Let's Encrypt
+- Telegram-бот уведомлений
+- cron-бэкапы

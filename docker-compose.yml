@@ -1,144 +1,131 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-sales_analytics}
-      POSTGRES_USER: ${POSTGRES_USER:-sales_app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
-      TZ: ${APP_TIMEZONE:-Asia/Omsk}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sales_app} -d ${POSTGRES_DB:-sales_analytics}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  pgbouncer:
-    image: edoburu/pgbouncer:1.25.1-p0
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-sales_analytics}
-      DB_USER: ${POSTGRES_USER:-sales_app}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POOL_MODE: transaction
-      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
-      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
-      AUTH_TYPE: scram-sha-256
-      ADMIN_USERS: ${POSTGRES_USER:-sales_app}
-      SERVER_RESET_QUERY: DISCARD ALL
-      IGNORE_STARTUP_PARAMETERS: extra_float_digits
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER:-sales_app} -d ${POSTGRES_DB:-sales_analytics}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   app:
     build:
-      context: .
+      context: ./app
       dockerfile: Dockerfile
+    container_name: artdb_app
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      APP_DATA_DIR: /app/data
+      APP_DATA_DIR: /app/cache
+      APP_UPLOADS_DIR: /app/uploads
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
       TZ: ${APP_TIMEZONE:-Asia/Omsk}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-sales_app}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB:-sales_analytics}
+      STREAMLIT_SERVER_COOKIE_SECRET: ${STREAMLIT_SERVER_COOKIE_SECRET:-artdb-secret-change-me}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME}
     depends_on:
-      pgbouncer:
+      db:
         condition: service_healthy
+    networks:
+      - artdb_net
     volumes:
-      - app_data:/app/data
+      - ./app/uploads:/app/uploads
+      - ./app/cache:/app/cache
 
-  telegram-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  db:
+    image: postgres:15-alpine
+    container_name: artdb_db
     restart: unless-stopped
-    command: ["python", "scripts/telegram_notifier.py", "daemon"]
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      APP_DATA_DIR: /app/data
-      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       TZ: ${APP_TIMEZONE:-Asia/Omsk}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-sales_app}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DB:-sales_analytics}
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
     volumes:
-      - app_data:/app/data:ro
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - artdb_net
 
   nginx:
     build:
       context: .
-      dockerfile: deploy/production/nginx/Dockerfile
+      dockerfile: docker/nginx/Dockerfile
+    container_name: artdb_nginx
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      DOMAIN_NAME: ${DOMAIN_NAME:?DOMAIN_NAME is required}
-    depends_on:
-      - app
+      DOMAIN_NAME: ${DOMAIN_NAME:-_}
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - certbot_www:/var/www/certbot
-      - letsencrypt:/etc/letsencrypt
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    depends_on:
+      - app
+    networks:
+      - artdb_net
 
   certbot:
     image: certbot/certbot:latest
+    container_name: artdb_certbot
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     volumes:
-      - certbot_www:/var/www/certbot
-      - letsencrypt:/etc/letsencrypt
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     entrypoint: /bin/sh -c
     command: "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet --non-interactive; sleep 12h; done"
+
+  telegram-bot:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: artdb_telegram_bot
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "scripts/telegram_notifier.py", "daemon"]
+    env_file: .env
+    environment:
+      APP_DATA_DIR: /app/cache
+      APP_UPLOADS_DIR: /app/uploads
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
+      TZ: ${APP_TIMEZONE:-Asia/Omsk}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST:-db}:${DB_PORT:-5432}/${DB_NAME}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - artdb_net
+    volumes:
+      - ./app/uploads:/app/uploads:ro
+      - ./app/cache:/app/cache:ro
 
   backup:
     build:
       context: .
-      dockerfile: deploy/production/backup/Dockerfile
+      dockerfile: docker/backup/Dockerfile
+    container_name: artdb_backup
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Omsk}
       TZ: ${APP_TIMEZONE:-Asia/Omsk}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-sales_analytics}
-      POSTGRES_USER: ${POSTGRES_USER:-sales_app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_HOST: ${DB_HOST:-db}
+      POSTGRES_PORT: ${DB_PORT:-5432}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       BACKUP_CRON: ${BACKUP_CRON:-15 3 * * *}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
+    networks:
+      - artdb_net
     volumes:
-      - app_data:/app-data:ro
-      - backups:/backups
+      - ./app/uploads:/app-data/uploads:ro
+      - ./backups:/backups
 
 volumes:
-  postgres_data:
-  app_data:
-  certbot_www:
-  letsencrypt:
-  backups:
+  db_data:
 
+networks:
+  artdb_net:
+    driver: bridge

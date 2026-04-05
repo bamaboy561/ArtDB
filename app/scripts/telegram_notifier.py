@@ -30,10 +30,10 @@ def get_timezone() -> ZoneInfo:
 
 
 def send_telegram_message(text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    token = os.getenv("TG_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
+    chat_id = os.getenv("TG_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", "")).strip()
     if not token or not chat_id:
-        raise RuntimeError("Нужны TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.")
+        raise RuntimeError("Нужны TG_BOT_TOKEN и TG_CHAT_ID.")
 
     payload = parse.urlencode(
         {

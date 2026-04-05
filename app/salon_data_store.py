@@ -16,8 +16,8 @@ from sales_analytics import load_input_file, prepare_sales_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR / "data"))).resolve()
-UPLOADS_DIR = DATA_DIR / "uploads"
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR.parent / "data"))).resolve()
+UPLOADS_DIR = Path(os.getenv("APP_UPLOADS_DIR", str(DATA_DIR / "uploads"))).resolve()
 SALONS_PATH = DATA_DIR / "salons.json"
 MANIFEST_PATH = DATA_DIR / "upload_manifest.csv"
 

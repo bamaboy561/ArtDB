@@ -14,7 +14,7 @@ from db import database_enabled, ensure_database_ready, get_db_connection, isofo
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR / "data"))).resolve()
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR.parent / "data"))).resolve()
 USERS_PATH = DATA_DIR / "users.json"
 SESSIONS_PATH = DATA_DIR / "auth_sessions.json"
 PBKDF2_ITERATIONS = 120_000

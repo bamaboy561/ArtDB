@@ -9,3 +9,7 @@ data
 *.stdout.log
 *.stderr.log
 *.pid
+app/cache
+app/uploads
+certbot
+backups
