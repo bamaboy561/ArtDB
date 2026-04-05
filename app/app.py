@@ -27,11 +27,14 @@ from auth_store import (
     revoke_auth_session,
     set_user_password,
 )
+from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
 from sales_analytics import (
     DISPLAY_NAMES,
     build_abc_analysis,
     build_forecast,
+    build_plan_fact_by_salon,
+    build_plan_fact_summary,
     build_heatmap_data,
     build_month_comparison,
     build_monthly_summary,
@@ -995,6 +998,13 @@ def calculate_change_pct(current: float, previous: float) -> float | None:
     return ((float(current) - previous_value) / previous_value) * 100.0
 
 
+def parse_plan_input(value: str) -> float | None:
+    text = str(value).strip().replace(" ", "").replace(",", ".")
+    if not text:
+        return None
+    return float(text)
+
+
 ROLE_LABELS = {
     "admin": "Администратор",
     "manager": "Руководитель",
@@ -1012,6 +1022,10 @@ def is_network_role(role: str) -> bool:
 
 def can_manage_access(current_user: dict[str, str]) -> bool:
     return current_user["role"] == "admin"
+
+
+def can_manage_plans(current_user: dict[str, str]) -> bool:
+    return current_user["role"] in {"admin", "manager"}
 
 
 def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
@@ -1296,6 +1310,82 @@ def build_safe_marker_size(series: pd.Series, *, absolute: bool = False) -> pd.S
     if absolute:
         return numeric.abs()
     return numeric.clip(lower=0)
+
+
+def format_plan_scope_label(salon_name: str) -> str:
+    return "Вся сеть" if not str(salon_name).strip() else str(salon_name).strip()
+
+
+def sum_plan_metric(series: pd.Series) -> float:
+    numeric = pd.to_numeric(series, errors="coerce")
+    return float(numeric.sum(min_count=1)) if numeric.notna().any() else float("nan")
+
+
+def build_scope_plan_summary(
+    plans_frame: pd.DataFrame,
+    scope_salons: list[str],
+    *,
+    allow_network_fallback: bool = False,
+) -> pd.DataFrame:
+    if plans_frame.empty:
+        return pd.DataFrame(columns=["month", "month_label", "revenue_plan", "margin_plan", "quantity_plan"])
+
+    working = plans_frame.copy()
+    working["plan_month"] = pd.to_datetime(working["plan_month"], errors="coerce").dt.normalize()
+    working = working.dropna(subset=["plan_month"])
+    working["salon"] = working["salon"].fillna("").astype(str).str.strip()
+
+    normalized_scope = sorted({str(salon).strip() for salon in scope_salons if str(salon).strip()})
+    scoped = working[working["salon"].isin(normalized_scope)].copy() if normalized_scope else pd.DataFrame()
+
+    if scoped.empty and allow_network_fallback:
+        scoped = working[working["salon"] == ""].copy()
+        if scoped.empty:
+            return pd.DataFrame(columns=["month", "month_label", "revenue_plan", "margin_plan", "quantity_plan"])
+        grouped = scoped[["plan_month", "revenue_plan", "margin_plan", "quantity_plan"]].rename(columns={"plan_month": "month"})
+    else:
+        if scoped.empty:
+            return pd.DataFrame(columns=["month", "month_label", "revenue_plan", "margin_plan", "quantity_plan"])
+        grouped = (
+            scoped.groupby("plan_month", as_index=False)
+            .agg(
+                revenue_plan=("revenue_plan", sum_plan_metric),
+                margin_plan=("margin_plan", sum_plan_metric),
+                quantity_plan=("quantity_plan", sum_plan_metric),
+            )
+            .rename(columns={"plan_month": "month"})
+        )
+
+    grouped["month_label"] = pd.to_datetime(grouped["month"], errors="coerce").dt.strftime("%Y-%m")
+    return grouped[["month", "month_label", "revenue_plan", "margin_plan", "quantity_plan"]].sort_values("month").reset_index(drop=True)
+
+
+def build_scope_plan_records(plans_frame: pd.DataFrame, month_label: str, scope_salons: list[str]) -> pd.DataFrame:
+    if plans_frame.empty:
+        return pd.DataFrame(columns=["salon", "revenue_plan", "margin_plan", "quantity_plan"])
+
+    working = plans_frame.copy()
+    working["plan_month"] = pd.to_datetime(working["plan_month"], errors="coerce").dt.strftime("%Y-%m")
+    working["salon"] = working["salon"].fillna("").astype(str).str.strip()
+    normalized_scope = sorted({str(salon).strip() for salon in scope_salons if str(salon).strip()})
+    scoped = working[(working["plan_month"] == month_label) & (working["salon"].isin(normalized_scope))].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=["salon", "revenue_plan", "margin_plan", "quantity_plan"])
+    return scoped[["salon", "revenue_plan", "margin_plan", "quantity_plan"]].reset_index(drop=True)
+
+
+def get_plan_record(plans_frame: pd.DataFrame, month_label: str, salon_name: str) -> dict[str, object] | None:
+    if plans_frame.empty:
+        return None
+    working = plans_frame.copy()
+    working["plan_month_label"] = pd.to_datetime(working["plan_month"], errors="coerce").dt.strftime("%Y-%m")
+    normalized_salon = str(salon_name).strip()
+    mask = (
+        working["plan_month_label"].astype(str) == str(month_label).strip()
+    ) & (working["salon"].fillna("").astype(str).str.strip() == normalized_salon)
+    if not mask.any():
+        return None
+    return working.loc[mask].iloc[-1].to_dict()
 
 
 def render_user_strip(current_user: dict[str, str]) -> None:
@@ -3032,6 +3122,8 @@ with st.sidebar:
         selected_salons_filter = st.multiselect("Салоны", all_salons, default=all_salons)
         data = data[data["salon"].isin(selected_salons_filter)]
 
+    plan_fact_source_data = data.copy()
+
     if data["category"].nunique() > 1:
         all_categories = sorted(data["category"].dropna().unique().tolist())
         selected_categories = st.multiselect("Категории", all_categories, default=all_categories)
@@ -3052,10 +3144,29 @@ category_summary = build_product_summary(data, "category")
 manager_summary = build_product_summary(data, "manager")
 salon_summary = build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
 monthly_summary = build_monthly_summary(data)
+plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
 abc_data = build_abc_analysis(product_summary, "revenue")
 forecast_data = build_forecast(monthly_summary)
 revenue_anomalies = detect_anomalies(monthly_summary)
 yoy_data = build_yoy_comparison(data)
+monthly_plans = load_monthly_plans()
+plan_scope_salons = (
+    sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
+    if "salon" in plan_fact_source_data.columns
+    else ([current_user.get("salon", "")] if current_user.get("salon") else [])
+)
+allow_network_plan_fallback = bool(
+    is_network_role(current_user["role"])
+    and registered_salons
+    and sorted({str(salon).strip() for salon in plan_scope_salons if str(salon).strip()}) == sorted({str(salon).strip() for salon in registered_salons})
+)
+scope_plan_summary = build_scope_plan_summary(
+    monthly_plans,
+    plan_scope_salons,
+    allow_network_fallback=allow_network_plan_fallback,
+)
+plan_fact_summary = build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
+plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 
 default_left_month: str | None = None
 default_right_month: str | None = None
@@ -3101,13 +3212,13 @@ render_metric_cards(
     ]
 )
 
-tab_labels = ["Обзор", "ABC-анализ", "Маржинальность", "Сравнение месяцев", "Расширенный анализ", "Источники"]
+tab_labels = ["Обзор", "ABC-анализ", "Маржинальность", "Сравнение месяцев", "План / факт", "Расширенный анализ", "Источники"]
 if can_manage_access(current_user):
     tab_labels.append("Управление")
 
 tabs = st.tabs(tab_labels)
-tab_dashboard, tab_abc, tab_margin, tab_months, tab_advanced, tab_data = tabs[:6]
-tab_access = tabs[6] if can_manage_access(current_user) else None
+tab_dashboard, tab_abc, tab_margin, tab_months, tab_plan, tab_advanced, tab_data = tabs[:7]
+tab_access = tabs[7] if can_manage_access(current_user) else None
 
 with tab_dashboard:
     render_section_intro(
@@ -4009,6 +4120,347 @@ with tab_months:
             yoy_fig.update_xaxes(tickmode="array", tickvals=list(range(1, 13)), ticktext=["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"])
             polish_figure(yoy_fig, height=420)
             st.plotly_chart(yoy_fig, use_container_width=True)
+
+with tab_plan:
+    render_section_intro(
+        "План / факт",
+        "Сравнивает помесячный план с фактическими продажами по выручке, марже и количеству. Вкладка нужна, чтобы быстро понять, где сеть или отдельный салон недовыполняют цель и в каком месяце отклонение стало критичным.",
+    )
+    render_section_marker(
+        "Управление целями",
+        "Сначала задайте план, потом контролируйте выполнение",
+        "Рабочий порядок здесь такой: сначала выбираете контур и месяц плана, затем задаёте цифры по выручке, марже и количеству. После этого смотрите выполнение по месяцам и, если нужно, разбираете отставание по салонам.",
+    )
+
+    if plan_fact_uses_unfiltered_scope:
+        st.info("План / факт считается по выбранному периоду и салонам, но не сужается фильтрами по категориям и менеджерам. Это сделано специально, чтобы план не искажался товарными срезами.")
+
+    if plan_fact_summary.empty:
+        st.info("Для контроля плана нужен хотя бы один месяц данных или сохранённый план на будущий месяц.")
+    else:
+        plan_month_options = plan_fact_summary["month_label"].dropna().astype(str).tolist()
+        latest_plan_row = plan_fact_summary.iloc[-1]
+
+        render_snapshot_strip(
+            [
+                {
+                    "label": f"План выручки {latest_plan_row['month_label']}",
+                    "value": format_money(latest_plan_row["revenue_plan"]) if not is_missing(latest_plan_row["revenue_plan"]) else "н/д",
+                    "hint": "Плановая выручка на выбранный месяц",
+                },
+                {
+                    "label": f"Факт выручки {latest_plan_row['month_label']}",
+                    "value": format_money(latest_plan_row["revenue"]),
+                    "delta": format_percent(latest_plan_row["revenue_execution_pct"]) if not is_missing(latest_plan_row["revenue_execution_pct"]) else "",
+                    "hint": "Процент выполнения плана по выручке",
+                },
+                {
+                    "label": f"План маржи {latest_plan_row['month_label']}",
+                    "value": format_money(latest_plan_row["margin_plan"]) if not is_missing(latest_plan_row["margin_plan"]) else "н/д",
+                    "hint": "Плановая валовая маржа на месяц",
+                },
+                {
+                    "label": f"Факт маржи {latest_plan_row['month_label']}",
+                    "value": format_money(latest_plan_row["margin"]),
+                    "delta": format_percent(latest_plan_row["margin_execution_pct"]) if not is_missing(latest_plan_row["margin_execution_pct"]) else "",
+                    "hint": "Процент выполнения плана по марже",
+                },
+                {
+                    "label": f"План количества {latest_plan_row['month_label']}",
+                    "value": format_number(latest_plan_row["quantity_plan"]) if not is_missing(latest_plan_row["quantity_plan"]) else "н/д",
+                    "hint": "План по количеству проданных единиц",
+                },
+                {
+                    "label": f"Факт количества {latest_plan_row['month_label']}",
+                    "value": format_number(latest_plan_row["quantity"]),
+                    "delta": format_percent(latest_plan_row["quantity_execution_pct"]) if not is_missing(latest_plan_row["quantity_execution_pct"]) else "",
+                    "hint": "Процент выполнения плана по количеству",
+                },
+            ]
+        )
+
+        plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="large")
+
+        with plan_chart_left:
+            with st.container(border=True):
+                render_panel_header(
+                    "Динамика плана и факта по выручке",
+                    "Главный график вкладки: показывает, как месячный факт идёт относительно плана. Используйте его как первую точку контроля, чтобы сразу увидеть месяцы с недовыполнением и месяцы, где план уже закрыт.",
+                )
+                plan_chart = go.Figure()
+                plan_chart.add_trace(
+                    go.Bar(
+                        x=plan_fact_summary["month_label"],
+                        y=plan_fact_summary["revenue"],
+                        name="Факт: выручка",
+                        marker_color="#0F766E",
+                    )
+                )
+                if plan_fact_summary["revenue_plan"].notna().any():
+                    plan_chart.add_trace(
+                        go.Scatter(
+                            x=plan_fact_summary["month_label"],
+                            y=plan_fact_summary["revenue_plan"],
+                            name="План: выручка",
+                            mode="lines+markers",
+                            line=dict(color="#B45309", width=3),
+                            marker=dict(size=8),
+                        )
+                    )
+                plan_chart.update_layout(xaxis_title="Месяц", yaxis_title="Сумма", legend_title="")
+                polish_figure(plan_chart, height=440)
+                st.plotly_chart(plan_chart, use_container_width=True)
+
+        with plan_chart_right:
+            with st.container(border=True):
+                render_panel_header(
+                    "Отклонение последнего месяца",
+                    "Короткая контрольная панель по самому свежему месяцу в текущем контуре. Здесь видно, сколько не добрали или перевыполнили по ключевым показателям.",
+                )
+                latest_gap_cards = [
+                    {
+                        "label": "Отклонение выручки",
+                        "value": format_money(latest_plan_row["revenue_gap"]) if not is_missing(latest_plan_row["revenue_gap"]) else "н/д",
+                        "delta": format_percent(latest_plan_row["revenue_execution_pct"]) if not is_missing(latest_plan_row["revenue_execution_pct"]) else "",
+                    },
+                    {
+                        "label": "Отклонение маржи",
+                        "value": format_money(latest_plan_row["margin_gap"]) if not is_missing(latest_plan_row["margin_gap"]) else "н/д",
+                        "delta": format_percent(latest_plan_row["margin_execution_pct"]) if not is_missing(latest_plan_row["margin_execution_pct"]) else "",
+                    },
+                    {
+                        "label": "Отклонение количества",
+                        "value": format_number(latest_plan_row["quantity_gap"]) if not is_missing(latest_plan_row["quantity_gap"]) else "н/д",
+                        "delta": format_percent(latest_plan_row["quantity_execution_pct"]) if not is_missing(latest_plan_row["quantity_execution_pct"]) else "",
+                    },
+                ]
+                render_metric_cards(latest_gap_cards)
+
+        if can_manage_plans(current_user):
+            with st.container(border=True):
+                render_panel_header(
+                    "Редактирование планов",
+                    "Здесь можно задать цель для всей сети или отдельного салона. Пустое поле означает, что план по этой метрике не задан, а не равен нулю.",
+                )
+
+                existing_month_labels = set(monthly_plans["plan_month"].dt.strftime("%Y-%m").dropna().tolist()) if not monthly_plans.empty else set()
+                existing_month_labels.update(plan_month_options)
+                if plan_month_options:
+                    latest_editor_month = pd.to_datetime(f"{plan_month_options[-1]}-01", errors="coerce")
+                else:
+                    latest_editor_month = pd.Timestamp(date.today().replace(day=1))
+                for offset in range(4):
+                    existing_month_labels.add((latest_editor_month + pd.DateOffset(months=offset)).strftime("%Y-%m"))
+                editor_month_options = sorted(existing_month_labels)
+
+                scope_options = ["Вся сеть", *registered_salons] if is_network_role(current_user["role"]) else [current_user.get("salon", "Текущий салон")]
+                plan_form_left, plan_form_right = st.columns([1, 1.2], gap="large")
+                with plan_form_left:
+                    selected_plan_scope_label = st.selectbox(
+                        "Контур плана",
+                        options=scope_options,
+                        key="plan_editor_scope",
+                    )
+                    selected_plan_month = st.selectbox(
+                        "Месяц плана",
+                        options=editor_month_options,
+                        index=max(len(editor_month_options) - 1, 0),
+                        key="plan_editor_month",
+                    )
+
+                selected_plan_scope = "" if selected_plan_scope_label == "Вся сеть" else selected_plan_scope_label
+                existing_plan_record = get_plan_record(monthly_plans, selected_plan_month, selected_plan_scope)
+                current_month_fact_row = plan_monthly_summary.loc[plan_monthly_summary["month_label"] == selected_plan_month]
+                fact_hint = current_month_fact_row.iloc[-1].to_dict() if not current_month_fact_row.empty else {}
+
+                def _plan_prefill(field_name: str) -> str:
+                    if not existing_plan_record:
+                        return ""
+                    value = existing_plan_record.get(field_name)
+                    return "" if is_missing(value) else str(int(value) if float(value).is_integer() else round(float(value), 2))
+
+                with plan_form_right:
+                    revenue_plan_text = st.text_input(
+                        "План по выручке",
+                        value=_plan_prefill("revenue_plan"),
+                        key=f"plan_revenue_{selected_plan_scope}_{selected_plan_month}",
+                        placeholder="Например: 1500000",
+                    )
+                    margin_plan_text = st.text_input(
+                        "План по марже",
+                        value=_plan_prefill("margin_plan"),
+                        key=f"plan_margin_{selected_plan_scope}_{selected_plan_month}",
+                        placeholder="Например: 320000",
+                    )
+                    quantity_plan_text = st.text_input(
+                        "План по количеству",
+                        value=_plan_prefill("quantity_plan"),
+                        key=f"plan_quantity_{selected_plan_scope}_{selected_plan_month}",
+                        placeholder="Например: 1800",
+                    )
+
+                if fact_hint:
+                    st.caption(
+                        f"Факт за {selected_plan_month} в текущем контуре: "
+                        f"выручка {format_money(fact_hint.get('revenue'))}, "
+                        f"маржа {format_money(fact_hint.get('margin'))}, "
+                        f"количество {format_number(fact_hint.get('quantity'))}."
+                    )
+
+                save_plan_col, delete_plan_col = st.columns([1, 1], gap="large")
+                with save_plan_col:
+                    if st.button("Сохранить план", key="plan_save_button", use_container_width=True):
+                        try:
+                            revenue_plan_value = parse_plan_input(revenue_plan_text)
+                            margin_plan_value = parse_plan_input(margin_plan_text)
+                            quantity_plan_value = parse_plan_input(quantity_plan_text)
+                            record = upsert_monthly_plan(
+                                plan_month=normalize_plan_month(f"{selected_plan_month}-01"),
+                                salon=selected_plan_scope,
+                                revenue_plan=revenue_plan_value,
+                                margin_plan=margin_plan_value,
+                                quantity_plan=quantity_plan_value,
+                                updated_by=current_user["username"],
+                            )
+                            audit_event(
+                                action="plan.upsert",
+                                user_id=current_user["username"],
+                                details={
+                                    "scope": selected_plan_scope,
+                                    "scope_label": selected_plan_scope_label,
+                                    "plan_month": selected_plan_month,
+                                    "revenue_plan": record.get("revenue_plan"),
+                                    "margin_plan": record.get("margin_plan"),
+                                    "quantity_plan": record.get("quantity_plan"),
+                                },
+                            )
+                            st.session_state["plan_flash_message"] = f"План для «{selected_plan_scope_label}» на {selected_plan_month} сохранён."
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+                with delete_plan_col:
+                    if st.button(
+                        "Удалить план",
+                        key="plan_delete_button",
+                        use_container_width=True,
+                        type="secondary",
+                        disabled=existing_plan_record is None,
+                    ):
+                        deleted = delete_monthly_plan(
+                            plan_month=normalize_plan_month(f"{selected_plan_month}-01"),
+                            salon=selected_plan_scope,
+                        )
+                        if deleted:
+                            audit_event(
+                                action="plan.delete",
+                                user_id=current_user["username"],
+                                details={
+                                    "scope": selected_plan_scope,
+                                    "scope_label": selected_plan_scope_label,
+                                    "plan_month": selected_plan_month,
+                                },
+                            )
+                            st.session_state["plan_flash_message"] = f"План для «{selected_plan_scope_label}» на {selected_plan_month} удалён."
+                            st.rerun()
+                        st.warning("Для выбранного месяца и контура сохранённого плана не было.")
+
+        plan_flash_message = st.session_state.pop("plan_flash_message", "")
+        if plan_flash_message:
+            st.success(plan_flash_message)
+
+        with st.container(border=True):
+            render_panel_header(
+                "Таблица план / факт по месяцам",
+                "Полная управленческая таблица по месяцам: план, факт, отклонение и процент выполнения. Подходит для ежемесячных разборов и выгрузки.",
+            )
+            plan_table = plan_fact_summary[
+                [
+                    "month_label",
+                    "revenue_plan",
+                    "revenue",
+                    "revenue_gap",
+                    "revenue_execution_pct",
+                    "margin_plan",
+                    "margin",
+                    "margin_gap",
+                    "margin_execution_pct",
+                    "quantity_plan",
+                    "quantity",
+                    "quantity_gap",
+                    "quantity_execution_pct",
+                ]
+            ].copy()
+            st.dataframe(
+                format_display_frame(
+                    plan_table,
+                    rename_map={
+                        "month_label": "Месяц",
+                        "revenue_plan": "План выручки",
+                        "revenue": "Факт выручки",
+                        "revenue_gap": "Отклонение выручки",
+                        "revenue_execution_pct": "Выполнение выручки, %",
+                        "margin_plan": "План маржи",
+                        "margin": "Факт маржи",
+                        "margin_gap": "Отклонение маржи",
+                        "margin_execution_pct": "Выполнение маржи, %",
+                        "quantity_plan": "План количества",
+                        "quantity": "Факт количества",
+                        "quantity_gap": "Отклонение количества",
+                        "quantity_execution_pct": "Выполнение количества, %",
+                    },
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=480,
+            )
+            st.download_button(
+                "Скачать план / факт",
+                data=to_csv_bytes(plan_table.rename(columns={"month_label": "month"})),
+                file_name="plan_fact_summary.csv",
+                mime="text/csv",
+            )
+
+        if is_network_role(current_user["role"]) and len(plan_scope_salons) > 1 and plan_month_options:
+            selected_plan_month_label = st.selectbox(
+                "Месяц для контроля выполнения по салонам",
+                options=plan_month_options,
+                index=max(len(plan_month_options) - 1, 0),
+                key="plan_fact_salon_month",
+            )
+            salon_plan_records = build_scope_plan_records(monthly_plans, selected_plan_month_label, plan_scope_salons)
+            salon_plan_fact = build_plan_fact_by_salon(plan_fact_source_data, salon_plan_records, selected_plan_month_label)
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Выполнение плана по салонам",
+                    "Показывает, какие точки закрывают свой план, а какие уже отстают в выбранном месяце. Это рабочая таблица для еженедельного контроля сети.",
+                )
+                if salon_plan_records.empty:
+                    st.info("Для выбранного месяца пока нет салонных планов. Сначала задайте план хотя бы для одного салона.")
+                else:
+                    st.dataframe(
+                        format_display_frame(
+                            salon_plan_fact,
+                            rename_map={
+                                "scope_name": "Салон",
+                                "revenue_plan": "План выручки",
+                                "revenue": "Факт выручки",
+                                "revenue_gap": "Отклонение выручки",
+                                "revenue_execution_pct": "Выполнение выручки, %",
+                                "margin_plan": "План маржи",
+                                "margin": "Факт маржи",
+                                "margin_gap": "Отклонение маржи",
+                                "margin_execution_pct": "Выполнение маржи, %",
+                                "quantity_plan": "План количества",
+                                "quantity": "Факт количества",
+                                "quantity_gap": "Отклонение количества",
+                                "quantity_execution_pct": "Выполнение количества, %",
+                            },
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=420,
+                    )
 
 with tab_advanced:
     render_section_intro(

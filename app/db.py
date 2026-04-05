@@ -89,6 +89,25 @@ CREATE TABLE IF NOT EXISTS service_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS monthly_plans (
+    plan_id BIGSERIAL PRIMARY KEY,
+    plan_month DATE NOT NULL,
+    salon TEXT NOT NULL DEFAULT '',
+    revenue_plan DOUBLE PRECISION,
+    margin_plan DOUBLE PRECISION,
+    quantity_plan DOUBLE PRECISION,
+    updated_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (plan_month, salon)
+);
+
+CREATE INDEX IF NOT EXISTS monthly_plans_month_idx
+    ON monthly_plans (plan_month);
+
+CREATE INDEX IF NOT EXISTS monthly_plans_salon_idx
+    ON monthly_plans (salon);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id BIGSERIAL PRIMARY KEY,
     user_id TEXT NOT NULL,

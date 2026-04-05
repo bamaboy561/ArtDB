@@ -668,6 +668,78 @@ def build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return monthly
 
 
+def build_plan_fact_summary(monthly_summary: pd.DataFrame, plan_summary: pd.DataFrame) -> pd.DataFrame:
+    if monthly_summary.empty and plan_summary.empty:
+        return pd.DataFrame()
+
+    fact = monthly_summary.copy()
+    plan = plan_summary.copy()
+
+    if not fact.empty:
+        fact["month"] = pd.to_datetime(fact["month"], errors="coerce").dt.normalize()
+    if not plan.empty:
+        plan["month"] = pd.to_datetime(plan["month"], errors="coerce").dt.normalize()
+
+    merged = fact.merge(
+        plan,
+        on=["month", "month_label"],
+        how="outer",
+        suffixes=("_fact", "_plan_source"),
+    ).sort_values("month").reset_index(drop=True)
+
+    for metric in ("revenue", "margin", "quantity"):
+        fact_column = metric
+        plan_column = f"{metric}_plan"
+        if fact_column not in merged:
+            merged[fact_column] = 0.0
+        if plan_column not in merged:
+            merged[plan_column] = pd.NA
+
+        merged[f"{metric}_gap"] = merged[fact_column] - merged[plan_column]
+        merged[f"{metric}_execution_pct"] = (
+            merged[fact_column] / merged[plan_column].replace(0, pd.NA) * 100
+        )
+
+    merged["has_plan"] = merged[["revenue_plan", "margin_plan", "quantity_plan"]].notna().any(axis=1)
+    return merged
+
+
+def build_plan_fact_by_salon(frame: pd.DataFrame, plan_frame: pd.DataFrame, month_label: str) -> pd.DataFrame:
+    if frame.empty or "salon" not in frame.columns:
+        return pd.DataFrame()
+
+    month_data = frame[frame["month_label"] == month_label].copy()
+    if month_data.empty:
+        return pd.DataFrame()
+
+    fact = (
+        month_data.groupby("salon", as_index=False)
+        .agg(
+            revenue=("revenue", "sum"),
+            margin=("margin", "sum"),
+            quantity=("quantity", "sum"),
+        )
+        .rename(columns={"salon": "scope_name"})
+    )
+
+    plan = plan_frame.copy()
+    if plan.empty:
+        plan = pd.DataFrame(columns=["scope_name", "revenue_plan", "margin_plan", "quantity_plan"])
+    else:
+        plan = plan.rename(columns={"salon": "scope_name"})
+
+    merged = fact.merge(plan, on="scope_name", how="left")
+
+    for metric in ("revenue", "margin", "quantity"):
+        plan_column = f"{metric}_plan"
+        merged[f"{metric}_gap"] = merged[metric] - merged[plan_column]
+        merged[f"{metric}_execution_pct"] = (
+            merged[metric] / merged[plan_column].replace(0, pd.NA) * 100
+        )
+
+    return merged.sort_values(["revenue_execution_pct", "revenue"], ascending=[False, False], na_position="last").reset_index(drop=True)
+
+
 def build_month_comparison(
     frame: pd.DataFrame,
     left_month: str,
