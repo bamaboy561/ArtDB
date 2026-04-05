@@ -1,1 +1,0 @@
-"""ArtDB application package."""
