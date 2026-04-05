@@ -2778,6 +2778,35 @@ def render_insight_panel(insights: list[tuple[str, str]]) -> None:
             )
 
 
+def build_text_summary(
+    overview: dict[str, float],
+    monthly_summary: pd.DataFrame,
+    returns_overview: dict[str, float],
+    plan_fact_summary: pd.DataFrame,
+    latest_revenue_delta: float,
+) -> list[str]:
+    lines: list[str] = []
+    if len(monthly_summary) >= 1:
+        latest = monthly_summary.iloc[-1]
+        line = f"\U0001f4ca {latest['month_label']}: выручка {format_money(overview['total_revenue'])}"
+        if not is_missing(latest_revenue_delta):
+            sign = "\u2191" if latest_revenue_delta >= 0 else "\u2193"
+            line += f" ({sign} {abs(float(latest_revenue_delta)):.1f}% к пред. месяцу)"
+        lines.append(line)
+    if not is_missing(overview.get("margin_pct")):
+        lines.append(f"\U0001f4b0 Маржа: {format_percent(overview['margin_pct'])}")
+    if not plan_fact_summary.empty:
+        lp = plan_fact_summary.iloc[-1]
+        rev_exec = lp.get("revenue_execution_pct")
+        if rev_exec is not None and not is_missing(rev_exec):
+            pct = float(rev_exec)
+            ico = "\u2705" if pct >= 100 else "\u26a0\ufe0f" if pct >= 80 else "\U0001f534"
+            lines.append(f"{ico} План: {format_percent(pct)}")
+    if returns_overview["return_lines"] > 0:
+        lines.append(f"\u21a9\ufe0f Возвраты: {format_percent(returns_overview['return_share_pct'])}")
+    return lines
+
+
 def build_movement_chart(comparison: pd.DataFrame, left_month: str, right_month: str) -> go.Figure:
     movement = comparison.copy()
     movement["abs_revenue_delta"] = movement["revenue_delta"].abs()
@@ -3192,6 +3221,14 @@ a_revenue_share = abc_data.loc[abc_data["abc_class"] == "A", "share_pct"].sum() 
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 
+_digest_lines = build_text_summary(overview, monthly_summary, returns_overview, plan_fact_summary, latest_revenue_delta)
+if _digest_lines:
+    render_html_block(
+        '<div class="section-intro"><div class="section-intro-body" style="font-size:1.05rem;letter-spacing:.01em">'
+        + " &nbsp;\u00b7&nbsp; ".join(escape(l) for l in _digest_lines)
+        + "</div></div>"
+    )
+
 _rev_delta_str = f"{format_change_percent(latest_revenue_delta)} к пред. месяцу" if not is_missing(latest_revenue_delta) else ""
 _mar_delta_str = f"{format_change_percent(latest_margin_delta)} к пред. месяцу" if not is_missing(latest_margin_delta) else ""
 render_metric_cards(
@@ -3208,32 +3245,16 @@ render_metric_cards(
         },
         {"label": "Маржа %", "value": format_percent(overview["margin_pct"]), "delta": ""},
         {"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""},
-        {
-            "label": "К прошлому месяцу",
-            "value": format_percent(latest_revenue_delta) if not is_missing(latest_revenue_delta) else f"{len(monthly_summary)} мес. в данных",
-            "delta": (
-                f"{latest_margin_delta:+.1f}% по марже".replace(".", ",")
-                if not is_missing(latest_margin_delta)
-                else ("Загрузите ещё месяц для сравнения" if len(monthly_summary) < 2 else "")
-            ),
-        },
-        {"label": "Доля класса A", "value": format_percent(a_revenue_share), "delta": ""},
     ]
 )
 
-tab_labels = ["Обзор", "ABC-анализ", "Маржинальность", "Сравнение месяцев", "План / факт", "Расширенный анализ", "Источники"]
+tab_labels = ["Обзор", "Аналитика", "План / факт", "Данные"]
 if can_manage_access(current_user):
     tab_labels.append("Управление")
-
 tabs = st.tabs(tab_labels)
-tab_dashboard, tab_abc, tab_margin, tab_months, tab_plan, tab_advanced, tab_data = tabs[:7]
-tab_access = tabs[7] if can_manage_access(current_user) else None
+tab_dashboard, tab_analytics, tab_plan, tab_data = tabs[:4]
+tab_access = tabs[4] if can_manage_access(current_user) else None
 
-with tab_dashboard:
-    render_section_intro(
-        "Обзор бизнеса",
-        "Главный рабочий экран по текущему срезу продаж. Здесь собраны самые важные зоны для руководителя: динамика, структура бизнеса, ключевые риски по марже и товары-лидеры.",
-    )
 insights = build_insights(
     overview,
     monthly_summary,
@@ -3254,103 +3275,18 @@ if returns_overview["return_lines"] > 0:
             f"доля от валовой выручки {format_percent(returns_overview['return_share_pct'])}.",
         )
     )
-    insights = insights[:6]
-    latest_month = monthly_summary.iloc[-1]
-    top_products = product_summary.head(15)
-    margin_risk_table = product_summary[product_summary["margin_pct"].notna()].sort_values("margin_pct", ascending=True).head(12)
-    period_text = f"{data['date'].min().strftime('%d.%m.%Y')} - {data['date'].max().strftime('%d.%m.%Y')}"
-    salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
-    context_value = current_user.get("salon") or ("Вся сеть" if is_network_role(current_user["role"]) else "Локальный контур")
+insights = insights[:6]
+latest_month = monthly_summary.iloc[-1]
+top_products = product_summary.head(7)
 
-    render_section_marker(
-        "Контекст периода",
-        "Что происходит в текущем срезе",
-        "Сначала считайте рамку периода и масштаб выборки, потом переходите к динамике, структуре сети и товарным решениям. Такой порядок помогает не потерять контекст, прежде чем смотреть детали.",
-    )
-    render_workspace_band(
-        [
-            {"label": "Период", "value": period_text, "meta": "Фактический диапазон данных после фильтров"},
-            {"label": "Контур", "value": context_value, "meta": source_label},
-            {"label": "Строк продаж", "value": format_number(overview["line_count"]), "meta": "Сколько операций участвует в анализе"},
-            {"label": "Ассортимент", "value": format_number(overview["product_count"]), "meta": "Уникальные товары в текущем срезе"},
-            {"label": "Салоны", "value": format_number(salon_count), "meta": "Сколько точек вошло в отчёт"},
-            {"label": "Последний месяц", "value": str(latest_month["month_label"]), "meta": "Текущая опорная точка для контроля"},
-        ]
-    )
-    top_category = category_summary.iloc[0] if not category_summary.empty else None
-    dashboard_risk_threshold = 15.0
-    dashboard_risk_count = (
-        int((product_summary["margin_pct"].fillna(9999) < dashboard_risk_threshold).sum())
-        if "margin_pct" in product_summary.columns
-        else 0
-    )
-    trend_value = (
-        format_percent(latest_revenue_delta)
-        if not is_missing(latest_revenue_delta)
-        else f"{len(monthly_summary)} мес. в выборке"
-    )
-    trend_body = (
-        f"Последний месяц {latest_month['month_label']} закрылся с изменением выручки к предыдущему периоду. "
-        f"С этого блока удобно начинать чтение дашборда, чтобы сразу понять, ускоряется сеть или замедляется."
-        if not is_missing(latest_revenue_delta)
-        else "В выборке пока только один месяц. Дашборд уже показывает структуру и товары, но для оценки динамики нужен ещё минимум один период."
-    )
-
-    render_journey_cards(
-        [
-            {
-                "title": "Сначала прочитайте контекст",
-                "body": "Период, контур, объём строк и число салонов задают рамку анализа. Если рамка неверная, все последующие выводы по графикам тоже будут неточными.",
-                "hint": "Проверяйте этот блок первым после смены фильтров.",
-            },
-            {
-                "title": "Потом найдите источник результата",
-                "body": "Графики по динамике, салонам, категориям и менеджерам отвечают на вопрос, где именно формируется выручка и маржа. Это зона для управленческих решений по сети.",
-                "hint": "Ищите не просто лидеров, а концентрацию результата.",
-            },
-            {
-                "title": "В конце смотрите риск и ассортимент",
-                "body": "ABC-срез, движение между месяцами и маржинальные риски помогают решить, какие товары держат бизнес, какие ускоряются и какие уже съедают прибыль.",
-                "hint": "Эта часть нужна для конкретных действий по товарной матрице.",
-            },
-        ]
-    )
-    render_spotlight_cards(
-        [
-            {
-                "label": "Темп периода",
-                "value": trend_value,
-                "body": trend_body,
-                "tone": "accent" if not is_missing(latest_revenue_delta) and latest_revenue_delta >= 0 else "warm",
-            },
-            {
-                "label": "Ядро выручки",
-                "value": format_percent(a_revenue_share) if not is_missing(a_revenue_share) else "н/д",
-                "body": (
-                    f"Класс A формирует основную часть оборота. Лидирующая категория сейчас: {top_category['group_name']}."
-                    if top_category is not None
-                    else "Когда появятся категории, здесь будет видно, насколько выручка держится на ядре ассортимента."
-                ),
-                "tone": "neutral",
-            },
-            {
-                "label": "Маржинальный риск",
-                "value": format_number(dashboard_risk_count),
-                "body": (
-                    f"Товаров ниже {int(dashboard_risk_threshold)}% по марже в текущем срезе. Этот индикатор нужен, чтобы не потерять прибыль за красивой выручкой."
-                ),
-                "tone": "warm" if dashboard_risk_count else "accent",
-            },
-        ]
-    )
-
+with tab_dashboard:
     left_col, right_col = st.columns([2.2, 0.95], gap="large")
 
     with left_col:
         with st.container(border=True):
             render_panel_header(
                 "Динамика продаж",
-                "Основной график периода: показывает выручку и маржу по месяцам в одном поле зрения. Это первая точка для оценки тренда и общего направления бизнеса.",
+                "Выручка и маржа по месяцам.",
             )
             trend_chart = go.Figure()
             trend_chart.add_trace(
@@ -3391,23 +3327,19 @@ if returns_overview["return_lines"] > 0:
                             marker=dict(symbol="diamond", size=8),
                         )
                     )
-            trend_chart.update_layout(
-                legend_title="Показатель",
-                xaxis_title="Месяц",
-                yaxis_title="Сумма",
-            )
-            polish_figure(trend_chart, height=540)
+            trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
+            polish_figure(trend_chart, height=380)
             st.plotly_chart(trend_chart, use_container_width=True)
             if not forecast_data.empty:
-                st.caption(f"Прогноз на {len(forecast_data)} мес. рассчитан по линейному тренду исторических данных.")
+                st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
 
     with right_col:
         render_insight_panel(insights)
 
     with st.container(border=True):
         render_panel_header(
-            f"Итог месяца {latest_month['month_label']}",
-            "Горизонтальная сводка по самому свежему периоду. Этот блок нужен для быстрого чтения финала месяца: сколько дали выручка, маржа и товарный объём без лишнего вертикального шума.",
+            f"Итог: {latest_month['month_label']}",
+            "Ключевые показатели последнего месяца.",
         )
         render_snapshot_strip(
             [
@@ -3415,84 +3347,44 @@ if returns_overview["return_lines"] > 0:
                     "label": "Выручка",
                     "value": format_money(latest_month["revenue"]),
                     "delta": percent_or_none(latest_revenue_delta) or "",
-                    "hint": "Нет сравнения с прошлым месяцем",
+                    "hint": "К предыдущему месяцу",
                 },
                 {
                     "label": "Маржа",
                     "value": format_money(latest_month["margin"]),
                     "delta": percent_or_none(latest_margin_delta) or "",
-                    "hint": "Нет сравнения с прошлым месяцем",
+                    "hint": "К предыдущему месяцу",
                 },
                 {
                     "label": "Количество",
                     "value": format_number(latest_month["quantity"]),
-                    "hint": "Товарный объём за последний месяц",
+                    "hint": "Объём за месяц",
                 },
             ]
         )
 
-    render_section_marker(
-        "Структура бизнеса",
-        "Где сосредоточен результат",
-        "Эта часть отвечает на вопрос, какие салоны, категории и менеджеры реально держат выручку и маржу. Она нужна для управленческого распределения внимания, а не только для красивых графиков.",
-    )
-
     if not salon_summary.empty and len(salon_summary) > 1:
         with st.container(border=True):
-            render_panel_header(
-                "Салоны сети",
-                "Сравнение салонов по выручке и марже за выбранный период. Блок помогает быстро увидеть сильные точки сети и зоны, где результат проседает.",
-            )
+            render_panel_header("Салоны сети", "Выручка и маржа по точкам.")
             salon_chart = go.Figure()
             salon_chart.add_trace(
-                go.Bar(
-                    x=salon_summary["group_name"],
-                    y=salon_summary["revenue"],
-                    name="Выручка",
-                    marker_color="#0F766E",
-                )
+                go.Bar(x=salon_summary["group_name"], y=salon_summary["revenue"], name="Выручка", marker_color="#0F766E")
             )
             salon_chart.add_trace(
-                go.Scatter(
-                    x=salon_summary["group_name"],
-                    y=salon_summary["margin"],
-                    name="Маржа",
-                    mode="lines+markers",
-                    line=dict(color="#B45309", width=3),
-                )
+                go.Scatter(x=salon_summary["group_name"], y=salon_summary["margin"], name="Маржа", mode="lines+markers", line=dict(color="#B45309", width=3))
             )
             salon_chart.update_layout(xaxis_tickangle=-20)
-            polish_figure(salon_chart, height=480)
+            polish_figure(salon_chart, height=360)
             st.plotly_chart(salon_chart, use_container_width=True)
 
     if returns_overview["return_lines"] > 0:
         with st.container(border=True):
-            render_panel_header(
-                "Возвраты в текущем контуре",
-                "Короткая управленческая сводка по возвратам. Она помогает сразу понять, насколько возвраты заметны в текущем периоде и нужно ли углубляться в детальный разбор по товарам и салонам.",
-            )
+            render_panel_header("Возвраты", "Сводка по возвратам в текущем срезе.")
             render_snapshot_strip(
                 [
-                    {
-                        "label": "Сумма возвратов",
-                        "value": format_money(returns_overview["return_revenue"]),
-                        "hint": "Абсолютный объём возвратов по выручке в текущем срезе",
-                    },
-                    {
-                        "label": "Доля возвратов",
-                        "value": format_percent(returns_overview["return_share_pct"]),
-                        "hint": "Часть возвратов от всей положительной выручки",
-                    },
-                    {
-                        "label": "Возвратных строк",
-                        "value": format_number(returns_overview["return_lines"]),
-                        "hint": "Сколько операций возврата попало в анализ",
-                    },
-                    {
-                        "label": "SKU с возвратами",
-                        "value": format_number(returns_overview["return_product_count"]),
-                        "hint": "Сколько товаров дали возвраты в текущем периоде",
-                    },
+                    {"label": "Сумма возвратов", "value": format_money(returns_overview["return_revenue"]), "hint": ""},
+                    {"label": "Доля возвратов", "value": format_percent(returns_overview["return_share_pct"]), "hint": "От положительной выручки"},
+                    {"label": "Строк", "value": format_number(returns_overview["return_lines"]), "hint": ""},
                 ]
             )
 
@@ -3500,199 +3392,49 @@ if returns_overview["return_lines"] > 0:
 
     with second_left:
         with st.container(border=True):
-            render_panel_header(
-                "Категории",
-                "Показывает, какие товарные группы сильнее всего влияют на выручку и где маржа выглядит устойчивее. Подходит для быстрой оценки структуры ассортимента.",
-            )
+            render_panel_header("Категории", "Вклад категорий в выручку.")
             category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
             category_chart = px.bar(
-                category_chart_data,
-                x="revenue",
-                y="group_name",
-                orientation="h",
-                color="margin_pct",
-                color_continuous_scale=["#DBEAFE", "#60A5FA", "#0F766E"],
+                category_chart_data, x="revenue", y="group_name", orientation="h",
+                color="margin_pct", color_continuous_scale=["#DBEAFE", "#60A5FA", "#0F766E"],
                 labels={"group_name": "Категория", "revenue": "Выручка", "margin_pct": "Маржа %"},
             )
             category_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
-            polish_figure(category_chart, height=500)
+            polish_figure(category_chart, height=360)
             st.plotly_chart(category_chart, use_container_width=True)
 
     with second_right:
         with st.container(border=True):
-            render_panel_header(
-                "Менеджеры",
-                "Сравнение результатов по команде продаж. Блок помогает быстро увидеть, кто ведет основной объём, а где нужна дополнительная управленческая поддержка.",
-            )
+            render_panel_header("Менеджеры", "Результаты по команде продаж.")
             manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
             manager_chart = px.bar(
-                manager_chart_data,
-                x="revenue",
-                y="group_name",
-                orientation="h",
-                color="margin_pct",
-                color_continuous_scale=["#E0F2FE", "#38BDF8", "#0F766E"],
+                manager_chart_data, x="revenue", y="group_name", orientation="h",
+                color="margin_pct", color_continuous_scale=["#E0F2FE", "#38BDF8", "#0F766E"],
                 labels={"group_name": "Менеджер", "revenue": "Выручка", "margin_pct": "Маржа %"},
             )
             manager_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
-            polish_figure(manager_chart, height=500)
+            polish_figure(manager_chart, height=360)
             st.plotly_chart(manager_chart, use_container_width=True)
 
-    render_section_marker(
-        "Товары и решения",
-        "Что требует внимания сегодня",
-        "Здесь начинается практическая часть дашборда: ядро ассортимента, движение товаров между периодами, слабые позиции по марже и лидеры по выручке. Это зона ежедневных управленческих действий.",
-    )
-
-    abc_summary = (
-        abc_data.groupby("abc_class", as_index=False)
-        .agg(items=("group_name", "count"), share_pct=("share_pct", "sum"), revenue=("abc_basis", "sum"))
-        .sort_values("abc_class")
-    )
-    top_a = abc_data[abc_data["abc_class"] == "A"].head(7)
-    movement_focus = pd.DataFrame()
-    if not comparison.empty and default_left_month and default_right_month:
-        movement_focus = comparison.copy()
-        movement_focus["abs_revenue_delta"] = movement_focus["revenue_delta"].abs()
-        movement_focus = movement_focus.nlargest(7, "abs_revenue_delta")
-
-    balanced_left, balanced_right = st.columns(2, gap="large")
-
-    with balanced_left:
-        with st.container(border=True):
-            render_panel_header(
-                "ABC-срез",
-                "Равная по весу панель для ядра ассортимента. Показывает, какую часть результата удерживает класс A и какие позиции сейчас являются опорой продаж.",
-            )
-            abc_pie = px.pie(
-                abc_summary,
-                names="abc_class",
-                values="revenue",
-                color="abc_class",
-                color_discrete_map={"A": "#0F766E", "B": "#D97706", "C": "#64748B"},
-            )
-            polish_figure(abc_pie, height=360)
-            st.plotly_chart(abc_pie, use_container_width=True)
-            st.caption("Ключевые позиции класса A в текущем срезе.")
-            st.dataframe(
-                to_display_table(
-                    top_a,
-                    {
-                        "group_name": "Товар",
-                        "abc_basis": "База ABC",
-                        "share_pct": "Доля, %",
-                        "cum_share_pct": "Накопительная доля, %",
-                    },
-                ),
-                use_container_width=True,
-                hide_index=True,
-                height=260,
-            )
-
-    with balanced_right:
-        with st.container(border=True):
-            render_panel_header(
-                "Движение товаров",
-                "Парная панель к ABC-срезу. Показывает, какие позиции выросли и просели между двумя последними месяцами, чтобы быстро разобрать причину изменения результата.",
-            )
-            if comparison.empty or not default_left_month or not default_right_month:
-                st.info("Для этого блока нужны минимум два месяца в данных.")
-            else:
-                movement_chart = build_movement_chart(comparison, default_left_month, default_right_month)
-                polish_figure(movement_chart, height=360)
-                st.plotly_chart(movement_chart, use_container_width=True)
-                st.caption(f"Товары с самым заметным движением: {default_right_month} к {default_left_month}.")
-                st.dataframe(
-                    to_display_table(
-                        movement_focus,
-                        {
-                            "group_name": "Товар",
-                            f"revenue_{default_left_month}": f"Выручка {default_left_month}",
-                            f"revenue_{default_right_month}": f"Выручка {default_right_month}",
-                            "revenue_delta": "Изменение выручки",
-                            "revenue_delta_pct": "Изменение, %",
-                        },
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=260,
-                )
-
-    risk_left, risk_right = st.columns(2, gap="large")
-
-    with risk_left:
-        with st.container(border=True):
-            render_panel_header(
-                "Зоны риска по марже",
-                "Крупный визуальный блок для слабых позиций. По нему легче всего увидеть товары, где маржа уже стала управленческой проблемой.",
-            )
-            if margin_risk_table.empty:
-                st.info("Недостаточно данных по марже для построения зоны риска.")
-            else:
-                margin_risk_chart = px.bar(
-                    margin_risk_table.sort_values("margin_pct", ascending=True),
-                    x="margin_pct",
-                    y="group_name",
-                    orientation="h",
-                    color="margin_pct",
-                    color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
-                    labels={"group_name": "Товар", "margin_pct": "Маржа, %"},
-                    title="",
-                )
-                margin_risk_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
-                polish_figure(margin_risk_chart, height=540)
-                st.plotly_chart(margin_risk_chart, use_container_width=True)
-
-    with risk_right:
-        with st.container(border=True):
-            render_panel_header(
-                "Таблица риска",
-                "Точная расшифровка проблемных товаров по выручке, марже и количеству. Подходит для быстрой постановки задач по цене, скидке или закупке.",
-            )
-            if margin_risk_table.empty:
-                st.info("Недостаточно данных по марже для построения таблицы риска.")
-            else:
-                st.dataframe(
-                    to_display_table(
-                        margin_risk_table,
-                        {
-                            "group_name": "Товар",
-                            "revenue": "Выручка",
-                            "margin": "Маржа",
-                            "quantity": "Количество",
-                            "margin_pct": "Маржа, %",
-                        },
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=540,
-                )
-
     with st.container(border=True):
-        render_panel_header(
-            "Топ товаров",
-            "Главная таблица лидеров по выручке с количеством и маржой. Это удобный список для ежедневного контроля и быстрой расшифровки сильных позиций.",
-        )
+        render_panel_header("Топ товаров", "Лидеры по выручке.")
         st.dataframe(
             to_display_table(
                 top_products,
-                {
-                    "group_name": "Товар",
-                    "revenue": "Выручка",
-                    "margin": "Маржа",
-                    "quantity": "Количество",
-                    "margin_pct": "Маржа, %",
-                },
+                {"group_name": "Товар", "revenue": "Выручка", "margin": "Маржа", "quantity": "Количество", "margin_pct": "Маржа, %"},
             ),
             use_container_width=True,
             hide_index=True,
-            height=560,
+            height=300,
         )
+
+with tab_analytics:
+    tab_abc, tab_margin, tab_months, tab_adv = st.tabs(["ABC-анализ", "Маржинальность", "Сравнение месяцев", "Расширенный"])
 
 with tab_abc:
     render_section_intro(
         "ABC-анализ",
-        "Показывает, какие товары формируют основную долю выручки, маржи или объема продаж. Эта вкладка помогает быстро отделить ключевой ассортимент от позиций, которые дают мало результата.",
+        "Показывает, какие товары формируют основную долю выручки, маржи или объема продаж.",
     )
     abc_metric_options = {
         "revenue": "Выручка",
@@ -3848,7 +3590,7 @@ with tab_abc:
 with tab_margin:
     render_section_intro(
         "Маржинальность",
-        "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже. Вкладка нужна, чтобы отделить прибыльный ассортимент от позиций с низкой отдачей.",
+        "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже.",
     )
     if data["margin"].isna().all():
         st.info("Для маржинальности не хватает колонок `Себестоимость` или `Маржа` в исходном файле.")
@@ -3990,7 +3732,7 @@ with tab_margin:
 with tab_months:
     render_section_intro(
         "Сравнение месяцев",
-        "Показывает, как меняются продажи, маржа и количество между двумя периодами. Вкладка помогает увидеть рост, просадку и товары, которые сильнее всего повлияли на результат.",
+        "Показывает, как меняются продажи, маржа и количество между двумя периодами.",
     )
     render_section_marker(
         "Сценарий сравнения",
@@ -4175,7 +3917,7 @@ with tab_months:
 with tab_plan:
     render_section_intro(
         "План / факт",
-        "Сравнивает помесячный план с фактическими продажами по выручке, марже и количеству. Вкладка нужна, чтобы быстро понять, где сеть или отдельный салон недовыполняют цель и в каком месяце отклонение стало критичным.",
+        "Сравнивает помесячный план с фактическими продажами по выручке, марже и количеству.",
     )
     render_section_marker(
         "Управление целями",
@@ -4513,10 +4255,10 @@ with tab_plan:
                         height=420,
                     )
 
-with tab_advanced:
+with tab_adv:
     render_section_intro(
         "Расширенный анализ",
-        "Дополнительные блоки для более глубокого разбора продаж: сегментация по активности, поиск ритма продаж по дням и простой прогноз по будущим месяцам.",
+        "Дополнительные блоки для более глубокого разбора продаж: сегментация по активности, поиск ритма продаж по дням и простой прогноз.",
     )
     adv_tabs = st.tabs(["RFM-анализ", "Тепловая карта", "Прогноз"])
 
