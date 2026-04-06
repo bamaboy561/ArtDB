@@ -1032,6 +1032,56 @@ def can_manage_plans(current_user: dict[str, str]) -> bool:
     return current_user["role"] in {"admin", "manager"}
 
 
+MARGIN_HIDDEN_COLUMNS = {
+    "cost",
+    "margin",
+    "margin_pct",
+    "margin_change_pct",
+    "return_margin",
+    "margin_plan",
+    "margin_gap",
+    "margin_execution_pct",
+    "unit_cost",
+}
+MARGIN_HIDDEN_MAPPING_FIELDS = {"cost", "margin", "unit_cost"}
+
+
+def can_view_margin(current_user: dict[str, str]) -> bool:
+    return current_user["role"] in {"admin", "manager"}
+
+
+def margin_safe_columns(columns: list[str], current_user: dict[str, str]) -> list[str]:
+    if can_view_margin(current_user):
+        return list(columns)
+    return [column for column in columns if column not in MARGIN_HIDDEN_COLUMNS]
+
+
+def margin_safe_rename_map(
+    rename_map: dict[str, str] | None,
+    current_user: dict[str, str],
+) -> dict[str, str] | None:
+    if rename_map is None or can_view_margin(current_user):
+        return rename_map
+    return {key: value for key, value in rename_map.items() if key not in MARGIN_HIDDEN_COLUMNS}
+
+
+def margin_safe_frame(frame: pd.DataFrame, current_user: dict[str, str]) -> pd.DataFrame:
+    if can_view_margin(current_user):
+        return frame.copy()
+    visible_columns = [column for column in frame.columns if column not in MARGIN_HIDDEN_COLUMNS]
+    return frame[visible_columns].copy()
+
+
+def margin_safe_mapping(selected_mapping: dict[str, str | None], current_user: dict[str, str]) -> dict[str, str | None]:
+    if can_view_margin(current_user):
+        return dict(selected_mapping)
+    return {
+        key: value
+        for key, value in selected_mapping.items()
+        if key not in MARGIN_HIDDEN_MAPPING_FIELDS
+    }
+
+
 def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
@@ -2038,6 +2088,22 @@ def to_display_table(frame: pd.DataFrame, rename_map: dict[str, str]) -> pd.Data
     return format_display_frame(frame, rename_map, columns=visible_columns)
 
 
+def format_display_frame_for_role(
+    frame: pd.DataFrame,
+    current_user: dict[str, str],
+    rename_map: dict[str, str] | None = None,
+    *,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    safe_rename_map = margin_safe_rename_map(rename_map, current_user)
+    safe_columns = margin_safe_columns(columns, current_user) if columns is not None else None
+    return format_display_frame(
+        margin_safe_frame(frame, current_user),
+        safe_rename_map,
+        columns=safe_columns,
+    )
+
+
 def render_access_tab(registered_salons: list[str]) -> None:
     users = pd.DataFrame(list_users())
     salons_table = pd.DataFrame({"Салон": registered_salons}) if registered_salons else pd.DataFrame(columns=["Салон"])
@@ -2693,6 +2759,8 @@ def build_insights(
     returns_overview: dict[str, float] | None = None,
     salon_summary: pd.DataFrame | None = None,
     anomalies: list[tuple[str, str]] | None = None,
+    *,
+    allow_margin: bool = True,
 ) -> list[tuple[str, str]]:
     insights: list[tuple[str, str]] = []
 
@@ -2722,7 +2790,11 @@ def build_insights(
         insights.append(
             (
                 f"Лидер по продажам: {top_manager['group_name']}",
-                f"У менеджера {format_money(top_manager['revenue'])} выручки и {format_money(top_manager['margin'])} маржи.",
+                (
+                    f"У менеджера {format_money(top_manager['revenue'])} выручки и {format_money(top_manager['margin'])} маржи."
+                    if allow_margin
+                    else f"У менеджера {format_money(top_manager['revenue'])} выручки в текущем срезе."
+                ),
             )
         )
 
@@ -2731,11 +2803,15 @@ def build_insights(
         insights.append(
             (
                 f"Сильнейший салон: {top_salon['group_name']}",
-                f"Формирует {format_money(top_salon['revenue'])} выручки и {format_money(top_salon['margin'])} маржи.",
+                (
+                    f"Формирует {format_money(top_salon['revenue'])} выручки и {format_money(top_salon['margin'])} маржи."
+                    if allow_margin
+                    else f"Формирует {format_money(top_salon['revenue'])} выручки в текущем срезе."
+                ),
             )
         )
 
-    if not product_summary.empty and not product_summary["margin_pct"].isna().all():
+    if allow_margin and not product_summary.empty and not product_summary["margin_pct"].isna().all():
         low_margin_count = int((product_summary["margin_pct"] < 20).fillna(False).sum())
         insights.append(
             (
@@ -2784,6 +2860,8 @@ def build_text_summary(
     returns_overview: dict[str, float],
     plan_fact_summary: pd.DataFrame,
     latest_revenue_delta: float,
+    *,
+    allow_margin: bool = True,
 ) -> list[str]:
     lines: list[str] = []
     if len(monthly_summary) >= 1:
@@ -2793,7 +2871,7 @@ def build_text_summary(
             sign = "\u2191" if latest_revenue_delta >= 0 else "\u2193"
             line += f" ({sign} {abs(float(latest_revenue_delta)):.1f}% к пред. месяцу)"
         lines.append(line)
-    if not is_missing(overview.get("margin_pct")):
+    if allow_margin and not is_missing(overview.get("margin_pct")):
         lines.append(f"\U0001f4b0 Маржа: {format_percent(overview['margin_pct'])}")
     if not plan_fact_summary.empty:
         lp = plan_fact_summary.iloc[-1]
@@ -3172,6 +3250,8 @@ if data.empty:
     st.warning("После применения фильтров не осталось данных.")
     st.stop()
 
+margin_visible = can_view_margin(current_user)
+
 overview = build_overview_metrics(data)
 product_summary = build_product_summary(data)
 category_summary = build_product_summary(data, "category")
@@ -3221,7 +3301,14 @@ a_revenue_share = abc_data.loc[abc_data["abc_class"] == "A", "share_pct"].sum() 
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 
-_digest_lines = build_text_summary(overview, monthly_summary, returns_overview, plan_fact_summary, latest_revenue_delta)
+_digest_lines = build_text_summary(
+    overview,
+    monthly_summary,
+    returns_overview,
+    plan_fact_summary,
+    latest_revenue_delta,
+    allow_margin=margin_visible,
+)
 if _digest_lines:
     render_html_block(
         '<div class="section-intro"><div class="section-intro-body" style="font-size:1.05rem;letter-spacing:.01em">'
@@ -3231,22 +3318,26 @@ if _digest_lines:
 
 _rev_delta_str = f"{format_change_percent(latest_revenue_delta)} к пред. месяцу" if not is_missing(latest_revenue_delta) else ""
 _mar_delta_str = f"{format_change_percent(latest_margin_delta)} к пред. месяцу" if not is_missing(latest_margin_delta) else ""
-render_metric_cards(
-    [
-        {
-            "label": "Выручка",
-            "value": format_money(overview["total_revenue"]),
-            "delta": _rev_delta_str,
-        },
-        {
-            "label": "Маржа",
-            "value": format_money(overview["total_margin"]),
-            "delta": _mar_delta_str,
-        },
-        {"label": "Маржа %", "value": format_percent(overview["margin_pct"]), "delta": ""},
-        {"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""},
-    ]
-)
+overview_cards = [
+    {
+        "label": "Выручка",
+        "value": format_money(overview["total_revenue"]),
+        "delta": _rev_delta_str,
+    },
+]
+if margin_visible:
+    overview_cards.extend(
+        [
+            {
+                "label": "Маржа",
+                "value": format_money(overview["total_margin"]),
+                "delta": _mar_delta_str,
+            },
+            {"label": "Маржа %", "value": format_percent(overview["margin_pct"]), "delta": ""},
+        ]
+    )
+overview_cards.append({"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""})
+render_metric_cards(overview_cards)
 
 tab_labels = ["Обзор", "Аналитика", "План / факт", "Данные"]
 if can_manage_access(current_user):
@@ -3265,6 +3356,7 @@ insights = build_insights(
     returns_overview=returns_overview,
     salon_summary=salon_summary,
     anomalies=revenue_anomalies,
+    allow_margin=margin_visible,
 )
 if returns_overview["return_lines"] > 0:
     insights.append(
@@ -3286,7 +3378,7 @@ with tab_dashboard:
         with st.container(border=True):
             render_panel_header(
                 "Динамика продаж",
-                "Выручка и маржа по месяцам.",
+                "Выручка по месяцам, а для руководителя ещё и маржа.",
             )
             trend_chart = go.Figure()
             trend_chart.add_trace(
@@ -3297,15 +3389,16 @@ with tab_dashboard:
                     marker_color="#0F766E",
                 )
             )
-            trend_chart.add_trace(
-                go.Scatter(
-                    x=monthly_summary["month_label"],
-                    y=monthly_summary["margin"],
-                    name="Маржа",
-                    mode="lines+markers",
-                    line=dict(color="#B45309", width=3),
+            if margin_visible:
+                trend_chart.add_trace(
+                    go.Scatter(
+                        x=monthly_summary["month_label"],
+                        y=monthly_summary["margin"],
+                        name="Маржа",
+                        mode="lines+markers",
+                        line=dict(color="#B45309", width=3),
+                    )
                 )
-            )
             if not forecast_data.empty:
                 trend_chart.add_trace(
                     go.Bar(
@@ -3316,7 +3409,7 @@ with tab_dashboard:
                         opacity=0.4,
                     )
                 )
-                if not forecast_data["margin"].isna().all():
+                if margin_visible and not forecast_data["margin"].isna().all():
                     trend_chart.add_trace(
                         go.Scatter(
                             x=forecast_data["month_label"],
@@ -3341,38 +3434,42 @@ with tab_dashboard:
             f"Итог: {latest_month['month_label']}",
             "Ключевые показатели последнего месяца.",
         )
-        render_snapshot_strip(
-            [
-                {
-                    "label": "Выручка",
-                    "value": format_money(latest_month["revenue"]),
-                    "delta": percent_or_none(latest_revenue_delta) or "",
-                    "hint": "К предыдущему месяцу",
-                },
+        latest_snapshot_items = [
+            {
+                "label": "Выручка",
+                "value": format_money(latest_month["revenue"]),
+                "delta": percent_or_none(latest_revenue_delta) or "",
+                "hint": "К предыдущему месяцу",
+            },
+            {
+                "label": "Количество",
+                "value": format_number(latest_month["quantity"]),
+                "hint": "Объём за месяц",
+            },
+        ]
+        if margin_visible:
+            latest_snapshot_items.insert(
+                1,
                 {
                     "label": "Маржа",
                     "value": format_money(latest_month["margin"]),
                     "delta": percent_or_none(latest_margin_delta) or "",
                     "hint": "К предыдущему месяцу",
                 },
-                {
-                    "label": "Количество",
-                    "value": format_number(latest_month["quantity"]),
-                    "hint": "Объём за месяц",
-                },
-            ]
-        )
+            )
+        render_snapshot_strip(latest_snapshot_items)
 
     if not salon_summary.empty and len(salon_summary) > 1:
         with st.container(border=True):
-            render_panel_header("Салоны сети", "Выручка и маржа по точкам.")
+            render_panel_header("Салоны сети", "Выручка по точкам, а для руководителя ещё и маржа.")
             salon_chart = go.Figure()
             salon_chart.add_trace(
                 go.Bar(x=salon_summary["group_name"], y=salon_summary["revenue"], name="Выручка", marker_color="#0F766E")
             )
-            salon_chart.add_trace(
-                go.Scatter(x=salon_summary["group_name"], y=salon_summary["margin"], name="Маржа", mode="lines+markers", line=dict(color="#B45309", width=3))
-            )
+            if margin_visible:
+                salon_chart.add_trace(
+                    go.Scatter(x=salon_summary["group_name"], y=salon_summary["margin"], name="Маржа", mode="lines+markers", line=dict(color="#B45309", width=3))
+                )
             salon_chart.update_layout(xaxis_tickangle=-20)
             polish_figure(salon_chart, height=360)
             st.plotly_chart(salon_chart, use_container_width=True)
@@ -3394,12 +3491,23 @@ with tab_dashboard:
         with st.container(border=True):
             render_panel_header("Категории", "Вклад категорий в выручку.")
             category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
-            category_chart = px.bar(
-                category_chart_data, x="revenue", y="group_name", orientation="h",
-                color="margin_pct", color_continuous_scale=["#DBEAFE", "#60A5FA", "#0F766E"],
-                labels={"group_name": "Категория", "revenue": "Выручка", "margin_pct": "Маржа %"},
-            )
-            category_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+            if margin_visible:
+                category_chart = px.bar(
+                    category_chart_data, x="revenue", y="group_name", orientation="h",
+                    color="margin_pct", color_continuous_scale=["#DBEAFE", "#60A5FA", "#0F766E"],
+                    labels={"group_name": "Категория", "revenue": "Выручка", "margin_pct": "Маржа %"},
+                )
+                category_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+            else:
+                category_chart = px.bar(
+                    category_chart_data,
+                    x="revenue",
+                    y="group_name",
+                    orientation="h",
+                    color_discrete_sequence=["#0F766E"],
+                    labels={"group_name": "Категория", "revenue": "Выручка"},
+                )
+                category_chart.update_layout(yaxis_title="")
             polish_figure(category_chart, height=360)
             st.plotly_chart(category_chart, use_container_width=True)
 
@@ -3407,20 +3515,32 @@ with tab_dashboard:
         with st.container(border=True):
             render_panel_header("Менеджеры", "Результаты по команде продаж.")
             manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
-            manager_chart = px.bar(
-                manager_chart_data, x="revenue", y="group_name", orientation="h",
-                color="margin_pct", color_continuous_scale=["#E0F2FE", "#38BDF8", "#0F766E"],
-                labels={"group_name": "Менеджер", "revenue": "Выручка", "margin_pct": "Маржа %"},
-            )
-            manager_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+            if margin_visible:
+                manager_chart = px.bar(
+                    manager_chart_data, x="revenue", y="group_name", orientation="h",
+                    color="margin_pct", color_continuous_scale=["#E0F2FE", "#38BDF8", "#0F766E"],
+                    labels={"group_name": "Менеджер", "revenue": "Выручка", "margin_pct": "Маржа %"},
+                )
+                manager_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+            else:
+                manager_chart = px.bar(
+                    manager_chart_data,
+                    x="revenue",
+                    y="group_name",
+                    orientation="h",
+                    color_discrete_sequence=["#2563EB"],
+                    labels={"group_name": "Менеджер", "revenue": "Выручка"},
+                )
+                manager_chart.update_layout(yaxis_title="")
             polish_figure(manager_chart, height=360)
             st.plotly_chart(manager_chart, use_container_width=True)
 
     with st.container(border=True):
         render_panel_header("Топ товаров", "Лидеры по выручке.")
         st.dataframe(
-            to_display_table(
+            format_display_frame_for_role(
                 top_products,
+                current_user,
                 {"group_name": "Товар", "revenue": "Выручка", "margin": "Маржа", "quantity": "Количество", "margin_pct": "Маржа, %"},
             ),
             use_container_width=True,
@@ -3429,18 +3549,24 @@ with tab_dashboard:
         )
 
 with tab_analytics:
-    tab_abc, tab_margin, tab_months, tab_adv = st.tabs(["ABC-анализ", "Маржинальность", "Сравнение месяцев", "Расширенный"])
+    analytics_tab_labels = ["ABC-анализ"]
+    if margin_visible:
+        analytics_tab_labels.append("Маржинальность")
+    analytics_tab_labels.extend(["Сравнение месяцев", "Расширенный"])
+    analytics_tabs = dict(zip(analytics_tab_labels, st.tabs(analytics_tab_labels)))
+    tab_abc = analytics_tabs["ABC-анализ"]
+    tab_margin = analytics_tabs.get("Маржинальность")
+    tab_months = analytics_tabs["Сравнение месяцев"]
+    tab_adv = analytics_tabs["Расширенный"]
 
 with tab_abc:
     render_section_intro(
         "ABC-анализ",
-        "Показывает, какие товары формируют основную долю выручки, маржи или объема продаж.",
+        "Показывает, какие товары формируют основную долю выручки, а для руководителя ещё и маржи или объема продаж.",
     )
-    abc_metric_options = {
-        "revenue": "Выручка",
-        "margin": "Маржа",
-        "quantity": "Количество",
-    }
+    abc_metric_options = {"revenue": "Выручка", "quantity": "Количество"}
+    if margin_visible:
+        abc_metric_options["margin"] = "Маржа"
     abc_metric = st.selectbox(
         "Метрика для ABC-анализа",
         options=list(abc_metric_options.keys()),
@@ -3561,8 +3687,9 @@ with tab_abc:
             "Подробная расшифровка по каждой позиции: класс, доля, накопительный вклад и ключевые показатели. Используйте таблицу для точечной работы с ассортиментом.",
         )
         st.dataframe(
-            format_display_frame(
+            format_display_frame_for_role(
                 abc_tab_data,
+                current_user,
                 {
                     "group_name": "Товар",
                     "abc_basis": abc_metric_options[abc_metric],
@@ -3582,157 +3709,158 @@ with tab_abc:
         )
         st.download_button(
             "Скачать ABC-анализ",
-            data=to_csv_bytes(abc_tab_data),
+            data=to_csv_bytes(margin_safe_frame(abc_tab_data, current_user)),
             file_name=f"abc_analysis_{abc_metric}.csv",
             mime="text/csv",
         )
 
-with tab_margin:
-    render_section_intro(
-        "Маржинальность",
-        "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже.",
-    )
-    if data["margin"].isna().all():
-        st.info("Для маржинальности не хватает колонок `Себестоимость` или `Маржа` в исходном файле.")
-    else:
-        margin_sorted = product_summary.sort_values("margin", ascending=False).copy()
-        low_margin = product_summary.sort_values("margin_pct", ascending=True).head(15).copy()
-        margin_pct_series = product_summary["margin_pct"].dropna()
-        risk_threshold = 20.0
-        risk_count = int((product_summary["margin_pct"].fillna(9999) < risk_threshold).sum())
-        top_margin_product = margin_sorted.iloc[0] if not margin_sorted.empty else None
-
-        render_metric_cards(
-            [
-                {
-                    "label": "Общая маржа",
-                    "value": format_money(overview["total_margin"]),
-                    "delta": format_percent(overview["margin_pct"]),
-                },
-                {
-                    "label": "Средняя маржа по товарам",
-                    "value": format_percent(margin_pct_series.mean()) if not margin_pct_series.empty else "н/д",
-                    "delta": "Средний процент по текущему ассортименту",
-                },
-                {
-                    "label": "Позиции в зоне риска",
-                    "value": format_number(risk_count),
-                    "delta": f"Ниже {int(risk_threshold)}% по марже",
-                },
-                {
-                    "label": "Лидер по валовой марже",
-                    "value": str(top_margin_product['group_name']) if top_margin_product is not None else "н/д",
-                    "delta": format_money(top_margin_product["margin"]) if top_margin_product is not None else "",
-                },
-            ]
+if tab_margin is not None:
+    with tab_margin:
+        render_section_intro(
+            "Маржинальность",
+            "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже.",
         )
-        render_section_marker(
-            "Прибыль и риск",
-            "Что создаёт маржу, а что её съедает",
-            "Сначала смотрите лидеров и зону риска, затем переходите к карте распределения и детальной таблице. Такой порядок помогает не потеряться в цифрах и сразу выделить товары для действия.",
-        )
+        if data["margin"].isna().all():
+            st.info("Для маржинальности не хватает колонок `Себестоимость` или `Маржа` в исходном файле.")
+        else:
+            margin_sorted = product_summary.sort_values("margin", ascending=False).copy()
+            low_margin = product_summary.sort_values("margin_pct", ascending=True).head(15).copy()
+            margin_pct_series = product_summary["margin_pct"].dropna()
+            risk_threshold = 20.0
+            risk_count = int((product_summary["margin_pct"].fillna(9999) < risk_threshold).sum())
+            top_margin_product = margin_sorted.iloc[0] if not margin_sorted.empty else None
 
-        leaders_left, leaders_right = st.columns(2, gap="large")
-
-        with leaders_left:
-            with st.container(border=True):
-                render_panel_header(
-                    "Лидеры по валовой марже",
-                    "Крупный список товаров, которые приносят наибольшую сумму маржи. Этот блок помогает понять, на каком ассортименте держится прибыль.",
-                )
-                fig_margin = px.bar(
-                    margin_sorted.head(20).sort_values("margin", ascending=True),
-                    x="margin",
-                    y="group_name",
-                    orientation="h",
-                    color="margin_pct",
-                    color_continuous_scale=["#FDE68A", "#D97706", "#92400E"],
-                    title="",
-                    labels={"group_name": "Товар", "margin": "Маржа", "margin_pct": "Маржа %"},
-                )
-                fig_margin.update_layout(coloraxis_showscale=False, yaxis_title="")
-                polish_figure(fig_margin, height=520)
-                st.plotly_chart(fig_margin, use_container_width=True)
-
-        with leaders_right:
-            with st.container(border=True):
-                render_panel_header(
-                    "Зоны риска по марже",
-                    "Показывает товары с самой низкой маржой в процентах. Горизонтальный формат делает длинные названия читаемыми и позволяет быстрее искать слабые позиции.",
-                )
-                fig_low = px.bar(
-                    low_margin.sort_values("margin_pct", ascending=True),
-                    x="margin_pct",
-                    y="group_name",
-                    orientation="h",
-                    color="margin_pct",
-                    color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
-                    title="",
-                    labels={"group_name": "Товар", "margin_pct": "Маржа %"},
-                )
-                fig_low.update_layout(coloraxis_showscale=False, yaxis_title="")
-                polish_figure(fig_low, height=520)
-                st.plotly_chart(fig_low, use_container_width=True)
-
-        with st.container(border=True):
-            render_panel_header(
-                "Выручка vs Маржинальность",
-                "Каждая точка — отдельный товар. Правый верхний угол показывает сильные позиции, а левый нижний помогает быстро заметить слабые товары с маленькой выручкой и низкой маржой. Размер пузыря отражает объём продаж без знака, поэтому возвраты не ломают график.",
-            )
-            scatter_data = product_summary[product_summary["margin_pct"].notna()].copy()
-            if not scatter_data.empty:
-                scatter_data["quantity_bubble"] = build_safe_marker_size(scatter_data["quantity"], absolute=True)
-                scatter_fig = px.scatter(
-                    scatter_data,
-                    x="revenue",
-                    y="margin_pct",
-                    size="quantity_bubble",
-                    color="margin_pct",
-                    color_continuous_scale=["#991B1B", "#F59E0B", "#0F766E"],
-                    hover_name="group_name",
-                    labels={"revenue": "Выручка", "margin_pct": "Маржа, %", "quantity_bubble": "Объём продаж"},
-                    title="",
-                    size_max=60,
-                )
-                scatter_fig.add_hline(y=20, line_dash="dash", line_color="#991B1B", annotation_text="Порог 20%")
-                polish_figure(scatter_fig, height=560)
-                st.plotly_chart(scatter_fig, use_container_width=True)
-            else:
-                st.info("Недостаточно данных для построения скаттер-плота (нужны себестоимость или маржа).")
-
-        with st.container(border=True):
-            render_panel_header(
-                "Таблица по маржинальности товаров",
-                "Подробная расшифровка по выручке, себестоимости, марже и количеству. Таблица подходит для фильтрации, проверки аномалий и выгрузки в Excel.",
-            )
-            st.dataframe(
-                format_display_frame(
-                    margin_sorted,
+            render_metric_cards(
+                [
                     {
-                        "group_name": "Товар",
-                        "revenue": "Выручка",
-                        "cost": "Себестоимость",
-                        "margin": "Маржа",
-                        "quantity": "Количество",
-                        "sales_lines": "Строк продаж",
-                        "margin_pct": "Маржа, %",
+                        "label": "Общая маржа",
+                        "value": format_money(overview["total_margin"]),
+                        "delta": format_percent(overview["margin_pct"]),
                     },
-                ),
-                use_container_width=True,
-                hide_index=True,
-                height=640,
+                    {
+                        "label": "Средняя маржа по товарам",
+                        "value": format_percent(margin_pct_series.mean()) if not margin_pct_series.empty else "н/д",
+                        "delta": "Средний процент по текущему ассортименту",
+                    },
+                    {
+                        "label": "Позиции в зоне риска",
+                        "value": format_number(risk_count),
+                        "delta": f"Ниже {int(risk_threshold)}% по марже",
+                    },
+                    {
+                        "label": "Лидер по валовой марже",
+                        "value": str(top_margin_product['group_name']) if top_margin_product is not None else "н/д",
+                        "delta": format_money(top_margin_product["margin"]) if top_margin_product is not None else "",
+                    },
+                ]
             )
-            st.download_button(
-                "Скачать маржинальность по товарам",
-                data=to_csv_bytes(margin_sorted),
-                file_name="margin_by_product.csv",
-                mime="text/csv",
+            render_section_marker(
+                "Прибыль и риск",
+                "Что создаёт маржу, а что её съедает",
+                "Сначала смотрите лидеров и зону риска, затем переходите к карте распределения и детальной таблице. Такой порядок помогает не потеряться в цифрах и сразу выделить товары для действия.",
             )
+
+            leaders_left, leaders_right = st.columns(2, gap="large")
+
+            with leaders_left:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Лидеры по валовой марже",
+                        "Крупный список товаров, которые приносят наибольшую сумму маржи. Этот блок помогает понять, на каком ассортименте держится прибыль.",
+                    )
+                    fig_margin = px.bar(
+                        margin_sorted.head(20).sort_values("margin", ascending=True),
+                        x="margin",
+                        y="group_name",
+                        orientation="h",
+                        color="margin_pct",
+                        color_continuous_scale=["#FDE68A", "#D97706", "#92400E"],
+                        title="",
+                        labels={"group_name": "Товар", "margin": "Маржа", "margin_pct": "Маржа %"},
+                    )
+                    fig_margin.update_layout(coloraxis_showscale=False, yaxis_title="")
+                    polish_figure(fig_margin, height=520)
+                    st.plotly_chart(fig_margin, use_container_width=True)
+
+            with leaders_right:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Зоны риска по марже",
+                        "Показывает товары с самой низкой маржой в процентах. Горизонтальный формат делает длинные названия читаемыми и позволяет быстрее искать слабые позиции.",
+                    )
+                    fig_low = px.bar(
+                        low_margin.sort_values("margin_pct", ascending=True),
+                        x="margin_pct",
+                        y="group_name",
+                        orientation="h",
+                        color="margin_pct",
+                        color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
+                        title="",
+                        labels={"group_name": "Товар", "margin_pct": "Маржа %"},
+                    )
+                    fig_low.update_layout(coloraxis_showscale=False, yaxis_title="")
+                    polish_figure(fig_low, height=520)
+                    st.plotly_chart(fig_low, use_container_width=True)
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Выручка vs Маржинальность",
+                    "Каждая точка — отдельный товар. Правый верхний угол показывает сильные позиции, а левый нижний помогает быстро заметить слабые товары с маленькой выручкой и низкой маржой. Размер пузыря отражает объём продаж без знака, поэтому возвраты не ломают график.",
+                )
+                scatter_data = product_summary[product_summary["margin_pct"].notna()].copy()
+                if not scatter_data.empty:
+                    scatter_data["quantity_bubble"] = build_safe_marker_size(scatter_data["quantity"], absolute=True)
+                    scatter_fig = px.scatter(
+                        scatter_data,
+                        x="revenue",
+                        y="margin_pct",
+                        size="quantity_bubble",
+                        color="margin_pct",
+                        color_continuous_scale=["#991B1B", "#F59E0B", "#0F766E"],
+                        hover_name="group_name",
+                        labels={"revenue": "Выручка", "margin_pct": "Маржа, %", "quantity_bubble": "Объём продаж"},
+                        title="",
+                        size_max=60,
+                    )
+                    scatter_fig.add_hline(y=20, line_dash="dash", line_color="#991B1B", annotation_text="Порог 20%")
+                    polish_figure(scatter_fig, height=560)
+                    st.plotly_chart(scatter_fig, use_container_width=True)
+                else:
+                    st.info("Недостаточно данных для построения скаттер-плота (нужны себестоимость или маржа).")
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Таблица по маржинальности товаров",
+                    "Подробная расшифровка по выручке, себестоимости, марже и количеству. Таблица подходит для фильтрации, проверки аномалий и выгрузки в Excel.",
+                )
+                st.dataframe(
+                    format_display_frame(
+                        margin_sorted,
+                        {
+                            "group_name": "Товар",
+                            "revenue": "Выручка",
+                            "cost": "Себестоимость",
+                            "margin": "Маржа",
+                            "quantity": "Количество",
+                            "sales_lines": "Строк продаж",
+                            "margin_pct": "Маржа, %",
+                        },
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=640,
+                )
+                st.download_button(
+                    "Скачать маржинальность по товарам",
+                    data=to_csv_bytes(margin_sorted),
+                    file_name="margin_by_product.csv",
+                    mime="text/csv",
+                )
 
 with tab_months:
     render_section_intro(
         "Сравнение месяцев",
-        "Показывает, как меняются продажи, маржа и количество между двумя периодами.",
+        "Показывает, как меняются продажи и количество между двумя периодами, а для руководителя ещё и маржа.",
     )
     render_section_marker(
         "Сценарий сравнения",
@@ -3768,33 +3896,36 @@ with tab_months:
             margin_change_selected = calculate_change_pct(selected_right_row["margin"], selected_left_row["margin"])
             quantity_change_selected = calculate_change_pct(selected_right_row["quantity"], selected_left_row["quantity"])
 
-            render_snapshot_strip(
-                [
-                    {
-                        "label": f"Выручка {selected_left_month}",
-                        "value": format_money(selected_left_row["revenue"]),
-                        "hint": "Базовый месяц для сравнения",
-                    },
-                    {
-                        "label": f"Выручка {selected_right_month}",
-                        "value": format_money(selected_right_row["revenue"]),
-                        "delta": format_change_percent(revenue_change_selected),
-                        "hint": "Изменение к базовому месяцу",
-                    },
+            comparison_snapshot_items = [
+                {
+                    "label": f"Выручка {selected_left_month}",
+                    "value": format_money(selected_left_row["revenue"]),
+                    "hint": "Базовый месяц для сравнения",
+                },
+                {
+                    "label": f"Выручка {selected_right_month}",
+                    "value": format_money(selected_right_row["revenue"]),
+                    "delta": format_change_percent(revenue_change_selected),
+                    "hint": "Изменение к базовому месяцу",
+                },
+                {
+                    "label": f"Количество {selected_right_month}",
+                    "value": format_number(selected_right_row["quantity"]),
+                    "delta": format_change_percent(quantity_change_selected),
+                    "hint": "Изменение к базовому месяцу",
+                },
+            ]
+            if margin_visible:
+                comparison_snapshot_items.insert(
+                    2,
                     {
                         "label": f"Маржа {selected_right_month}",
                         "value": format_money(selected_right_row["margin"]),
                         "delta": format_change_percent(margin_change_selected),
                         "hint": "Изменение к базовому месяцу",
                     },
-                    {
-                        "label": f"Количество {selected_right_month}",
-                        "value": format_number(selected_right_row["quantity"]),
-                        "delta": format_change_percent(quantity_change_selected),
-                        "hint": "Изменение к базовому месяцу",
-                    },
-                ]
-            )
+                )
+            render_snapshot_strip(comparison_snapshot_items)
 
             chart_left, chart_right = st.columns(2, gap="large")
 
@@ -3874,14 +4005,14 @@ with tab_months:
                     "Подробная расшифровка по товарам: значения за оба месяца, абсолютное изменение и изменение в процентах. Удобно для детальной проверки и выгрузки.",
                 )
                 st.dataframe(
-                    format_display_frame(month_comparison, rename_map),
+                    format_display_frame_for_role(month_comparison, current_user, rename_map),
                     use_container_width=True,
                     hide_index=True,
                     height=520,
                 )
                 st.download_button(
                     "Скачать сравнение месяцев",
-                    data=to_csv_bytes(month_comparison.rename(columns=rename_map)),
+                    data=to_csv_bytes(margin_safe_frame(month_comparison.rename(columns=rename_map), current_user)),
                     file_name=f"month_comparison_{selected_left_month}_vs_{selected_right_month}.csv",
                     mime="text/csv",
                 )
@@ -3893,9 +4024,12 @@ with tab_months:
                 "Год к году (YoY)",
                 "Сравнение одинаковых месяцев разных лет. Этот блок помогает отделить сезонность от реального роста или просадки бизнеса.",
             )
+            yoy_metric_options = ["revenue", "quantity"]
+            if margin_visible:
+                yoy_metric_options.insert(1, "margin")
             yoy_metric = st.radio(
                 "Метрика YoY",
-                options=["revenue", "margin", "quantity"],
+                options=yoy_metric_options,
                 format_func={"revenue": "Выручка", "margin": "Маржа", "quantity": "Количество"}.get,
                 horizontal=True,
                 key="yoy_metric_radio",
@@ -3917,7 +4051,7 @@ with tab_months:
 with tab_plan:
     render_section_intro(
         "План / факт",
-        "Сравнивает помесячный план с фактическими продажами по выручке, марже и количеству.",
+        "Сравнивает помесячный план с фактическими продажами по выручке и количеству, а для руководителя ещё и по марже.",
     )
     render_section_marker(
         "Управление целями",
@@ -3934,19 +4068,32 @@ with tab_plan:
         plan_month_options = plan_fact_summary["month_label"].dropna().astype(str).tolist()
         latest_plan_row = plan_fact_summary.iloc[-1]
 
-        render_snapshot_strip(
-            [
-                {
-                    "label": f"План выручки {latest_plan_row['month_label']}",
-                    "value": format_money(latest_plan_row["revenue_plan"]) if not is_missing(latest_plan_row["revenue_plan"]) else "н/д",
-                    "hint": "Плановая выручка на выбранный месяц",
-                },
-                {
-                    "label": f"Факт выручки {latest_plan_row['month_label']}",
-                    "value": format_money(latest_plan_row["revenue"]),
-                    "delta": format_percent(latest_plan_row["revenue_execution_pct"]) if not is_missing(latest_plan_row["revenue_execution_pct"]) else "",
-                    "hint": "Процент выполнения плана по выручке",
-                },
+        plan_snapshot_items = [
+            {
+                "label": f"План выручки {latest_plan_row['month_label']}",
+                "value": format_money(latest_plan_row["revenue_plan"]) if not is_missing(latest_plan_row["revenue_plan"]) else "н/д",
+                "hint": "Плановая выручка на выбранный месяц",
+            },
+            {
+                "label": f"Факт выручки {latest_plan_row['month_label']}",
+                "value": format_money(latest_plan_row["revenue"]),
+                "delta": format_percent(latest_plan_row["revenue_execution_pct"]) if not is_missing(latest_plan_row["revenue_execution_pct"]) else "",
+                "hint": "Процент выполнения плана по выручке",
+            },
+            {
+                "label": f"План количества {latest_plan_row['month_label']}",
+                "value": format_number(latest_plan_row["quantity_plan"]) if not is_missing(latest_plan_row["quantity_plan"]) else "н/д",
+                "hint": "План по количеству проданных единиц",
+            },
+            {
+                "label": f"Факт количества {latest_plan_row['month_label']}",
+                "value": format_number(latest_plan_row["quantity"]),
+                "delta": format_percent(latest_plan_row["quantity_execution_pct"]) if not is_missing(latest_plan_row["quantity_execution_pct"]) else "",
+                "hint": "Процент выполнения плана по количеству",
+            },
+        ]
+        if margin_visible:
+            plan_snapshot_items[2:2] = [
                 {
                     "label": f"План маржи {latest_plan_row['month_label']}",
                     "value": format_money(latest_plan_row["margin_plan"]) if not is_missing(latest_plan_row["margin_plan"]) else "н/д",
@@ -3958,19 +4105,8 @@ with tab_plan:
                     "delta": format_percent(latest_plan_row["margin_execution_pct"]) if not is_missing(latest_plan_row["margin_execution_pct"]) else "",
                     "hint": "Процент выполнения плана по марже",
                 },
-                {
-                    "label": f"План количества {latest_plan_row['month_label']}",
-                    "value": format_number(latest_plan_row["quantity_plan"]) if not is_missing(latest_plan_row["quantity_plan"]) else "н/д",
-                    "hint": "План по количеству проданных единиц",
-                },
-                {
-                    "label": f"Факт количества {latest_plan_row['month_label']}",
-                    "value": format_number(latest_plan_row["quantity"]),
-                    "delta": format_percent(latest_plan_row["quantity_execution_pct"]) if not is_missing(latest_plan_row["quantity_execution_pct"]) else "",
-                    "hint": "Процент выполнения плана по количеству",
-                },
             ]
-        )
+        render_snapshot_strip(plan_snapshot_items)
 
         plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="large")
 
@@ -4017,16 +4153,20 @@ with tab_plan:
                         "delta": format_percent(latest_plan_row["revenue_execution_pct"]) if not is_missing(latest_plan_row["revenue_execution_pct"]) else "",
                     },
                     {
-                        "label": "Отклонение маржи",
-                        "value": format_money(latest_plan_row["margin_gap"]) if not is_missing(latest_plan_row["margin_gap"]) else "н/д",
-                        "delta": format_percent(latest_plan_row["margin_execution_pct"]) if not is_missing(latest_plan_row["margin_execution_pct"]) else "",
-                    },
-                    {
                         "label": "Отклонение количества",
                         "value": format_number(latest_plan_row["quantity_gap"]) if not is_missing(latest_plan_row["quantity_gap"]) else "н/д",
                         "delta": format_percent(latest_plan_row["quantity_execution_pct"]) if not is_missing(latest_plan_row["quantity_execution_pct"]) else "",
                     },
                 ]
+                if margin_visible:
+                    latest_gap_cards.insert(
+                        1,
+                        {
+                            "label": "Отклонение маржи",
+                            "value": format_money(latest_plan_row["margin_gap"]) if not is_missing(latest_plan_row["margin_gap"]) else "н/д",
+                            "delta": format_percent(latest_plan_row["margin_execution_pct"]) if not is_missing(latest_plan_row["margin_execution_pct"]) else "",
+                        },
+                    )
                 render_metric_cards(latest_gap_cards)
 
         if can_manage_plans(current_user):
@@ -4184,8 +4324,9 @@ with tab_plan:
                 ]
             ].copy()
             st.dataframe(
-                format_display_frame(
+                format_display_frame_for_role(
                     plan_table,
+                    current_user,
                     rename_map={
                         "month_label": "Месяц",
                         "revenue_plan": "План выручки",
@@ -4208,7 +4349,7 @@ with tab_plan:
             )
             st.download_button(
                 "Скачать план / факт",
-                data=to_csv_bytes(plan_table.rename(columns={"month_label": "month"})),
+                data=to_csv_bytes(margin_safe_frame(plan_table.rename(columns={"month_label": "month"}), current_user)),
                 file_name="plan_fact_summary.csv",
                 mime="text/csv",
             )
@@ -4232,8 +4373,9 @@ with tab_plan:
                     st.info("Для выбранного месяца пока нет салонных планов. Сначала задайте план хотя бы для одного салона.")
                 else:
                     st.dataframe(
-                        format_display_frame(
+                        format_display_frame_for_role(
                             salon_plan_fact,
+                            current_user,
                             rename_map={
                                 "scope_name": "Салон",
                                 "revenue_plan": "План выручки",
@@ -4413,15 +4555,16 @@ with tab_adv:
                         line=dict(color="#0F766E", width=3),
                     )
                 )
-                forecast_fig.add_trace(
-                    go.Scatter(
-                        x=hist["month_label"],
-                        y=hist["margin"],
-                        name="Факт: маржа",
-                        mode="lines+markers",
-                        line=dict(color="#B45309", width=2),
+                if margin_visible:
+                    forecast_fig.add_trace(
+                        go.Scatter(
+                            x=hist["month_label"],
+                            y=hist["margin"],
+                            name="Факт: маржа",
+                            mode="lines+markers",
+                            line=dict(color="#B45309", width=2),
+                        )
                     )
-                )
                 forecast_fig.add_trace(
                     go.Scatter(
                         x=[hist["month_label"].iloc[-1]] + fut["month_label"].tolist(),
@@ -4432,7 +4575,7 @@ with tab_adv:
                         marker=dict(symbol="diamond", size=10),
                     )
                 )
-                if not fut["margin"].isna().all():
+                if margin_visible and not fut["margin"].isna().all():
                     forecast_fig.add_trace(
                         go.Scatter(
                             x=[hist["month_label"].iloc[-1]] + fut["month_label"].tolist(),
@@ -4455,6 +4598,8 @@ with tab_adv:
             forecast_table.columns = ["Месяц (прогноз)", "Выручка", "Маржа"]
             forecast_table["Выручка"] = forecast_table["Выручка"].apply(format_money)
             forecast_table["Маржа"] = forecast_table["Маржа"].apply(lambda v: format_money(v) if not pd.isna(v) else "н/д")
+            if not margin_visible and "Маржа" in forecast_table.columns:
+                forecast_table = forecast_table.drop(columns=["Маржа"])
             with st.container(border=True):
                 render_panel_header(
                     "Таблица прогноза",
@@ -4562,8 +4707,9 @@ with tab_adv:
                         return_product_table["last_return_date"], errors="coerce"
                     )
                 st.dataframe(
-                    format_display_frame(
+                    format_display_frame_for_role(
                         return_product_table,
+                        current_user,
                         rename_map={
                             "group_name": "Товар",
                             "return_revenue": "Сумма возвратов",
@@ -4580,7 +4726,7 @@ with tab_adv:
                 )
                 st.download_button(
                     "Скачать возвраты по товарам",
-                    data=to_csv_bytes(return_product_summary),
+                    data=to_csv_bytes(margin_safe_frame(return_product_summary, current_user)),
                     file_name="returns_by_product.csv",
                     mime="text/csv",
                 )
@@ -4592,8 +4738,9 @@ with tab_adv:
                         "Сравнение салонов по возвратам. Помогает быстро увидеть точки, где возвраты системно выше и где нужен управленческий разбор на уровне команды или процесса.",
                     )
                     st.dataframe(
-                        format_display_frame(
+                        format_display_frame_for_role(
                             return_salon_summary,
+                            current_user,
                             rename_map={
                                 "group_name": "Салон",
                                 "return_revenue": "Сумма возвратов",
@@ -4610,6 +4757,7 @@ with tab_adv:
                     )
 
 with tab_data:
+    visible_mapping = margin_safe_mapping(selected_mapping, current_user)
     render_section_intro(
         "Источники и выгрузки",
         "Здесь собраны исходные данные, служебная информация по сопоставлению колонок, журнал загрузок и сводка по месяцам. Эта вкладка нужна для проверки качества загрузки и состава данных.",
@@ -4617,7 +4765,7 @@ with tab_data:
     data_period_text = f"{data['date'].min().strftime('%d.%m.%Y')} - {data['date'].max().strftime('%d.%m.%Y')}"
     archive_upload_count = len(manifest_view) if manifest_view is not None else 0
     data_salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
-    mapping_count = sum(1 for value in selected_mapping.values() if value) if selected_mapping else 0
+    mapping_count = sum(1 for value in visible_mapping.values() if value) if visible_mapping else 0
 
     render_section_marker(
         "Паспорт данных",
@@ -4638,8 +4786,8 @@ with tab_data:
         [
             {
                 "title": "Проверьте, что загружено",
-                "body": "Блок `Источник данных` показывает файл до аналитики. Здесь легче всего заметить съехавшую шапку отчёта, лишние строки или неверно прочитанные столбцы.",
-                "hint": "Если тут всё выглядит верно, дальше можно доверять расчётам.",
+                "body": "В блоке `Источник данных` теперь показывается только безопасный контекст по загрузке без содержимого файла. Используйте его, чтобы проверить источник, дату и наличие файла в архиве.",
+                "hint": "Исходная выгрузка больше не открывается прямо в интерфейсе.",
             },
             {
                 "title": "Сверьте поля аналитики",
@@ -4678,46 +4826,38 @@ with tab_data:
         with st.container(border=True):
             render_panel_header(
                 "Источник данных",
-                "Показывает первые строки исходной выгрузки в том виде, в котором файл был прочитан приложением. Смотрите сюда, если нужно проверить шапку отчёта, типы колонок и то, не съехала ли структура файла ещё до аналитики.",
+                "Просмотр исходной выгрузки отключён. В этом блоке оставлен только безопасный контекст по источнику, чтобы сотрудники не скачивали и не открывали загруженный файл прямо из системы.",
             )
-            if raw_data is not None:
+            st.info("Предпросмотр исходного файла и скачивание загруженной выгрузки отключены для всех ролей.")
+            if not manifest_view.empty:
                 st.dataframe(
-                    format_display_frame(raw_data.head(25)),
+                    format_display_frame(
+                        manifest_view,
+                        columns=["salon", "report_date", "source_filename", "uploaded_at"],
+                    ),
                     use_container_width=True,
                     hide_index=True,
-                    height=420,
+                    height=320,
                 )
             else:
-                st.info("Сейчас открыт архивный режим. Исходный файл не выбран, анализ идет по сохраненным загрузкам.")
-                if not manifest_view.empty:
-                    st.dataframe(
-                        format_display_frame(
-                            manifest_view,
-                            columns=["salon", "report_date", "source_filename", "uploaded_at"],
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=320,
-                    )
+                st.caption("Когда в архиве появятся сохранённые загрузки, здесь будет видна их краткая история без содержимого файла.")
 
     with top_right:
         with st.container(border=True):
             render_panel_header(
                 "Как файл распознан",
-                "Показывает, как именно колонки исходного файла были привязаны к полям аналитики. Этот блок полезен, когда нужно понять, откуда взялись выручка, дата, товар, маржа и почему итоговые таблицы выглядят именно так.",
+                "Показывает, как именно колонки исходного файла были привязаны к полям аналитики. Для салона скрыты поля себестоимости и маржи, но сами расчёты для руководителя не теряются.",
             )
-            if selected_mapping:
+            if visible_mapping:
                 st.caption(f"Распознано и привязано полей: {mapping_count}. Если что-то не совпало, ищите причину сначала здесь.")
-                st.dataframe(build_download_frame(selected_mapping), use_container_width=True, hide_index=True, height=420)
+                st.dataframe(
+                    build_download_frame(visible_mapping),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                )
             else:
                 st.info("Для архивного режима сопоставление колонок хранится у каждой загруженной выгрузки отдельно.")
-            st.download_button(
-                "Скачать текущую выборку",
-                data=to_csv_bytes(data),
-                file_name="filtered_sales_data.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
 
     if not manifest_view.empty:
         with st.container(border=True):
@@ -4741,8 +4881,9 @@ with tab_data:
             "Главная проверочная таблица по периодам: выручка, себестоимость, маржа, количество и динамика. Если хотите понять, корректно ли сложились месяцы и откуда берётся тренд, сначала смотрите именно сюда.",
         )
         st.dataframe(
-            format_display_frame(
+            format_display_frame_for_role(
                 monthly_summary,
+                current_user,
                 {
                     "month": "Месяц",
                     "month_label": "Код месяца",
@@ -4771,7 +4912,7 @@ with tab_data:
         )
         st.download_button(
             "Скачать сводку по месяцам",
-            data=to_csv_bytes(monthly_summary),
+            data=to_csv_bytes(margin_safe_frame(monthly_summary, current_user)),
             file_name="monthly_summary.csv",
             mime="text/csv",
         )
