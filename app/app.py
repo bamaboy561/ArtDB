@@ -26,6 +26,7 @@ from auth_store import (
     promote_first_manager_to_admin,
     revoke_auth_session,
     set_user_password,
+    update_user_role,
 )
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
@@ -965,6 +966,23 @@ def render_html_block(html: str) -> None:
     st.markdown(dedent(html).strip(), unsafe_allow_html=True)
 
 
+def schedule_widget_reset(resets: dict[str, object | None]) -> None:
+    pending_resets = dict(st.session_state.get("_pending_widget_resets", {}))
+    pending_resets.update(resets)
+    st.session_state["_pending_widget_resets"] = pending_resets
+
+
+def apply_pending_widget_resets() -> None:
+    pending_resets = st.session_state.pop("_pending_widget_resets", None)
+    if not pending_resets:
+        return
+    for key, value in pending_resets.items():
+        if value is None:
+            st.session_state.pop(key, None)
+        else:
+            st.session_state[key] = value
+
+
 def format_money(value: float) -> str:
     if is_missing(value):
         return "н/д"
@@ -1499,6 +1517,7 @@ def generate_temp_password(length: int = 10) -> str:
 
 
 def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_salons: list[str]) -> None:
+    apply_pending_widget_resets()
     st.divider()
     st.markdown("**Быстрое создание**")
     st.caption("Создайте салон и сразу выдайте сотруднику логин с паролем.")
@@ -1546,7 +1565,7 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
                         "source": "sidebar_quick_action",
                     },
                 )
-                st.session_state.pop("sidebar_new_salon_name", None)
+                schedule_widget_reset({"sidebar_new_salon_name": ""})
                 st.session_state["admin_flash_message"] = f"Салон «{normalized_salon_name}» добавлен."
                 st.rerun()
 
@@ -1645,17 +1664,18 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
                             "source": "sidebar_quick_action",
                         },
                     )
-                    for key in (
-                        "sidebar_create_username",
-                        "sidebar_create_display_name",
-                        "sidebar_create_email",
-                        "sidebar_create_phone",
-                        "sidebar_create_password",
-                        "sidebar_create_password_confirm",
-                        "sidebar_create_salon",
-                    ):
-                        st.session_state.pop(key, None)
-                    st.session_state.pop("sidebar_create_role", None)
+                    schedule_widget_reset(
+                        {
+                            "sidebar_create_username": "",
+                            "sidebar_create_display_name": "",
+                            "sidebar_create_email": "",
+                            "sidebar_create_phone": "",
+                            "sidebar_create_password": "",
+                            "sidebar_create_password_confirm": "",
+                            "sidebar_create_salon": None,
+                            "sidebar_create_role": None,
+                        }
+                    )
                     st.session_state["admin_flash_message"] = (
                         f"Пользователь «{display_name.strip() or username.strip()}» создан."
                     )
@@ -2209,6 +2229,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
 
 
 def render_admin_tab(current_user: dict[str, str], registered_salons: list[str]) -> None:
+    apply_pending_widget_resets()
     users = pd.DataFrame(list_users())
     salons_table = pd.DataFrame({"Салон": registered_salons}) if registered_salons else pd.DataFrame(columns=["Салон"])
 
@@ -2307,7 +2328,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 "source": "admin_tab",
                             },
                         )
-                        st.session_state["admin_new_salon_name"] = ""
+                        schedule_widget_reset({"admin_new_salon_name": ""})
                         st.session_state["admin_flash_message"] = f"Салон «{normalized_salon_name}» добавлен."
                         st.rerun()
 
@@ -2390,9 +2411,13 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                         "source": "admin_tab",
                                     },
                                 )
-                                st.session_state["admin_delete_salon_confirm"] = ""
-                                st.session_state["admin_delete_salon_users"] = False
-                                st.session_state["admin_delete_salon_uploads"] = False
+                                schedule_widget_reset(
+                                    {
+                                        "admin_delete_salon_confirm": "",
+                                        "admin_delete_salon_users": False,
+                                        "admin_delete_salon_uploads": False,
+                                    }
+                                )
                                 st.session_state["admin_flash_message"] = (
                                     f"Салон «{salon_to_delete}» удалён. "
                                     f"Удалено пользователей: {deleted_users}. "
@@ -2500,17 +2525,18 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                     "source": "admin_tab",
                                 },
                             )
-                            for key in (
-                                "admin_create_username",
-                                "admin_create_display_name",
-                                "admin_create_email",
-                                "admin_create_phone",
-                                "admin_create_password",
-                                "admin_create_password_confirm",
-                                "admin_create_salon",
-                            ):
-                                st.session_state.pop(key, None)
-                            st.session_state.pop("admin_create_role", None)
+                            schedule_widget_reset(
+                                {
+                                    "admin_create_username": "",
+                                    "admin_create_display_name": "",
+                                    "admin_create_email": "",
+                                    "admin_create_phone": "",
+                                    "admin_create_password": "",
+                                    "admin_create_password_confirm": "",
+                                    "admin_create_salon": None,
+                                    "admin_create_role": None,
+                                }
+                            )
                             st.session_state["admin_flash_message"] = (
                                 f"Пользователь «{display_name or username}» с ролью «{role_label(role_choice)}» создан."
                             )
@@ -2529,6 +2555,109 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     st.info("Пользователи пока не созданы.")
                 else:
                     st.dataframe(display_users, use_container_width=True, hide_index=True)
+
+            with st.container(border=True):
+                st.markdown('<div class="panel-title">Изменить роль пользователя</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="panel-caption">Выберите пользователя, задайте новую роль и при необходимости привяжите его к салону.</div>',
+                    unsafe_allow_html=True,
+                )
+
+                role_usernames = users["username"].tolist() if not users.empty else []
+                role_target_username = (
+                    st.selectbox(
+                        "Какого пользователя изменить",
+                        options=role_usernames,
+                        key="admin_edit_role_username",
+                    )
+                    if role_usernames
+                    else st.selectbox(
+                        "Какого пользователя изменить",
+                        options=["Нет пользователей"],
+                        disabled=True,
+                        key="admin_edit_role_username_empty",
+                    )
+                )
+
+                if role_usernames:
+                    role_target_row = users.loc[users["username"] == role_target_username].iloc[0]
+                    current_role_value = str(role_target_row.get("role", "")).strip().lower()
+                    current_salon_value = str(role_target_row.get("salon", "") or "").strip()
+
+                    st.caption(
+                        f"Сейчас: {role_label(current_role_value)}"
+                        + (
+                            f" | Салон: {current_salon_value}"
+                            if current_salon_value
+                            else " | Салон не привязан"
+                        )
+                    )
+
+                    role_options = ["admin", "manager", "salon"]
+                    new_role_value = st.selectbox(
+                        "Новая роль",
+                        options=role_options,
+                        index=role_options.index(current_role_value) if current_role_value in role_options else 0,
+                        format_func=role_label,
+                        key=f"admin_edit_role_value_{role_target_username}",
+                    )
+
+                    role_salon_value = current_salon_value if new_role_value == "salon" else ""
+                    if new_role_value == "salon":
+                        salon_options = registered_salons if registered_salons else ["Сначала создайте салон"]
+                        default_salon_index = 0
+                        if current_salon_value and current_salon_value in registered_salons:
+                            default_salon_index = registered_salons.index(current_salon_value)
+                        role_salon_value = st.selectbox(
+                            "Салон для пользователя",
+                            options=salon_options,
+                            index=default_salon_index if registered_salons else 0,
+                            key=f"admin_edit_role_salon_{role_target_username}",
+                            disabled=not bool(registered_salons),
+                        )
+                        if not registered_salons:
+                            st.warning("Сначала добавьте хотя бы один салон, потом можно назначить роль салона.")
+                    else:
+                        st.caption("Для администратора и руководителя салон не нужен.")
+
+                    role_change_disabled = (
+                        new_role_value == "salon" and not bool(registered_salons)
+                    )
+                    if st.button(
+                        "Сохранить роль",
+                        key="admin_update_role_button",
+                        use_container_width=True,
+                        disabled=role_change_disabled,
+                    ):
+                        proposed_salon = role_salon_value if new_role_value == "salon" else ""
+                        if current_role_value == new_role_value and current_salon_value == proposed_salon:
+                            st.warning("Изменений нет: у пользователя уже установлены такие доступы.")
+                        else:
+                            try:
+                                updated_user = update_user_role(
+                                    str(role_target_username),
+                                    new_role_value,
+                                    salon=proposed_salon,
+                                    actor_username=current_user["username"],
+                                )
+                                audit_event(
+                                    action="user.role_update",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "username": str(updated_user.get("username", "")),
+                                        "old_role": current_role_value,
+                                        "new_role": str(updated_user.get("role", "")),
+                                        "old_salon": current_salon_value,
+                                        "new_salon": str(updated_user.get("salon", "") or ""),
+                                        "source": "admin_tab",
+                                    },
+                                )
+                                st.session_state["admin_flash_message"] = (
+                                    f"Роль пользователя «{updated_user['display_name']}» обновлена."
+                                )
+                                st.rerun()
+                            except Exception as error:
+                                st.error(str(error))
 
             with st.container(border=True):
                 st.markdown('<div class="panel-title">Удалить пользователя</div>', unsafe_allow_html=True)
@@ -2584,7 +2713,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                         "source": "admin_tab",
                                     },
                                 )
-                                st.session_state["admin_delete_user_confirm"] = ""
+                                schedule_widget_reset({"admin_delete_user_confirm": ""})
                                 st.session_state["admin_flash_message"] = (
                                     f"Пользователь «{deleted_user['display_name']}» удалён."
                                 )
@@ -2637,8 +2766,12 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                     "source": "admin_tab",
                                 },
                             )
-                            st.session_state.pop("admin_reset_password", None)
-                            st.session_state.pop("admin_reset_password_confirm", None)
+                            schedule_widget_reset(
+                                {
+                                    "admin_reset_password": "",
+                                    "admin_reset_password_confirm": "",
+                                }
+                            )
                             st.session_state["admin_flash_message"] = f"Пароль для пользователя «{selected_username}» обновлён."
                             st.rerun()
                         except Exception as error:

@@ -552,6 +552,55 @@ def set_user_password(username: str, new_password: str) -> None:
     _save_raw_users(users)
 
 
+def update_user_role(
+    username: str,
+    new_role: str,
+    *,
+    salon: str = "",
+    actor_username: str | None = None,
+) -> dict[str, Any]:
+    username_key = username.strip().casefold()
+    normalized_role = new_role.strip().lower()
+    normalized_salon = salon.strip()
+    actor_key = actor_username.strip().casefold() if actor_username else ""
+
+    if not username_key:
+        raise ValueError("Укажите пользователя, которому нужно изменить роль.")
+    if normalized_role not in SUPPORTED_ROLES:
+        raise ValueError("Неизвестная роль пользователя.")
+    if normalized_role == "salon" and not normalized_salon:
+        raise ValueError("Для роли салона нужно выбрать салон.")
+
+    users = _load_raw_users()
+    target_user = next(
+        (record for record in users if str(record.get("username", "")).strip().casefold() == username_key),
+        None,
+    )
+    if target_user is None:
+        raise ValueError("Пользователь не найден.")
+
+    current_role = str(target_user.get("role", "")).strip().lower()
+    if current_role == "admin" and normalized_role != "admin":
+        admin_count = sum(1 for record in users if str(record.get("role", "")).strip().lower() == "admin")
+        if admin_count <= 1:
+            raise ValueError("Нельзя изменить роль последнего администратора в системе.")
+
+    if actor_key and actor_key == username_key and current_role == "admin" and normalized_role != "admin":
+        raise ValueError("Нельзя изменить свою роль администратора из текущей сессии.")
+
+    target_user["role"] = normalized_role
+    target_user["salon"] = normalized_salon if normalized_role == "salon" else ""
+
+    users.sort(
+        key=lambda item: (
+            ROLE_SORT_ORDER.get(str(item.get("role", "")).strip().lower(), 99),
+            str(item.get("username", "")).casefold(),
+        )
+    )
+    _save_raw_users(users)
+    return _public_user(target_user)
+
+
 def delete_user(username: str, *, actor_username: str | None = None) -> dict[str, Any]:
     username_key = username.strip().casefold()
     actor_key = actor_username.strip().casefold() if actor_username else ""
