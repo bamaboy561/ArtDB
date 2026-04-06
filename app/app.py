@@ -2557,6 +2557,84 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     st.dataframe(display_users, use_container_width=True, hide_index=True)
 
             with st.container(border=True):
+                st.markdown('<div class="panel-title">Перевести администраторов в руководители</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="panel-caption">Массовое действие для случаев, когда нужно быстро убрать лишние права администратора и оставить управленческий доступ.</div>',
+                    unsafe_allow_html=True,
+                )
+
+                admin_usernames = (
+                    users.loc[users["role"].astype(str).str.lower() == "admin", "username"].astype(str).tolist()
+                    if not users.empty
+                    else []
+                )
+                eligible_admin_usernames = [
+                    username
+                    for username in admin_usernames
+                    if username.strip().casefold() != current_user["username"].strip().casefold()
+                ]
+
+                if current_user["username"] in admin_usernames:
+                    st.caption("Текущий администратор не включён в список, чтобы вы случайно не сняли права с собственной сессии.")
+
+                selected_admins_to_demote = st.multiselect(
+                    "Каких администраторов перевести",
+                    options=eligible_admin_usernames,
+                    key="admin_bulk_demote_usernames",
+                    disabled=not bool(eligible_admin_usernames),
+                    placeholder="Выберите одного или нескольких администраторов",
+                )
+
+                if eligible_admin_usernames:
+                    remaining_admins_after_change = len(admin_usernames) - len(selected_admins_to_demote)
+                    st.caption(
+                        f"Сейчас администраторов: {len(admin_usernames)}. "
+                        f"После перевода останется: {remaining_admins_after_change}."
+                    )
+                else:
+                    st.info("Нет других администраторов, которых можно перевести в руководители.")
+
+                if st.button(
+                    "Перевести в руководители",
+                    key="admin_bulk_demote_button",
+                    use_container_width=True,
+                    disabled=not bool(eligible_admin_usernames),
+                ):
+                    if not selected_admins_to_demote:
+                        st.error("Выберите хотя бы одного администратора.")
+                    elif len(admin_usernames) - len(selected_admins_to_demote) < 1:
+                        st.error("В системе должен остаться хотя бы один администратор.")
+                    else:
+                        try:
+                            changed_users: list[str] = []
+                            for username_to_demote in selected_admins_to_demote:
+                                updated_user = update_user_role(
+                                    str(username_to_demote),
+                                    "manager",
+                                    actor_username=current_user["username"],
+                                )
+                                changed_users.append(str(updated_user.get("display_name", "") or updated_user.get("username", "")))
+                                audit_event(
+                                    action="user.role_update",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "username": str(updated_user.get("username", "")),
+                                        "old_role": "admin",
+                                        "new_role": "manager",
+                                        "old_salon": "",
+                                        "new_salon": "",
+                                        "source": "admin_tab_bulk_demotion",
+                                    },
+                                )
+                            schedule_widget_reset({"admin_bulk_demote_usernames": []})
+                            st.session_state["admin_flash_message"] = (
+                                "В роль руководителя переведены: " + ", ".join(changed_users) + "."
+                            )
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+
+            with st.container(border=True):
                 st.markdown('<div class="panel-title">Изменить роль пользователя</div>', unsafe_allow_html=True)
                 st.markdown(
                     '<div class="panel-caption">Выберите пользователя, задайте новую роль и при необходимости привяжите его к салону.</div>',
