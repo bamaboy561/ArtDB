@@ -495,6 +495,16 @@ REFERENCE_THEME_CSS = """
         background: rgba(0, 0, 0, 0);
     }
 
+    #MainMenu,
+    footer,
+    [data-testid="stToolbar"],
+    [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"],
+    [data-testid="stAppDeployButton"],
+    [data-testid="stAppFooter"] {
+        display: none !important;
+    }
+
     .block-container {
         max-width: 1740px;
         padding-top: 1.2rem;
