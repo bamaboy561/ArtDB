@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -32,6 +32,17 @@ def ensure_user_store() -> None:
         USERS_PATH.write_text("[]", encoding="utf-8")
     if not SESSIONS_PATH.exists():
         SESSIONS_PATH.write_text("[]", encoding="utf-8")
+
+
+def _normalize_session_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_session_datetime(raw_value: str) -> datetime:
+    parsed = datetime.fromisoformat(raw_value)
+    return _normalize_session_datetime(parsed)
 
 
 def _load_raw_users() -> list[dict[str, Any]]:
@@ -234,7 +245,7 @@ def _save_raw_sessions(sessions: list[dict[str, Any]]) -> None:
 
 def _cleanup_sessions(sessions: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     current_sessions = list(sessions) if sessions is not None else _load_raw_sessions()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     cleaned: list[dict[str, Any]] = []
     changed = False
 
@@ -247,7 +258,7 @@ def _cleanup_sessions(sessions: list[dict[str, Any]] | None = None) -> list[dict
             continue
 
         try:
-            expires_at = datetime.fromisoformat(expires_at_raw)
+            expires_at = _parse_session_datetime(expires_at_raw)
         except ValueError:
             changed = True
             continue
@@ -320,7 +331,7 @@ def _public_user(record: dict[str, Any]) -> dict[str, Any]:
 
 def create_auth_session(username: str, *, ttl_days: int = SESSION_TTL_DAYS) -> str:
     token = secrets.token_urlsafe(32)
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     expires_at = now + timedelta(days=ttl_days)
     sessions = _cleanup_sessions()
     sessions = [
