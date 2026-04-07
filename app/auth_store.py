@@ -612,6 +612,48 @@ def update_user_role(
     return _public_user(target_user)
 
 
+def reassign_salon_user(
+    username: str,
+    new_salon: str,
+    *,
+    actor_username: str | None = None,
+) -> dict[str, Any]:
+    username_key = username.strip().casefold()
+    normalized_salon = new_salon.strip()
+    _ = actor_username  # Reserved for future permission checks at the storage layer.
+
+    if not username_key:
+        raise ValueError("Укажите пользователя салона для перевода.")
+    if not normalized_salon:
+        raise ValueError("Укажите новый салон для пользователя.")
+
+    users = _load_raw_users()
+    target_user = next(
+        (record for record in users if str(record.get("username", "")).strip().casefold() == username_key),
+        None,
+    )
+    if target_user is None:
+        raise ValueError("Пользователь не найден.")
+
+    current_role = str(target_user.get("role", "")).strip().lower()
+    current_salon = str(target_user.get("salon", "")).strip()
+    if current_role != "salon":
+        raise ValueError("Перемещать между салонами можно только пользователей с ролью «Салон».")
+    if current_salon.casefold() == normalized_salon.casefold():
+        raise ValueError("Пользователь уже привязан к этому салону.")
+
+    target_user["salon"] = normalized_salon
+
+    users.sort(
+        key=lambda item: (
+            ROLE_SORT_ORDER.get(str(item.get("role", "")).strip().lower(), 99),
+            str(item.get("username", "")).casefold(),
+        )
+    )
+    _save_raw_users(users)
+    return _public_user(target_user)
+
+
 def delete_user(username: str, *, actor_username: str | None = None) -> dict[str, Any]:
     username_key = username.strip().casefold()
     actor_key = actor_username.strip().casefold() if actor_username else ""

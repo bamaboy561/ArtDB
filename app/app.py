@@ -24,6 +24,7 @@ from auth_store import (
     has_users,
     list_users,
     promote_first_manager_to_admin,
+    reassign_salon_user,
     revoke_auth_session,
     set_user_password,
     update_user_role,
@@ -505,6 +506,31 @@ REFERENCE_THEME_CSS = """
         display: none !important;
     }
 
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarCollapsedControl"] {
+        position: fixed !important;
+        top: 0.85rem !important;
+        left: 0.85rem !important;
+        z-index: 1000 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 2.6rem !important;
+        height: 2.6rem !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(15, 118, 110, 0.18) !important;
+        background: rgba(255, 255, 255, 0.94) !important;
+        box-shadow: 0 12px 28px rgba(16, 42, 40, 0.14) !important;
+        backdrop-filter: blur(10px);
+    }
+
+    [data-testid="collapsedControl"]:hover,
+    [data-testid="stSidebarCollapsedControl"]:hover {
+        background: #ffffff !important;
+        border-color: rgba(15, 118, 110, 0.34) !important;
+        box-shadow: 0 16px 34px rgba(16, 42, 40, 0.18) !important;
+    }
+
     .block-container {
         max-width: 1740px;
         padding-top: 1.2rem;
@@ -809,7 +835,10 @@ REFERENCE_THEME_CSS = """
             radial-gradient(circle at top right, rgba(15, 118, 110, 0.09), transparent 34%),
             linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(243, 248, 245, 0.97));
         box-shadow: 0 14px 28px rgba(16, 42, 40, 0.05);
-        min-height: 152px;
+        min-height: 136px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
 
     .snapshot-label {
@@ -836,6 +865,10 @@ REFERENCE_THEME_CSS = """
         font-size: 0.92rem;
         font-weight: 600;
         line-height: 1.45;
+    }
+
+    .js-plotly-plot .plotly .modebar {
+        display: none !important;
     }
 
     .snapshot-delta.negative {
@@ -1123,6 +1156,18 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
     if height is not None:
         figure.update_layout(height=height)
     return figure
+
+
+def compact_bar_chart_height(
+    row_count: int,
+    *,
+    minimum: int = 240,
+    maximum: int = 340,
+    base: int = 110,
+    row_step: int = 32,
+) -> int:
+    safe_rows = max(int(row_count), 1)
+    return max(minimum, min(maximum, base + safe_rows * row_step))
 
 
 def render_metric_cards(cards: list[dict[str, str]]) -> None:
@@ -2748,6 +2793,95 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 st.error(str(error))
 
             with st.container(border=True):
+                st.markdown('<div class="panel-title">Перевести пользователя в другой салон</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="panel-caption">Отдельное действие для сотрудников салонов. Роль не меняется: пользователь остаётся в контуре салона, меняется только привязка к точке.</div>',
+                    unsafe_allow_html=True,
+                )
+
+                salon_users_frame = (
+                    users.loc[users["role"].astype(str).str.lower() == "salon"].copy()
+                    if not users.empty and "role" in users
+                    else pd.DataFrame()
+                )
+                salon_usernames = salon_users_frame["username"].astype(str).tolist() if not salon_users_frame.empty else []
+
+                transfer_username = (
+                    st.selectbox(
+                        "Какого сотрудника перевести",
+                        options=salon_usernames,
+                        key="admin_reassign_salon_username",
+                    )
+                    if salon_usernames
+                    else st.selectbox(
+                        "Какого сотрудника перевести",
+                        options=["Нет пользователей салонов"],
+                        disabled=True,
+                        key="admin_reassign_salon_username_empty",
+                    )
+                )
+
+                if not registered_salons:
+                    st.info("Сначала создайте салоны, потом можно будет переводить сотрудников между ними.")
+                elif len(registered_salons) < 2:
+                    st.info("Для перевода нужен минимум второй салон.")
+                elif salon_usernames:
+                    transfer_row = salon_users_frame.loc[salon_users_frame["username"] == transfer_username].iloc[0]
+                    current_transfer_salon = str(transfer_row.get("salon", "") or "").strip()
+                    transfer_salon_options = registered_salons
+                    transfer_target_index = 0
+                    for idx, salon_name in enumerate(transfer_salon_options):
+                        if salon_name.strip().casefold() != current_transfer_salon.casefold():
+                            transfer_target_index = idx
+                            break
+
+                    st.caption(
+                        f"Сейчас сотрудник привязан к салону: {current_transfer_salon or 'Не привязан'}"
+                    )
+                    transfer_target_salon = st.selectbox(
+                        "В какой салон перевести",
+                        options=transfer_salon_options,
+                        index=transfer_target_index,
+                        key=f"admin_reassign_salon_target_{transfer_username}",
+                    )
+
+                    if st.button(
+                        "Перевести в другой салон",
+                        key="admin_reassign_salon_button",
+                        use_container_width=True,
+                    ):
+                        if not current_transfer_salon:
+                            st.error("У выбранного пользователя нет текущей привязки к салону.")
+                        elif current_transfer_salon.strip().casefold() == transfer_target_salon.strip().casefold():
+                            st.warning("Выберите другой салон для перевода.")
+                        else:
+                            try:
+                                moved_user = reassign_salon_user(
+                                    str(transfer_username),
+                                    str(transfer_target_salon),
+                                    actor_username=current_user["username"],
+                                )
+                                audit_event(
+                                    action="user.salon_reassign",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "username": str(moved_user.get("username", "")),
+                                        "old_salon": current_transfer_salon,
+                                        "new_salon": str(moved_user.get("salon", "")),
+                                        "source": "admin_tab",
+                                    },
+                                )
+                                st.session_state["admin_flash_message"] = (
+                                    f"Пользователь «{moved_user['display_name']}» переведён из салона "
+                                    f"«{current_transfer_salon}» в «{moved_user['salon']}»."
+                                )
+                                st.rerun()
+                            except Exception as error:
+                                st.error(str(error))
+                else:
+                    st.info("Пока нет пользователей с ролью «Салон».")
+
+            with st.container(border=True):
                 st.markdown('<div class="panel-title">Удалить пользователя</div>', unsafe_allow_html=True)
                 st.markdown(
                     '<div class="panel-caption">Удаление сразу закрывает доступ пользователю. Текущего администратора под собой удалить нельзя.</div>',
@@ -3707,11 +3841,13 @@ with tab_dashboard:
             )
 
     second_left, second_right = st.columns(2, gap="large")
+    category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
+    manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
+    overview_breakdown_height = compact_bar_chart_height(max(len(category_chart_data), len(manager_chart_data), 3))
 
     with second_left:
         with st.container(border=True):
             render_panel_header("Категории", "Вклад категорий в выручку.")
-            category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
             if margin_visible:
                 category_chart = px.bar(
                     category_chart_data, x="revenue", y="group_name", orientation="h",
@@ -3729,13 +3865,13 @@ with tab_dashboard:
                     labels={"group_name": "Категория", "revenue": "Выручка"},
                 )
                 category_chart.update_layout(yaxis_title="")
-            polish_figure(category_chart, height=360)
+            category_chart.update_yaxes(automargin=True)
+            polish_figure(category_chart, height=overview_breakdown_height)
             st.plotly_chart(category_chart, use_container_width=True)
 
     with second_right:
         with st.container(border=True):
             render_panel_header("Менеджеры", "Результаты по команде продаж.")
-            manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
             if margin_visible:
                 manager_chart = px.bar(
                     manager_chart_data, x="revenue", y="group_name", orientation="h",
@@ -3753,7 +3889,8 @@ with tab_dashboard:
                     labels={"group_name": "Менеджер", "revenue": "Выручка"},
                 )
                 manager_chart.update_layout(yaxis_title="")
-            polish_figure(manager_chart, height=360)
+            manager_chart.update_yaxes(automargin=True)
+            polish_figure(manager_chart, height=overview_breakdown_height)
             st.plotly_chart(manager_chart, use_container_width=True)
 
     with st.container(border=True):
