@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date
 from html import escape
 from pathlib import Path
@@ -90,6 +91,14 @@ DASHBOARD_CSS = """
         margin-bottom: 1rem;
     }
 
+    .dashboard-hero-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+    }
+
     .dashboard-eyebrow {
         font-size: 0.82rem;
         text-transform: uppercase;
@@ -131,6 +140,21 @@ DASHBOARD_CSS = """
         border: 1px solid rgba(15, 118, 110, 0.1);
         max-width: 100%;
         overflow-wrap: anywhere;
+    }
+
+    .app-build-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.35rem 0.8rem;
+        border-radius: 999px;
+        background: rgba(16, 42, 40, 0.06);
+        border: 1px solid rgba(16, 42, 40, 0.08);
+        color: #48635f;
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
     }
 
     .panel-title {
@@ -507,14 +531,18 @@ REFERENCE_THEME_CSS = """
     }
 
     [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapsedControl"] {
+    [data-testid="stSidebarCollapsedControl"],
+    button[kind="header"][aria-label*="sidebar"],
+    button[kind="header"][aria-label*="Sidebar"] {
         position: fixed !important;
         top: 0.85rem !important;
         left: 0.85rem !important;
-        z-index: 1000 !important;
+        z-index: 99999 !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
+        visibility: visible !important;
+        opacity: 1 !important;
         width: 2.6rem !important;
         height: 2.6rem !important;
         border-radius: 999px !important;
@@ -525,7 +553,9 @@ REFERENCE_THEME_CSS = """
     }
 
     [data-testid="collapsedControl"]:hover,
-    [data-testid="stSidebarCollapsedControl"]:hover {
+    [data-testid="stSidebarCollapsedControl"]:hover,
+    button[kind="header"][aria-label*="sidebar"]:hover,
+    button[kind="header"][aria-label*="Sidebar"]:hover {
         background: #ffffff !important;
         border-color: rgba(15, 118, 110, 0.34) !important;
         box-shadow: 0 16px 34px rgba(16, 42, 40, 0.18) !important;
@@ -1079,6 +1109,13 @@ ROLE_LABELS = {
 
 def role_label(role: str) -> str:
     return ROLE_LABELS.get(role, role)
+
+
+def get_build_badge_label() -> str:
+    commit = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "").strip()
+    if commit:
+        return f"Сборка {commit[:7]}"
+    return "Обновление 07.04"
 
 
 def is_network_role(role: str) -> bool:
@@ -3088,11 +3125,15 @@ def render_dataset_hero(
         f"Менеджеры: {escape(manager_text)}",
     ]
     chips_html = "".join(f'<span class="scope-chip">{chip}</span>' for chip in chips)
+    build_badge_html = f'<span class="app-build-badge">{escape(get_build_badge_label())}</span>'
 
     render_html_block(
         f"""
         <div class="dashboard-hero">
-            <div class="dashboard-eyebrow">Единая панель продаж</div>
+            <div class="dashboard-hero-meta">
+                <div class="dashboard-eyebrow">Единая панель продаж</div>
+                {build_badge_html}
+            </div>
             <h1 class="dashboard-title">Картина по продажам в одном экране</h1>
             <p class="dashboard-subtitle">
                 Здесь собраны дневные загрузки, управленческие KPI, точки роста и зоны риска.
