@@ -120,12 +120,12 @@ def _save_raw_users(users: list[dict[str, Any]]) -> None:
                             %s,
                             %s,
                             CASE
-                                WHEN %s IS NULL THEN NULL
-                                ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1')
+                                WHEN %s::text IS NULL THEN NULL
+                                ELSE pgp_sym_encrypt(%s::text, %s::text, 'cipher-algo=aes256,compress-algo=1')
                             END,
                             CASE
-                                WHEN %s IS NULL THEN NULL
-                                ELSE pgp_sym_encrypt(%s, %s, 'cipher-algo=aes256,compress-algo=1')
+                                WHEN %s::text IS NULL THEN NULL
+                                ELSE pgp_sym_encrypt(%s::text, %s::text, 'cipher-algo=aes256,compress-algo=1')
                             END,
                             %s,
                             %s,
