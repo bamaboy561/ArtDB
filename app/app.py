@@ -1806,14 +1806,14 @@ def render_auth_gate() -> dict[str, str]:
 
         st.subheader("Вход в систему")
         with st.form("login_form"):
-            identifier = st.text_input("Email или телефон")
+            identifier = st.text_input("Логин, email или телефон")
             password = st.text_input("Пароль", type="password")
             submitted = st.form_submit_button("Войти", use_container_width=True)
 
         if submitted:
             user = authenticate_user(identifier, password)
             if not user:
-                st.error("Неверный email, телефон или пароль.")
+                st.error("Неверный логин, email, телефон или пароль.")
             else:
                 st.session_state["auth_user"] = user
                 set_persistent_auth_token(create_auth_session(user["username"]))

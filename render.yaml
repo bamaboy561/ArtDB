@@ -39,6 +39,8 @@ services:
         sync: false
       - key: INITIAL_ADMIN_PHONE
         value: ""
+      - key: RESET_INITIAL_ADMIN_PASSWORD
+        value: "false"
 
 databases:
   - name: artdb-db
