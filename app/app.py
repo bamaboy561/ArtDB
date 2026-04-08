@@ -536,31 +536,9 @@ REFERENCE_THEME_CSS = """
     [data-testid="stSidebarCollapsedControl"],
     button[kind="header"][aria-label*="sidebar"],
     button[kind="header"][aria-label*="Sidebar"] {
-        position: fixed !important;
-        top: 0.85rem !important;
-        left: 0.85rem !important;
-        z-index: 99999 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        width: 2.6rem !important;
-        height: 2.6rem !important;
-        border-radius: 999px !important;
-        border: 1px solid rgba(15, 118, 110, 0.18) !important;
-        background: rgba(255, 255, 255, 0.94) !important;
-        box-shadow: 0 12px 28px rgba(16, 42, 40, 0.14) !important;
-        backdrop-filter: blur(10px);
-    }
-
-    [data-testid="collapsedControl"]:hover,
-    [data-testid="stSidebarCollapsedControl"]:hover,
-    button[kind="header"][aria-label*="sidebar"]:hover,
-    button[kind="header"][aria-label*="Sidebar"]:hover {
-        background: #ffffff !important;
-        border-color: rgba(15, 118, 110, 0.34) !important;
-        box-shadow: 0 16px 34px rgba(16, 42, 40, 0.18) !important;
+        display: none !important;
+        pointer-events: none !important;
+        opacity: 0 !important;
     }
 
     .block-container {
@@ -570,10 +548,20 @@ REFERENCE_THEME_CSS = """
     }
 
     section[data-testid="stSidebar"] {
+        transform: translateX(0) !important;
+        margin-left: 0 !important;
+        visibility: visible !important;
+        min-width: 21rem !important;
+        max-width: 21rem !important;
         background:
             radial-gradient(circle at top right, rgba(251, 191, 36, 0.1), transparent 26%),
             linear-gradient(180deg, rgba(246, 247, 243, 0.98), rgba(236, 243, 240, 0.98));
         border-right: 1px solid rgba(15, 118, 110, 0.08);
+    }
+
+    section[data-testid="stSidebar"] > div {
+        width: 21rem !important;
+        min-width: 21rem !important;
     }
 
     section[data-testid="stSidebar"] [data-baseweb="radio"] > div {
@@ -1052,83 +1040,37 @@ def render_sidebar_reopen_button() -> None:
             }
 
             const doc = parentWindow.document;
-            const buttonId = "codex-sidebar-reopen-button";
-            let button = doc.getElementById(buttonId);
-
-            const openSidebar = () => {
-                const selectors = [
-                    '[data-testid="collapsedControl"]',
-                    '[data-testid="stSidebarCollapsedControl"]',
-                    'button[kind="header"][aria-label*="sidebar"]',
-                    'button[kind="header"][aria-label*="Sidebar"]',
-                    'button[aria-label*="sidebar"]',
-                    'button[title*="sidebar"]',
-                ];
-
-                for (const selector of selectors) {
-                    const control = doc.querySelector(selector);
-                    if (control) {
-                        control.click();
-                        return;
-                    }
-                }
-
+            const keepSidebarOpen = () => {
                 const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
                 if (sidebar) {
+                    sidebar.setAttribute('aria-expanded', 'true');
                     sidebar.style.transform = 'translateX(0)';
                     sidebar.style.marginLeft = '0';
                     sidebar.style.visibility = 'visible';
+                    sidebar.style.minWidth = '21rem';
+                    sidebar.style.maxWidth = '21rem';
+                    sidebar.style.width = '21rem';
                 }
+
+                const sidebarInner = doc.querySelector('section[data-testid="stSidebar"] > div');
+                if (sidebarInner) {
+                    sidebarInner.style.width = '21rem';
+                    sidebarInner.style.minWidth = '21rem';
+                }
+
+                const controls = doc.querySelectorAll(
+                    '[data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"], button[kind="header"][aria-label*="sidebar"], button[kind="header"][aria-label*="Sidebar"]'
+                );
+                controls.forEach((control) => {
+                    control.style.display = 'none';
+                    control.style.pointerEvents = 'none';
+                    control.style.opacity = '0';
+                });
             };
 
-            if (!button) {
-                button = doc.createElement("button");
-                button.id = buttonId;
-                button.type = "button";
-                button.textContent = "Меню";
-                button.setAttribute("aria-label", "Открыть боковую панель");
-                button.onclick = (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openSidebar();
-                };
-                button.onmousedown = (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openSidebar();
-                };
-                button.ontouchstart = (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openSidebar();
-                };
-                doc.body.appendChild(button);
-            }
-
-            Object.assign(button.style, {
-                position: "fixed",
-                top: "0.85rem",
-                left: "0.85rem",
-                zIndex: "100001",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "0.35rem",
-                minWidth: "74px",
-                height: "2.7rem",
-                padding: "0 0.9rem",
-                borderRadius: "999px",
-                border: "1px solid rgba(15, 118, 110, 0.18)",
-                background: "rgba(255, 255, 255, 0.96)",
-                color: "#0f766e",
-                fontSize: "0.92rem",
-                fontWeight: "700",
-                boxShadow: "0 12px 28px rgba(16, 42, 40, 0.14)",
-                cursor: "pointer",
-                backdropFilter: "blur(10px)",
-                pointerEvents: "auto",
-                userSelect: "none",
-            });
+            keepSidebarOpen();
+            const observer = new MutationObserver(() => keepSidebarOpen());
+            observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
         })();
         </script>
         """,
