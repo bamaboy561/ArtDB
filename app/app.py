@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from auth_store import (
     authenticate_user,
@@ -71,6 +72,7 @@ st.set_page_config(
     page_title="Аналитика продаж 1С",
     page_icon="📊",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 
@@ -1037,6 +1039,89 @@ def is_missing(value: object) -> bool:
 
 def render_html_block(html: str) -> None:
     st.markdown(dedent(html).strip(), unsafe_allow_html=True)
+
+
+def render_sidebar_reopen_button() -> None:
+    components.html(
+        """
+        <script>
+        (function () {
+            const parentWindow = window.parent;
+            if (!parentWindow || !parentWindow.document) {
+                return;
+            }
+
+            const doc = parentWindow.document;
+            const buttonId = "codex-sidebar-reopen-button";
+            let button = doc.getElementById(buttonId);
+
+            const openSidebar = () => {
+                const selectors = [
+                    '[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"]',
+                    'button[kind="header"][aria-label*="sidebar"]',
+                    'button[kind="header"][aria-label*="Sidebar"]',
+                    'button[aria-label*="sidebar"]',
+                    'button[title*="sidebar"]',
+                ];
+
+                for (const selector of selectors) {
+                    const control = doc.querySelector(selector);
+                    if (control) {
+                        control.click();
+                        return;
+                    }
+                }
+
+                const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+                if (sidebar) {
+                    sidebar.style.transform = 'translateX(0)';
+                    sidebar.style.marginLeft = '0';
+                    sidebar.style.visibility = 'visible';
+                }
+            };
+
+            if (!button) {
+                button = doc.createElement("button");
+                button.id = buttonId;
+                button.type = "button";
+                button.textContent = "Меню";
+                button.setAttribute("aria-label", "Открыть боковую панель");
+                button.addEventListener("click", openSidebar);
+                doc.body.appendChild(button);
+            }
+
+            Object.assign(button.style, {
+                position: "fixed",
+                top: "0.85rem",
+                left: "0.85rem",
+                zIndex: "100001",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "0.35rem",
+                minWidth: "74px",
+                height: "2.7rem",
+                padding: "0 0.9rem",
+                borderRadius: "999px",
+                border: "1px solid rgba(15, 118, 110, 0.18)",
+                background: "rgba(255, 255, 255, 0.96)",
+                color: "#0f766e",
+                fontSize: "0.92rem",
+                fontWeight: "700",
+                boxShadow: "0 12px 28px rgba(16, 42, 40, 0.14)",
+                cursor: "pointer",
+                backdropFilter: "blur(10px)",
+            });
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+render_sidebar_reopen_button()
 
 
 def schedule_widget_reset(resets: dict[str, object | None]) -> None:
