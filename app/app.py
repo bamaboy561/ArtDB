@@ -1069,8 +1069,9 @@ def render_sidebar_reopen_button() -> None:
             };
 
             keepSidebarOpen();
-            const observer = new MutationObserver(() => keepSidebarOpen());
-            observer.observe(doc.body, { childList: true, subtree: true, attributes: true });
+            [150, 500, 1200, 2500].forEach((delay) => {
+                parentWindow.setTimeout(keepSidebarOpen, delay);
+            });
         })();
         </script>
         """,
