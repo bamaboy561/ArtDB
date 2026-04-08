@@ -1087,7 +1087,21 @@ def render_sidebar_reopen_button() -> None:
                 button.type = "button";
                 button.textContent = "Меню";
                 button.setAttribute("aria-label", "Открыть боковую панель");
-                button.addEventListener("click", openSidebar);
+                button.onclick = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openSidebar();
+                };
+                button.onmousedown = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openSidebar();
+                };
+                button.ontouchstart = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openSidebar();
+                };
                 doc.body.appendChild(button);
             }
 
@@ -1112,6 +1126,8 @@ def render_sidebar_reopen_button() -> None:
                 boxShadow: "0 12px 28px rgba(16, 42, 40, 0.14)",
                 cursor: "pointer",
                 backdropFilter: "blur(10px)",
+                pointerEvents: "auto",
+                userSelect: "none",
             });
         })();
         </script>
