@@ -230,6 +230,27 @@ DASHBOARD_CSS = """
         max-width: 68rem;
     }
 
+    .section-switcher {
+        padding: 0.35rem 0 0.55rem;
+    }
+
+    .section-switcher-label {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #0f766e;
+        font-weight: 700;
+        margin-bottom: 0.28rem;
+    }
+
+    .section-switcher-body {
+        color: #56706b;
+        font-size: 0.95rem;
+        line-height: 1.45;
+        margin-bottom: 0.35rem;
+        max-width: 68rem;
+    }
+
     .workspace-band {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -1378,6 +1399,39 @@ def render_snapshot_strip(items: list[dict[str, str]]) -> None:
         )
 
     render_html_block(f'<div class="snapshot-strip">{"".join(cards_html)}</div>')
+
+
+def render_screen_switcher(title: str, options: list[str], *, key: str, description: str = "") -> str:
+    if not options:
+        return ""
+    if key in st.session_state and st.session_state[key] not in options:
+        st.session_state[key] = options[0]
+
+    description_html = (
+        f'<div class="section-switcher-body">{escape(description)}</div>'
+        if description
+        else ""
+    )
+    render_html_block(
+        f"""
+        <div class="section-switcher">
+            <div class="section-switcher-label">{escape(title)}</div>
+            {description_html}
+        </div>
+        """
+    )
+    current_value = str(st.session_state.get(key, options[0]))
+    current_index = options.index(current_value) if current_value in options else 0
+    return str(
+        st.radio(
+            title,
+            options=options,
+            index=current_index,
+            horizontal=True,
+            label_visibility="collapsed",
+            key=key,
+        )
+    )
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {".csv", ".xls", ".xlsx"}
@@ -3699,14 +3753,7 @@ manager_summary = build_product_summary(data, "manager")
 salon_summary = build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
 monthly_summary = build_monthly_summary(data)
 returns_overview = build_returns_overview(data)
-return_product_summary = build_return_groups(data, "product")
-return_monthly_summary = build_return_monthly_summary(data)
-return_salon_summary = build_return_groups(data, "salon") if "salon" in data.columns else pd.DataFrame()
 plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
-abc_data = build_abc_analysis(product_summary, "revenue")
-forecast_data = build_forecast(monthly_summary)
-revenue_anomalies = detect_anomalies(monthly_summary)
-yoy_data = build_yoy_comparison(data)
 monthly_plans = load_monthly_plans()
 plan_scope_salons = (
     sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
@@ -3726,18 +3773,7 @@ scope_plan_summary = build_scope_plan_summary(
 plan_fact_summary = build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
 plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 
-default_left_month: str | None = None
-default_right_month: str | None = None
-comparison = pd.DataFrame()
-
-if len(monthly_summary) >= 2:
-    default_left_month = monthly_summary.iloc[-2]["month_label"]
-    default_right_month = monthly_summary.iloc[-1]["month_label"]
-    comparison = build_month_comparison(data, default_left_month, default_right_month)
-
 render_dataset_hero(source_label, data, overview, selected_categories, selected_managers, current_user)
-
-a_revenue_share = abc_data.loc[abc_data["abc_class"] == "A", "share_pct"].sum() if not abc_data.empty else float("nan")
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 
@@ -3775,43 +3811,69 @@ if margin_visible:
             },
             {"label": "Маржа %", "value": format_percent(overview["margin_pct"]), "delta": ""},
         ]
-    )
+)
 overview_cards.append({"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""})
 render_metric_cards(overview_cards)
 
-tab_labels = ["Обзор", "Аналитика", "План / факт", "Данные"]
+screen_options = ["Обзор", "Аналитика", "План / факт", "Данные"]
 if can_manage_access(current_user):
-    tab_labels.append("Управление")
-tabs = st.tabs(tab_labels)
-tab_dashboard, tab_analytics, tab_plan, tab_data = tabs[:4]
-tab_access = tabs[4] if can_manage_access(current_user) else None
-
-insights = build_insights(
-    overview,
-    monthly_summary,
-    category_summary,
-    manager_summary,
-    product_summary,
-    abc_data,
-    returns_overview=returns_overview,
-    salon_summary=salon_summary,
-    anomalies=revenue_anomalies,
-    allow_margin=margin_visible,
+    screen_options.append("Управление")
+active_screen = render_screen_switcher(
+    "Основной экран",
+    screen_options,
+    key="primary_screen_nav",
+    description="Теперь система рендерит только активный раздел, поэтому переключение и загрузка страниц должны стать заметно легче.",
 )
-if returns_overview["return_lines"] > 0:
-    insights.append(
-        (
-            "Возвраты в текущем контуре",
-            f"Возвратных строк: {format_number(returns_overview['return_lines'])}, "
-            f"сумма возвратов {format_money(returns_overview['return_revenue'])}, "
-            f"доля от валовой выручки {format_percent(returns_overview['return_share_pct'])}.",
-        )
-    )
-insights = insights[:6]
-latest_month = monthly_summary.iloc[-1]
-top_products = product_summary.head(7)
 
-with tab_dashboard:
+active_analytics_screen = ""
+active_advanced_screen = ""
+if active_screen == "Аналитика":
+    analytics_screen_options = ["ABC-анализ"]
+    if margin_visible:
+        analytics_screen_options.append("Маржинальность")
+    analytics_screen_options.extend(["Сравнение месяцев", "Расширенный"])
+    active_analytics_screen = render_screen_switcher(
+        "Раздел аналитики",
+        analytics_screen_options,
+        key="analytics_screen_nav",
+        description="Внутри аналитики теперь тоже считается только открытый блок, без скрытых тяжёлых вкладок.",
+    )
+    if active_analytics_screen == "Расширенный":
+        active_advanced_screen = render_screen_switcher(
+            "Глубокий разбор",
+            ["RFM-анализ", "Тепловая карта", "Прогноз", "Возвраты"],
+            key="advanced_screen_nav",
+            description="Выберите только тот тип разбора, который нужен прямо сейчас.",
+        )
+
+if active_screen == "Обзор":
+    abc_data = build_abc_analysis(product_summary, "revenue")
+    forecast_data = build_forecast(monthly_summary)
+    revenue_anomalies = detect_anomalies(monthly_summary)
+    insights = build_insights(
+        overview,
+        monthly_summary,
+        category_summary,
+        manager_summary,
+        product_summary,
+        abc_data,
+        returns_overview=returns_overview,
+        salon_summary=salon_summary,
+        anomalies=revenue_anomalies,
+        allow_margin=margin_visible,
+    )
+    if returns_overview["return_lines"] > 0:
+        insights.append(
+            (
+                "Возвраты в текущем контуре",
+                f"Возвратных строк: {format_number(returns_overview['return_lines'])}, "
+                f"сумма возвратов {format_money(returns_overview['return_revenue'])}, "
+                f"доля от валовой выручки {format_percent(returns_overview['return_share_pct'])}.",
+            )
+        )
+    insights = insights[:6]
+    latest_month = monthly_summary.iloc[-1]
+    top_products = product_summary.head(7)
     left_col, right_col = st.columns([2.2, 0.95], gap="large")
 
     with left_col:
@@ -3991,18 +4053,7 @@ with tab_dashboard:
             height=300,
         )
 
-with tab_analytics:
-    analytics_tab_labels = ["ABC-анализ"]
-    if margin_visible:
-        analytics_tab_labels.append("Маржинальность")
-    analytics_tab_labels.extend(["Сравнение месяцев", "Расширенный"])
-    analytics_tabs = dict(zip(analytics_tab_labels, st.tabs(analytics_tab_labels)))
-    tab_abc = analytics_tabs["ABC-анализ"]
-    tab_margin = analytics_tabs.get("Маржинальность")
-    tab_months = analytics_tabs["Сравнение месяцев"]
-    tab_adv = analytics_tabs["Расширенный"]
-
-with tab_abc:
+if active_screen == "Аналитика" and active_analytics_screen == "ABC-анализ":
     render_section_intro(
         "ABC-анализ",
         "Показывает, какие товары формируют основную долю выручки, а для руководителя ещё и маржи или объема продаж.",
@@ -4157,150 +4208,150 @@ with tab_abc:
             mime="text/csv",
         )
 
-if tab_margin is not None:
-    with tab_margin:
-        render_section_intro(
-            "Маржинальность",
-            "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже.",
+if active_screen == "Аналитика" and active_analytics_screen == "Маржинальность" and margin_visible:
+    render_section_intro(
+        "Маржинальность",
+        "Показывает, какие товары приносят больше валовой прибыли, а какие создают риск по марже.",
+    )
+    if data["margin"].isna().all():
+        st.info("Для маржинальности не хватает колонок `Себестоимость` или `Маржа` в исходном файле.")
+    else:
+        margin_sorted = product_summary.sort_values("margin", ascending=False).copy()
+        low_margin = product_summary.sort_values("margin_pct", ascending=True).head(15).copy()
+        margin_pct_series = product_summary["margin_pct"].dropna()
+        risk_threshold = 20.0
+        risk_count = int((product_summary["margin_pct"].fillna(9999) < risk_threshold).sum())
+        top_margin_product = margin_sorted.iloc[0] if not margin_sorted.empty else None
+
+        render_metric_cards(
+            [
+                {
+                    "label": "Общая маржа",
+                    "value": format_money(overview["total_margin"]),
+                    "delta": format_percent(overview["margin_pct"]),
+                },
+                {
+                    "label": "Средняя маржа по товарам",
+                    "value": format_percent(margin_pct_series.mean()) if not margin_pct_series.empty else "н/д",
+                    "delta": "Средний процент по текущему ассортименту",
+                },
+                {
+                    "label": "Позиции в зоне риска",
+                    "value": format_number(risk_count),
+                    "delta": f"Ниже {int(risk_threshold)}% по марже",
+                },
+                {
+                    "label": "Лидер по валовой марже",
+                    "value": str(top_margin_product['group_name']) if top_margin_product is not None else "н/д",
+                    "delta": format_money(top_margin_product["margin"]) if top_margin_product is not None else "",
+                },
+            ]
         )
-        if data["margin"].isna().all():
-            st.info("Для маржинальности не хватает колонок `Себестоимость` или `Маржа` в исходном файле.")
-        else:
-            margin_sorted = product_summary.sort_values("margin", ascending=False).copy()
-            low_margin = product_summary.sort_values("margin_pct", ascending=True).head(15).copy()
-            margin_pct_series = product_summary["margin_pct"].dropna()
-            risk_threshold = 20.0
-            risk_count = int((product_summary["margin_pct"].fillna(9999) < risk_threshold).sum())
-            top_margin_product = margin_sorted.iloc[0] if not margin_sorted.empty else None
+        render_section_marker(
+            "Прибыль и риск",
+            "Что создаёт маржу, а что её съедает",
+            "Сначала смотрите лидеров и зону риска, затем переходите к карте распределения и детальной таблице. Такой порядок помогает не потеряться в цифрах и сразу выделить товары для действия.",
+        )
 
-            render_metric_cards(
-                [
-                    {
-                        "label": "Общая маржа",
-                        "value": format_money(overview["total_margin"]),
-                        "delta": format_percent(overview["margin_pct"]),
-                    },
-                    {
-                        "label": "Средняя маржа по товарам",
-                        "value": format_percent(margin_pct_series.mean()) if not margin_pct_series.empty else "н/д",
-                        "delta": "Средний процент по текущему ассортименту",
-                    },
-                    {
-                        "label": "Позиции в зоне риска",
-                        "value": format_number(risk_count),
-                        "delta": f"Ниже {int(risk_threshold)}% по марже",
-                    },
-                    {
-                        "label": "Лидер по валовой марже",
-                        "value": str(top_margin_product['group_name']) if top_margin_product is not None else "н/д",
-                        "delta": format_money(top_margin_product["margin"]) if top_margin_product is not None else "",
-                    },
-                ]
-            )
-            render_section_marker(
-                "Прибыль и риск",
-                "Что создаёт маржу, а что её съедает",
-                "Сначала смотрите лидеров и зону риска, затем переходите к карте распределения и детальной таблице. Такой порядок помогает не потеряться в цифрах и сразу выделить товары для действия.",
-            )
+        leaders_left, leaders_right = st.columns(2, gap="large")
 
-            leaders_left, leaders_right = st.columns(2, gap="large")
-
-            with leaders_left:
-                with st.container(border=True):
-                    render_panel_header(
-                        "Лидеры по валовой марже",
-                        "Крупный список товаров, которые приносят наибольшую сумму маржи. Этот блок помогает понять, на каком ассортименте держится прибыль.",
-                    )
-                    fig_margin = px.bar(
-                        margin_sorted.head(20).sort_values("margin", ascending=True),
-                        x="margin",
-                        y="group_name",
-                        orientation="h",
-                        color="margin_pct",
-                        color_continuous_scale=["#FDE68A", "#D97706", "#92400E"],
-                        title="",
-                        labels={"group_name": "Товар", "margin": "Маржа", "margin_pct": "Маржа %"},
-                    )
-                    fig_margin.update_layout(coloraxis_showscale=False, yaxis_title="")
-                    polish_figure(fig_margin, height=520)
-                    st.plotly_chart(fig_margin, use_container_width=True)
-
-            with leaders_right:
-                with st.container(border=True):
-                    render_panel_header(
-                        "Зоны риска по марже",
-                        "Показывает товары с самой низкой маржой в процентах. Горизонтальный формат делает длинные названия читаемыми и позволяет быстрее искать слабые позиции.",
-                    )
-                    fig_low = px.bar(
-                        low_margin.sort_values("margin_pct", ascending=True),
-                        x="margin_pct",
-                        y="group_name",
-                        orientation="h",
-                        color="margin_pct",
-                        color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
-                        title="",
-                        labels={"group_name": "Товар", "margin_pct": "Маржа %"},
-                    )
-                    fig_low.update_layout(coloraxis_showscale=False, yaxis_title="")
-                    polish_figure(fig_low, height=520)
-                    st.plotly_chart(fig_low, use_container_width=True)
-
+        with leaders_left:
             with st.container(border=True):
                 render_panel_header(
-                    "Выручка vs Маржинальность",
-                    "Каждая точка — отдельный товар. Правый верхний угол показывает сильные позиции, а левый нижний помогает быстро заметить слабые товары с маленькой выручкой и низкой маржой. Размер пузыря отражает объём продаж без знака, поэтому возвраты не ломают график.",
+                    "Лидеры по валовой марже",
+                    "Крупный список товаров, которые приносят наибольшую сумму маржи. Этот блок помогает понять, на каком ассортименте держится прибыль.",
                 )
-                scatter_data = product_summary[product_summary["margin_pct"].notna()].copy()
-                if not scatter_data.empty:
-                    scatter_data["quantity_bubble"] = build_safe_marker_size(scatter_data["quantity"], absolute=True)
-                    scatter_fig = px.scatter(
-                        scatter_data,
-                        x="revenue",
-                        y="margin_pct",
-                        size="quantity_bubble",
-                        color="margin_pct",
-                        color_continuous_scale=["#991B1B", "#F59E0B", "#0F766E"],
-                        hover_name="group_name",
-                        labels={"revenue": "Выручка", "margin_pct": "Маржа, %", "quantity_bubble": "Объём продаж"},
-                        title="",
-                        size_max=60,
-                    )
-                    scatter_fig.add_hline(y=20, line_dash="dash", line_color="#991B1B", annotation_text="Порог 20%")
-                    polish_figure(scatter_fig, height=560)
-                    st.plotly_chart(scatter_fig, use_container_width=True)
-                else:
-                    st.info("Недостаточно данных для построения скаттер-плота (нужны себестоимость или маржа).")
+                fig_margin = px.bar(
+                    margin_sorted.head(20).sort_values("margin", ascending=True),
+                    x="margin",
+                    y="group_name",
+                    orientation="h",
+                    color="margin_pct",
+                    color_continuous_scale=["#FDE68A", "#D97706", "#92400E"],
+                    title="",
+                    labels={"group_name": "Товар", "margin": "Маржа", "margin_pct": "Маржа %"},
+                )
+                fig_margin.update_layout(coloraxis_showscale=False, yaxis_title="")
+                polish_figure(fig_margin, height=520)
+                st.plotly_chart(fig_margin, use_container_width=True)
 
+        with leaders_right:
             with st.container(border=True):
                 render_panel_header(
-                    "Таблица по маржинальности товаров",
-                    "Подробная расшифровка по выручке, себестоимости, марже и количеству. Таблица подходит для фильтрации, проверки аномалий и выгрузки в Excel.",
+                    "Зоны риска по марже",
+                    "Показывает товары с самой низкой маржой в процентах. Горизонтальный формат делает длинные названия читаемыми и позволяет быстрее искать слабые позиции.",
                 )
-                st.dataframe(
-                    format_display_frame(
-                        margin_sorted,
-                        {
-                            "group_name": "Товар",
-                            "revenue": "Выручка",
-                            "cost": "Себестоимость",
-                            "margin": "Маржа",
-                            "quantity": "Количество",
-                            "sales_lines": "Строк продаж",
-                            "margin_pct": "Маржа, %",
-                        },
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=640,
+                fig_low = px.bar(
+                    low_margin.sort_values("margin_pct", ascending=True),
+                    x="margin_pct",
+                    y="group_name",
+                    orientation="h",
+                    color="margin_pct",
+                    color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
+                    title="",
+                    labels={"group_name": "Товар", "margin_pct": "Маржа %"},
                 )
-                st.download_button(
-                    "Скачать маржинальность по товарам",
-                    data=to_csv_bytes(margin_sorted),
-                    file_name="margin_by_product.csv",
-                    mime="text/csv",
-                )
+                fig_low.update_layout(coloraxis_showscale=False, yaxis_title="")
+                polish_figure(fig_low, height=520)
+                st.plotly_chart(fig_low, use_container_width=True)
 
-with tab_months:
+        with st.container(border=True):
+            render_panel_header(
+                "Выручка vs Маржинальность",
+                "Каждая точка — отдельный товар. Правый верхний угол показывает сильные позиции, а левый нижний помогает быстро заметить слабые товары с маленькой выручкой и низкой маржой. Размер пузыря отражает объём продаж без знака, поэтому возвраты не ломают график.",
+            )
+            scatter_data = product_summary[product_summary["margin_pct"].notna()].copy()
+            if not scatter_data.empty:
+                scatter_data["quantity_bubble"] = build_safe_marker_size(scatter_data["quantity"], absolute=True)
+                scatter_fig = px.scatter(
+                    scatter_data,
+                    x="revenue",
+                    y="margin_pct",
+                    size="quantity_bubble",
+                    color="margin_pct",
+                    color_continuous_scale=["#991B1B", "#F59E0B", "#0F766E"],
+                    hover_name="group_name",
+                    labels={"revenue": "Выручка", "margin_pct": "Маржа, %", "quantity_bubble": "Объём продаж"},
+                    title="",
+                    size_max=60,
+                )
+                scatter_fig.add_hline(y=20, line_dash="dash", line_color="#991B1B", annotation_text="Порог 20%")
+                polish_figure(scatter_fig, height=560)
+                st.plotly_chart(scatter_fig, use_container_width=True)
+            else:
+                st.info("Недостаточно данных для построения скаттер-плота (нужны себестоимость или маржа).")
+
+        with st.container(border=True):
+            render_panel_header(
+                "Таблица по маржинальности товаров",
+                "Подробная расшифровка по выручке, себестоимости, марже и количеству. Таблица подходит для фильтрации, проверки аномалий и выгрузки в Excel.",
+            )
+            st.dataframe(
+                format_display_frame(
+                    margin_sorted,
+                    {
+                        "group_name": "Товар",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "quantity": "Количество",
+                        "sales_lines": "Строк продаж",
+                        "margin_pct": "Маржа, %",
+                    },
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=640,
+            )
+            st.download_button(
+                "Скачать маржинальность по товарам",
+                data=to_csv_bytes(margin_sorted),
+                file_name="margin_by_product.csv",
+                mime="text/csv",
+            )
+
+if active_screen == "Аналитика" and active_analytics_screen == "Сравнение месяцев":
+    yoy_data = build_yoy_comparison(data)
     render_section_intro(
         "Сравнение месяцев",
         "Показывает, как меняются продажи и количество между двумя периодами, а для руководителя ещё и маржа.",
@@ -4491,7 +4542,7 @@ with tab_months:
             polish_figure(yoy_fig, height=420)
             st.plotly_chart(yoy_fig, use_container_width=True)
 
-with tab_plan:
+if active_screen == "План / факт":
     render_section_intro(
         "План / факт",
         "Сравнивает помесячный план с фактическими продажами по выручке и количеству, а для руководителя ещё и по марже.",
@@ -4840,14 +4891,12 @@ with tab_plan:
                         height=420,
                     )
 
-with tab_adv:
+if active_screen == "Аналитика" and active_analytics_screen == "Расширенный":
     render_section_intro(
         "Расширенный анализ",
         "Дополнительные блоки для более глубокого разбора продаж: сегментация по активности, поиск ритма продаж по дням и простой прогноз.",
     )
-    adv_tabs = st.tabs(["RFM-анализ", "Тепловая карта", "Прогноз"])
-
-    with adv_tabs[0]:
+    if active_advanced_screen == "RFM-анализ":
         render_panel_header(
             "RFM-анализ",
             "Показывает, кто продает чаще, кто давно не активен и кто приносит наибольшую выручку. Подходит для оценки менеджеров или категорий по качеству работы.",
@@ -4932,7 +4981,7 @@ with tab_adv:
                 )
                 st.dataframe(rfm_display, use_container_width=True, hide_index=True, height=420)
 
-    with adv_tabs[1]:
+    if active_advanced_screen == "Тепловая карта":
         heatmap_df = build_heatmap_data(data)
         if heatmap_df.empty:
             st.info("Нет данных для тепловой карты.")
@@ -4969,7 +5018,8 @@ with tab_adv:
                 st.plotly_chart(heatmap_fig, use_container_width=True)
                 st.caption("Чем темнее ячейка, тем выше выручка в этот день и неделю.")
 
-    with adv_tabs[2]:
+    if active_advanced_screen == "Прогноз":
+        forecast_data = build_forecast(monthly_summary)
         if forecast_data.empty:
             st.info("Для прогноза нужно минимум 3 месяца данных.")
         else:
@@ -5050,142 +5100,115 @@ with tab_adv:
                 )
                 st.dataframe(forecast_table, use_container_width=True, hide_index=True)
 
-    with st.container(border=True):
-        render_panel_header(
-            "Возвраты",
-            "Отдельный блок для контроля возвратов. Он показывает масштаб возвратов, их динамику по месяцам и товары, которые чаще всего дают обратное движение по выручке.",
-        )
-        if returns_overview["return_lines"] <= 0:
-            st.success("В текущем срезе возвраты не обнаружены. Это значит, что все операции в выборке выглядят как обычные продажи.")
-        else:
-            render_metric_cards(
-                [
-                    {
-                        "label": "Сумма возвратов",
-                        "value": format_money(returns_overview["return_revenue"]),
-                        "delta": "",
-                    },
-                    {
-                        "label": "Доля возвратов",
-                        "value": format_percent(returns_overview["return_share_pct"]),
-                        "delta": "От валовой положительной выручки",
-                    },
-                    {
-                        "label": "Возвратных строк",
-                        "value": format_number(returns_overview["return_lines"]),
-                        "delta": "",
-                    },
-                    {
-                        "label": "Товаров с возвратами",
-                        "value": format_number(returns_overview["return_product_count"]),
-                        "delta": "",
-                    },
-                ]
+    if active_advanced_screen == "Возвраты":
+        return_product_summary = build_return_groups(data, "product")
+        return_monthly_summary = build_return_monthly_summary(data)
+        return_salon_summary = build_return_groups(data, "salon") if "salon" in data.columns else pd.DataFrame()
+        with st.container(border=True):
+            render_panel_header(
+                "Возвраты",
+                "Отдельный блок для контроля возвратов. Он показывает масштаб возвратов, их динамику по месяцам и товары, которые чаще всего дают обратное движение по выручке.",
             )
-
-            returns_left, returns_right = st.columns(2, gap="large")
-
-            with returns_left:
-                with st.container(border=True):
-                    render_panel_header(
-                        "Динамика возвратов по месяцам",
-                        "Показывает, в какие месяцы возвраты были особенно заметны. Хорошо подходит для поиска всплесков после акций, пересменок или проблемных партий товара.",
-                    )
-                    monthly_returns_chart = go.Figure()
-                    monthly_returns_chart.add_trace(
-                        go.Bar(
-                            x=return_monthly_summary["month_label"],
-                            y=return_monthly_summary["return_revenue"],
-                            name="Сумма возвратов",
-                            marker_color="#991B1B",
-                        )
-                    )
-                    monthly_returns_chart.add_trace(
-                        go.Scatter(
-                            x=return_monthly_summary["month_label"],
-                            y=return_monthly_summary["return_share_pct"],
-                            name="Доля возвратов, %",
-                            mode="lines+markers",
-                            line=dict(color="#B45309", width=3),
-                            yaxis="y2",
-                        )
-                    )
-                    monthly_returns_chart.update_layout(
-                        xaxis_title="Месяц",
-                        yaxis_title="Сумма возвратов",
-                        yaxis2=dict(title="Доля возвратов, %", overlaying="y", side="right"),
-                    )
-                    polish_figure(monthly_returns_chart, height=420)
-                    st.plotly_chart(monthly_returns_chart, use_container_width=True)
-
-            with returns_right:
-                with st.container(border=True):
-                    render_panel_header(
-                        "Товары с наибольшими возвратами",
-                        "Показывает товары, которые сильнее всего влияют на возвратную часть выручки. Это хороший старт для разбора качества товара, ошибок продаж или спорных чеков.",
-                    )
-                    top_return_items = return_product_summary.head(12).sort_values("return_revenue", ascending=True)
-                    return_chart = px.bar(
-                        top_return_items,
-                        x="return_revenue",
-                        y="group_name",
-                        orientation="h",
-                        color="return_share_pct",
-                        color_continuous_scale=["#FECACA", "#F97316", "#991B1B"],
-                        labels={"group_name": "Товар", "return_revenue": "Сумма возвратов", "return_share_pct": "Доля возвратов, %"},
-                        title="",
-                    )
-                    return_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
-                    polish_figure(return_chart, height=420)
-                    st.plotly_chart(return_chart, use_container_width=True)
-
-            with st.container(border=True):
-                render_panel_header(
-                    "Таблица возвратов по товарам",
-                    "Подробная расшифровка по товарам: сколько денег и количества вернулось, сколько строк возврата было и когда возврат по товару встречался в последний раз.",
-                )
-                return_product_table = return_product_summary.copy()
-                if not return_product_table.empty:
-                    return_product_table["last_return_date"] = pd.to_datetime(
-                        return_product_table["last_return_date"], errors="coerce"
-                    )
-                st.dataframe(
-                    format_display_frame_for_role(
-                        return_product_table,
-                        current_user,
-                        rename_map={
-                            "group_name": "Товар",
-                            "return_revenue": "Сумма возвратов",
-                            "return_margin": "Возврат по марже",
-                            "return_quantity": "Возврат по количеству",
-                            "return_lines": "Строк возврата",
-                            "return_share_pct": "Доля возвратов, %",
-                            "last_return_date": "Последний возврат",
+            if returns_overview["return_lines"] <= 0:
+                st.success("В текущем срезе возвраты не обнаружены. Это значит, что все операции в выборке выглядят как обычные продажи.")
+            else:
+                render_metric_cards(
+                    [
+                        {
+                            "label": "Сумма возвратов",
+                            "value": format_money(returns_overview["return_revenue"]),
+                            "delta": "",
                         },
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=460,
-                )
-                st.download_button(
-                    "Скачать возвраты по товарам",
-                    data=to_csv_bytes(margin_safe_frame(return_product_summary, current_user)),
-                    file_name="returns_by_product.csv",
-                    mime="text/csv",
+                        {
+                            "label": "Доля возвратов",
+                            "value": format_percent(returns_overview["return_share_pct"]),
+                            "delta": "От валовой положительной выручки",
+                        },
+                        {
+                            "label": "Возвратных строк",
+                            "value": format_number(returns_overview["return_lines"]),
+                            "delta": "",
+                        },
+                        {
+                            "label": "Товаров с возвратами",
+                            "value": format_number(returns_overview["return_product_count"]),
+                            "delta": "",
+                        },
+                    ]
                 )
 
-            if is_network_role(current_user["role"]) and not return_salon_summary.empty and len(return_salon_summary) > 1:
+                returns_left, returns_right = st.columns(2, gap="large")
+
+                with returns_left:
+                    with st.container(border=True):
+                        render_panel_header(
+                            "Динамика возвратов по месяцам",
+                            "Показывает, в какие месяцы возвраты были особенно заметны. Хорошо подходит для поиска всплесков после акций, пересменок или проблемных партий товара.",
+                        )
+                        monthly_returns_chart = go.Figure()
+                        monthly_returns_chart.add_trace(
+                            go.Bar(
+                                x=return_monthly_summary["month_label"],
+                                y=return_monthly_summary["return_revenue"],
+                                name="Сумма возвратов",
+                                marker_color="#991B1B",
+                            )
+                        )
+                        monthly_returns_chart.add_trace(
+                            go.Scatter(
+                                x=return_monthly_summary["month_label"],
+                                y=return_monthly_summary["return_share_pct"],
+                                name="Доля возвратов, %",
+                                mode="lines+markers",
+                                line=dict(color="#B45309", width=3),
+                                yaxis="y2",
+                            )
+                        )
+                        monthly_returns_chart.update_layout(
+                            xaxis_title="Месяц",
+                            yaxis_title="Сумма возвратов",
+                            yaxis2=dict(title="Доля возвратов, %", overlaying="y", side="right"),
+                        )
+                        polish_figure(monthly_returns_chart, height=420)
+                        st.plotly_chart(monthly_returns_chart, use_container_width=True)
+
+                with returns_right:
+                    with st.container(border=True):
+                        render_panel_header(
+                            "Товары с наибольшими возвратами",
+                            "Показывает товары, которые сильнее всего влияют на возвратную часть выручки. Это хороший старт для разбора качества товара, ошибок продаж или спорных чеков.",
+                        )
+                        top_return_items = return_product_summary.head(12).sort_values("return_revenue", ascending=True)
+                        return_chart = px.bar(
+                            top_return_items,
+                            x="return_revenue",
+                            y="group_name",
+                            orientation="h",
+                            color="return_share_pct",
+                            color_continuous_scale=["#FECACA", "#F97316", "#991B1B"],
+                            labels={"group_name": "Товар", "return_revenue": "Сумма возвратов", "return_share_pct": "Доля возвратов, %"},
+                            title="",
+                        )
+                        return_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+                        polish_figure(return_chart, height=420)
+                        st.plotly_chart(return_chart, use_container_width=True)
+
                 with st.container(border=True):
                     render_panel_header(
-                        "Возвраты по салонам",
-                        "Сравнение салонов по возвратам. Помогает быстро увидеть точки, где возвраты системно выше и где нужен управленческий разбор на уровне команды или процесса.",
+                        "Таблица возвратов по товарам",
+                        "Подробная расшифровка по товарам: сколько денег и количества вернулось, сколько строк возврата было и когда возврат по товару встречался в последний раз.",
                     )
+                    return_product_table = return_product_summary.copy()
+                    if not return_product_table.empty:
+                        return_product_table["last_return_date"] = pd.to_datetime(
+                            return_product_table["last_return_date"], errors="coerce"
+                        )
                     st.dataframe(
                         format_display_frame_for_role(
-                            return_salon_summary,
+                            return_product_table,
                             current_user,
                             rename_map={
-                                "group_name": "Салон",
+                                "group_name": "Товар",
                                 "return_revenue": "Сумма возвратов",
                                 "return_margin": "Возврат по марже",
                                 "return_quantity": "Возврат по количеству",
@@ -5196,10 +5219,41 @@ with tab_adv:
                         ),
                         use_container_width=True,
                         hide_index=True,
-                        height=360,
+                        height=460,
+                    )
+                    st.download_button(
+                        "Скачать возвраты по товарам",
+                        data=to_csv_bytes(margin_safe_frame(return_product_summary, current_user)),
+                        file_name="returns_by_product.csv",
+                        mime="text/csv",
                     )
 
-with tab_data:
+                if is_network_role(current_user["role"]) and not return_salon_summary.empty and len(return_salon_summary) > 1:
+                    with st.container(border=True):
+                        render_panel_header(
+                            "Возвраты по салонам",
+                            "Сравнение салонов по возвратам. Помогает быстро увидеть точки, где возвраты системно выше и где нужен управленческий разбор на уровне команды или процесса.",
+                        )
+                        st.dataframe(
+                            format_display_frame_for_role(
+                                return_salon_summary,
+                                current_user,
+                                rename_map={
+                                    "group_name": "Салон",
+                                    "return_revenue": "Сумма возвратов",
+                                    "return_margin": "Возврат по марже",
+                                    "return_quantity": "Возврат по количеству",
+                                    "return_lines": "Строк возврата",
+                                    "return_share_pct": "Доля возвратов, %",
+                                    "last_return_date": "Последний возврат",
+                                },
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=360,
+                        )
+
+if active_screen == "Данные":
     visible_mapping = margin_safe_mapping(selected_mapping, current_user)
     render_section_intro(
         "Источники и выгрузки",
@@ -5360,6 +5414,5 @@ with tab_data:
             mime="text/csv",
         )
 
-if tab_access is not None:
-    with tab_access:
-        render_admin_tab(current_user, registered_salons)
+if active_screen == "Управление" and can_manage_access(current_user):
+    render_admin_tab(current_user, registered_salons)
