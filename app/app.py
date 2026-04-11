@@ -77,922 +77,191 @@ st.set_page_config(
 
 DASHBOARD_CSS = """
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    .stApp {
+        font-family: 'Inter', sans-serif;
+    }
+
     .block-container {
-        padding-top: 1.6rem;
-        padding-bottom: 2.4rem;
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        max-width: 1400px;
     }
 
+    /* Hero Section */
     .dashboard-hero {
-        padding: 1.4rem 1.5rem;
+        padding: 2rem;
         border-radius: 24px;
-        border: 1px solid rgba(15, 118, 110, 0.18);
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.12), transparent 36%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(240, 246, 242, 0.94));
-        margin-bottom: 1rem;
-    }
-
-    .dashboard-hero-meta {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.8rem;
-        flex-wrap: wrap;
+        border: 1px solid rgba(0, 0, 0, 0.05);
+        background: white;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        margin-bottom: 2rem;
     }
 
     .dashboard-eyebrow {
-        font-size: 0.82rem;
+        font-size: 0.75rem;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #0f766e;
-        margin-bottom: 0.55rem;
-        font-weight: 700;
+        letter-spacing: 0.05em;
+        color: #6366f1;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
     }
 
     .dashboard-title {
         font-size: 2rem;
-        line-height: 1.08;
-        color: #102a28;
+        color: #111827;
         margin: 0;
-        font-weight: 700;
+        font-weight: 800;
+        letter-spacing: -0.025em;
     }
 
     .dashboard-subtitle {
-        margin: 0.75rem 0 0;
-        color: #48635f;
-        max-width: 58rem;
+        margin-top: 0.75rem;
+        color: #4b5563;
         font-size: 1rem;
+        line-height: 1.5;
     }
 
-    .scope-strip {
-        display: flex;
-        gap: 0.65rem;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        margin: 0.9rem 0 0;
-    }
-
-    .scope-chip {
-        border-radius: 999px;
-        padding: 0.35rem 0.8rem;
-        background: rgba(15, 118, 110, 0.09);
-        color: #14524c;
-        font-size: 0.9rem;
-        border: 1px solid rgba(15, 118, 110, 0.1);
-        max-width: 100%;
-        overflow-wrap: anywhere;
-    }
-
-    .app-build-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.35rem 0.8rem;
-        border-radius: 999px;
-        background: rgba(16, 42, 40, 0.06);
-        border: 1px solid rgba(16, 42, 40, 0.08);
-        color: #48635f;
-        font-size: 0.82rem;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        white-space: nowrap;
-    }
-
-    .panel-title {
-        font-size: 1.16rem;
-        color: #102a28;
-        margin-bottom: 0.35rem;
-        font-weight: 700;
-        line-height: 1.3;
-    }
-
-    .panel-caption {
-        color: #53706c;
-        font-size: 0.96rem;
-        margin-bottom: 0.95rem;
-        line-height: 1.55;
-        max-width: 62rem;
-        overflow-wrap: anywhere;
-    }
-
-    .section-intro {
-        padding: 1rem 1.15rem;
-        border-radius: 22px;
-        border: 1px solid rgba(15, 118, 110, 0.1);
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 28%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(244, 248, 246, 0.95));
-        margin: 0.2rem 0 1rem;
-    }
-
-    .section-intro-title {
-        font-size: 1.12rem;
-        line-height: 1.25;
-        color: #102a28;
-        margin-bottom: 0.3rem;
-        font-weight: 700;
-    }
-
-    .section-intro-body {
-        color: #53706c;
-        font-size: 0.95rem;
-        line-height: 1.55;
-        max-width: 74rem;
-        overflow-wrap: anywhere;
-    }
-
-    .section-marker {
-        padding: 0.25rem 0 0.9rem;
-    }
-
-    .section-marker-kicker {
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #0f766e;
-        font-weight: 700;
-        margin-bottom: 0.3rem;
-    }
-
-    .section-marker-title {
-        font-size: 1.45rem;
-        line-height: 1.12;
-        color: #102a28;
-        font-weight: 700;
-        margin-bottom: 0.35rem;
-    }
-
-    .section-marker-body {
-        color: #56706b;
-        font-size: 0.98rem;
-        line-height: 1.55;
-        max-width: 68rem;
-    }
-
-    .section-switcher {
-        padding: 0.35rem 0 0.55rem;
-    }
-
-    .section-switcher-label {
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #0f766e;
-        font-weight: 700;
-        margin-bottom: 0.28rem;
-    }
-
-    .section-switcher-body {
-        color: #56706b;
-        font-size: 0.95rem;
-        line-height: 1.45;
-        margin-bottom: 0.35rem;
-        max-width: 68rem;
-    }
-
-    .workspace-band {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-        gap: 0.85rem;
-        margin: 0.15rem 0 1.15rem;
-    }
-
-    .workspace-band-item {
-        padding: 1rem 1rem 0.95rem;
-        border-radius: 22px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 246, 0.96));
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        box-shadow: 0 18px 34px rgba(16, 42, 40, 0.05);
-        min-height: 144px;
-    }
-
-    .workspace-band-label {
-        color: #5a726d;
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 0.45rem;
-        font-weight: 700;
-        line-height: 1.35;
-    }
-
-    .workspace-band-value {
-        color: #102a28;
-        font-size: 1.28rem;
-        line-height: 1.18;
-        font-weight: 700;
-        margin-bottom: 0.35rem;
-        overflow-wrap: anywhere;
-    }
-
-    .workspace-band-meta {
-        color: #58716d;
-        font-size: 0.9rem;
-        line-height: 1.45;
-        overflow-wrap: anywhere;
-    }
-
-    .insight-item {
-        padding: 0.75rem 0;
-        border-bottom: 1px solid rgba(16, 42, 40, 0.08);
-    }
-
-    .insight-item:last-child {
-        border-bottom: none;
-        padding-bottom: 0;
-    }
-
-    .insight-title {
-        color: #102a28;
-        font-weight: 600;
-        margin-bottom: 0.15rem;
-    }
-
-    .insight-body {
-        color: #4f6764;
-        font-size: 0.94rem;
-        line-height: 1.45;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0.55rem;
-        background: rgba(255, 255, 255, 0.72);
-        padding: 0.35rem;
-        border-radius: 18px;
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        flex-wrap: wrap;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 14px;
-        padding: 0.65rem 1rem;
-        color: #48635f;
-        font-weight: 600;
-        height: auto;
-        white-space: normal;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(180deg, rgba(15, 118, 110, 0.12), rgba(15, 118, 110, 0.06));
-        color: #0f766e !important;
-    }
-
-    .stButton > button,
-    .stDownloadButton > button,
-    div[data-testid="stFormSubmitButton"] > button {
-        border-radius: 14px;
-        border: 1px solid rgba(15, 118, 110, 0.12);
-        background: linear-gradient(180deg, #0f766e, #0b5c56);
-        color: white;
-        font-weight: 700;
-        min-height: 2.8rem;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover,
-    div[data-testid="stFormSubmitButton"] > button:hover {
-        border-color: rgba(15, 118, 110, 0.28);
-        color: white;
-    }
-
-    .login-shell {
-        padding: 2rem 2.1rem;
-        border-radius: 30px;
-        border: 1px solid rgba(17, 24, 39, 0.08);
-        background:
-            radial-gradient(circle at top left, rgba(251, 191, 36, 0.18), transparent 30%),
-            radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.16), transparent 32%),
-            linear-gradient(160deg, rgba(253, 252, 248, 0.98), rgba(242, 247, 245, 0.96));
-        min-height: 100%;
-    }
-
-    .auth-kicker {
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: #0f766e;
-        font-weight: 700;
-        margin-bottom: 0.65rem;
-    }
-
-    .auth-title {
-        color: #102a28;
-        font-size: 2.2rem;
-        line-height: 1.05;
-        font-weight: 700;
-        margin: 0;
-    }
-
-    .auth-copy {
-        color: #4f6764;
-        margin-top: 0.9rem;
-        max-width: 30rem;
-        line-height: 1.55;
-    }
-
-    .feature-list {
-        margin-top: 1.2rem;
-        display: grid;
-        gap: 0.7rem;
-    }
-
-    .feature-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.6rem;
-        padding: 0.7rem 0.9rem;
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.76);
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        color: #15302d;
-        font-size: 0.95rem;
-    }
-
+    /* Metric Cards Grid */
     .metric-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 1rem;
-        margin: 1rem 0 1.35rem;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.25rem;
+        margin: 1.5rem 0;
     }
 
     .metric-card {
-        padding: 1.1rem 1.1rem 1rem;
-        border-radius: 22px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 248, 244, 0.94));
-        border: 1px solid rgba(17, 24, 39, 0.07);
-        box-shadow: 0 20px 45px rgba(16, 42, 40, 0.06);
-        min-height: 152px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
+        padding: 1.5rem;
+        border-radius: 20px;
+        background: white;
+        border: 1px solid #f3f4f6;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }
 
     .metric-label {
-        color: #5a726d;
-        font-size: 0.86rem;
-        margin-bottom: 0.55rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
+        color: #6b7280;
+        font-size: 0.875rem;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
     }
 
     .metric-value {
-        color: #102a28;
-        font-size: 1.62rem;
-        line-height: 1.1;
+        color: #111827;
+        font-size: 1.875rem;
         font-weight: 700;
-        overflow-wrap: anywhere;
+        letter-spacing: -0.025em;
     }
 
     .metric-delta {
-        margin-top: 0.55rem;
-        font-size: 0.88rem;
-        color: #5a726d;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
+        margin-top: 0.5rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
     }
 
-    .metric-delta.positive {
-        color: #0f766e;
+    .metric-delta.positive { color: #10b981; }
+    .metric-delta.negative { color: #ef4444; }
+
+    /* Tabs Styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.5rem;
+        background-color: #f3f4f6;
+        padding: 0.4rem;
+        border-radius: 12px;
     }
 
-    .metric-delta.negative {
-        color: #b91c1c;
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+        color: #4b5563;
+        border: none;
     }
 
+    .stTabs [aria-selected="true"] {
+        background-color: white;
+        color: #111827 !important;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+    }
+
+    /* Button Styling */
+    .stButton > button {
+        border-radius: 10px;
+        font-weight: 600;
+        padding: 0.5rem 1rem;
+        transition: all 0.2s;
+    }
+
+    /* Section Marker */
+    .section-marker {
+        margin: 2.5rem 0 1.5rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .section-marker-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #111827;
+    }
+
+    /* User Strip */
     .user-strip {
         display: flex;
+        align-items: center;
         justify-content: space-between;
-        align-items: flex-start;
-        flex-wrap: wrap;
-        gap: 1rem;
-        margin-bottom: 1rem;
-        padding: 0.85rem 1rem;
-        border-radius: 18px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 248, 245, 0.9));
-        border: 1px solid rgba(15, 118, 110, 0.09);
-    }
-
-    .user-meta {
-        color: #56706b;
-        font-size: 0.92rem;
-        line-height: 1.45;
-        overflow-wrap: anywhere;
+        padding: 0.75rem 1.25rem;
+        background: #f9fafb;
+        border-radius: 12px;
+        border: 1px solid #f3f4f6;
+        margin-bottom: 1.5rem;
     }
 
     .user-name {
-        color: #102a28;
-        font-size: 1rem;
-        font-weight: 700;
-        overflow-wrap: anywhere;
+        font-weight: 600;
+        color: #111827;
     }
 
     .role-pill {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.35rem 0.7rem;
-        border-radius: 999px;
-        font-size: 0.82rem;
-        font-weight: 700;
-        letter-spacing: 0.04em;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
     }
 
-    .role-pill.manager {
-        background: rgba(180, 83, 9, 0.12);
-        color: #9a3412;
-    }
-
-    .role-pill.salon {
-        background: rgba(15, 118, 110, 0.12);
-        color: #0f766e;
-    }
-
-    @media (max-width: 1200px) {
-        .metric-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-    }
-
-    @media (max-width: 760px) {
-        .metric-grid {
-            grid-template-columns: 1fr;
-        }
-    }
+    .role-pill.admin { background: #fee2e2; color: #991b1b; }
+    .role-pill.manager { background: #fef3c7; color: #92400e; }
+    .role-pill.salon { background: #dcfce7; color: #166534; }
 </style>
 """
 
 REFERENCE_THEME_CSS = """
 <style>
     .stApp {
-        background:
-            radial-gradient(circle at top left, rgba(15, 118, 110, 0.06), transparent 24%),
-            radial-gradient(circle at top right, rgba(251, 191, 36, 0.08), transparent 26%),
-            linear-gradient(180deg, #f7faf8 0%, #edf4f1 100%);
+        background-color: #f9fafb;
     }
 
     [data-testid="stHeader"] {
-        background: rgba(0, 0, 0, 0);
-    }
-
-    #MainMenu,
-    footer,
-    [data-testid="stToolbar"],
-    [data-testid="stStatusWidget"],
-    [data-testid="stDecoration"],
-    [data-testid="stAppDeployButton"],
-    [data-testid="stAppFooter"] {
-        display: none !important;
-    }
-
-    [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapsedControl"],
-    button[kind="header"][aria-label*="sidebar"],
-    button[kind="header"][aria-label*="Sidebar"] {
-        display: none !important;
-        pointer-events: none !important;
-        opacity: 0 !important;
-    }
-
-    .block-container {
-        max-width: 1740px;
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
-    }
-
-    section[data-testid="stSidebar"] {
-        display: none !important;
-    }
-
-    .dashboard-hero {
-        padding: 1.55rem 1.6rem;
-        border-radius: 28px;
-        border: 1px solid rgba(15, 118, 110, 0.14);
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.1), transparent 35%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 247, 245, 0.96));
-        box-shadow: 0 24px 52px rgba(16, 42, 40, 0.08);
-        margin-bottom: 1rem;
-    }
-
-    .dashboard-eyebrow {
-        color: #0f766e;
-    }
-
-    .dashboard-title {
-        color: #102a28;
-        font-size: 1.95rem;
-    }
-
-    .dashboard-subtitle {
-        color: #48635f;
-        max-width: 68rem;
-        line-height: 1.5;
-        overflow-wrap: anywhere;
-    }
-
-    .scope-chip {
-        background: rgba(15, 118, 110, 0.08);
-        color: #14524c;
-        border: 1px solid rgba(15, 118, 110, 0.1);
-    }
-
-    .user-strip {
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 248, 245, 0.92));
-        border: 1px solid rgba(15, 118, 110, 0.09);
-        box-shadow: 0 16px 34px rgba(16, 42, 40, 0.06);
-    }
-
-    .user-name {
-        color: #102a28;
-    }
-
-    .user-meta {
-        color: #56706b;
-        line-height: 1.45;
-        overflow-wrap: anywhere;
-    }
-
-    .role-pill.admin {
-        background: rgba(190, 24, 93, 0.12);
-        color: #9d174d;
-    }
-
-    .role-pill.manager {
-        background: rgba(180, 83, 9, 0.12);
-        color: #9a3412;
-    }
-
-    .role-pill.salon {
-        background: rgba(15, 118, 110, 0.12);
-        color: #0f766e;
-    }
-
-    .metric-grid {
-        margin: 1rem 0 1.3rem;
-        gap: 0.95rem;
-    }
-
-    .metric-card {
-        min-height: 138px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(246, 248, 244, 0.96));
-        border: 1px solid rgba(17, 24, 39, 0.07);
-        box-shadow: 0 20px 42px rgba(16, 42, 40, 0.06);
-    }
-
-    .metric-label {
-        color: #5a726d;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
-    }
-
-    .metric-value {
-        color: #102a28;
-        font-size: 1.5rem;
-        overflow-wrap: anywhere;
-    }
-
-    .metric-delta,
-    .metric-delta.positive,
-    .metric-delta.negative {
-        color: #5a726d;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
-    }
-
-    .login-shell {
-        background:
-            radial-gradient(circle at top left, rgba(251, 191, 36, 0.16), transparent 30%),
-            radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.14), transparent 32%),
-            linear-gradient(160deg, rgba(253, 252, 248, 0.98), rgba(242, 247, 245, 0.96));
-        border: 1px solid rgba(17, 24, 39, 0.08);
-        box-shadow: 0 26px 48px rgba(16, 42, 40, 0.08);
-    }
-
-    .auth-title {
-        color: #102a28;
-    }
-
-    .auth-copy {
-        color: #4f6764;
-    }
-
-    .feature-chip {
-        background: rgba(255, 255, 255, 0.76);
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        color: #15302d;
-    }
-
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 247, 0.96));
-        border: 1px solid rgba(15, 118, 110, 0.08) !important;
-        border-radius: 26px !important;
-        box-shadow: 0 20px 42px rgba(16, 42, 40, 0.08);
-    }
-
-    .panel-title {
-        color: #102a28;
-        font-size: 1.2rem;
-        font-weight: 700;
-        line-height: 1.3;
-        margin-bottom: 0.3rem;
-    }
-
-    .panel-caption {
-        color: #53706c;
-        font-size: 0.98rem;
-        line-height: 1.6;
-        max-width: 62rem;
-    }
-
-    .journey-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 0.95rem;
-        margin: 0.2rem 0 1.15rem;
-    }
-
-    .journey-card {
-        position: relative;
-        padding: 1.05rem 1.05rem 1rem;
-        border-radius: 24px;
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 34%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 248, 246, 0.97));
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        box-shadow: 0 16px 34px rgba(16, 42, 40, 0.06);
-        min-height: 180px;
-    }
-
-    .journey-step {
-        width: 2rem;
-        height: 2rem;
-        border-radius: 999px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 0.8rem;
-        background: rgba(15, 118, 110, 0.1);
-        color: #0f766e;
-        font-size: 0.88rem;
-        font-weight: 700;
-    }
-
-    .journey-title {
-        color: #102a28;
-        font-size: 1.08rem;
-        font-weight: 700;
-        line-height: 1.3;
-        margin-bottom: 0.35rem;
-    }
-
-    .journey-body {
-        color: #4f6764;
-        font-size: 0.96rem;
-        line-height: 1.58;
-    }
-
-    .journey-hint {
-        margin-top: 0.75rem;
-        color: #0f766e;
-        font-size: 0.88rem;
-        font-weight: 600;
-        line-height: 1.45;
-    }
-
-    .spotlight-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 0.95rem;
-        margin: 0.15rem 0 1.15rem;
-    }
-
-    .spotlight-card {
-        padding: 1rem 1.05rem;
-        border-radius: 24px;
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        box-shadow: 0 18px 36px rgba(16, 42, 40, 0.06);
-        min-height: 170px;
-    }
-
-    .spotlight-card.neutral {
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(245, 248, 246, 0.97));
-    }
-
-    .spotlight-card.accent {
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.12), transparent 34%),
-            linear-gradient(180deg, rgba(240, 248, 246, 0.98), rgba(230, 244, 240, 0.98));
-    }
-
-    .spotlight-card.warm {
-        background:
-            radial-gradient(circle at top right, rgba(180, 83, 9, 0.12), transparent 34%),
-            linear-gradient(180deg, rgba(252, 248, 241, 0.98), rgba(249, 243, 233, 0.98));
-    }
-
-    .spotlight-label {
-        color: #5a726d;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 0.5rem;
-        font-weight: 700;
-        line-height: 1.35;
-    }
-
-    .spotlight-value {
-        color: #102a28;
-        font-size: 1.45rem;
-        line-height: 1.16;
-        font-weight: 700;
-        margin-bottom: 0.4rem;
-        overflow-wrap: anywhere;
-    }
-
-    .spotlight-body {
-        color: #4f6764;
-        font-size: 0.95rem;
-        line-height: 1.58;
-    }
-
-    .snapshot-strip {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-        gap: 0.9rem;
-        margin-top: 0.2rem;
-    }
-
-    .snapshot-card {
-        padding: 1rem 1.05rem 0.95rem;
-        border-radius: 22px;
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        background:
-            radial-gradient(circle at top right, rgba(15, 118, 110, 0.09), transparent 34%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(243, 248, 245, 0.97));
-        box-shadow: 0 14px 28px rgba(16, 42, 40, 0.05);
-        min-height: 136px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-    }
-
-    .snapshot-label {
-        color: #5a726d;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-weight: 700;
-        margin-bottom: 0.45rem;
-        line-height: 1.35;
-    }
-
-    .snapshot-value {
-        color: #102a28;
-        font-size: 1.55rem;
-        line-height: 1.15;
-        font-weight: 700;
-        margin-bottom: 0.4rem;
-        overflow-wrap: anywhere;
-    }
-
-    .snapshot-delta {
-        color: #0f766e;
-        font-size: 0.92rem;
-        font-weight: 600;
-        line-height: 1.45;
-    }
-
-    .js-plotly-plot .plotly .modebar {
-        display: none !important;
-    }
-
-    .snapshot-delta.negative {
-        color: #b45309;
-    }
-
-    .snapshot-delta.neutral {
-        color: #5a726d;
-    }
-
-    .insight-item {
-        border-bottom-color: rgba(16, 42, 40, 0.08);
-    }
-
-    .insight-title {
-        color: #102a28;
-    }
-
-    .insight-body {
-        color: #4f6764;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        padding: 0.45rem;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        color: #48635f;
-    }
-
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(180deg, rgba(15, 118, 110, 0.12), rgba(15, 118, 110, 0.06));
-        color: #0f766e !important;
-    }
-
-    .stButton > button,
-    .stDownloadButton > button,
-    div[data-testid="stFormSubmitButton"] > button {
-        background: linear-gradient(180deg, #0f766e, #0b5c56);
-        box-shadow: 0 10px 24px rgba(15, 118, 110, 0.14);
-    }
-
-    .nav-shell {
-        padding: 1rem 0.95rem;
-        border-radius: 22px;
-        margin-bottom: 1rem;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(246, 248, 244, 0.86));
-        border: 1px solid rgba(15, 118, 110, 0.08);
-    }
-
-    .nav-title {
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #5a726d;
-        margin-bottom: 0.55rem;
-    }
-
-    .nav-item {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.72rem 0.82rem;
-        border-radius: 16px;
-        color: #48635f;
         background: rgba(255, 255, 255, 0.8);
-        margin-bottom: 0.45rem;
-        border: 1px solid rgba(15, 118, 110, 0.06);
-        font-size: 0.95rem;
-        overflow-wrap: anywhere;
+        backdrop-filter: blur(8px);
     }
 
-    .nav-item.active {
-        background: linear-gradient(180deg, rgba(15, 118, 110, 0.14), rgba(15, 118, 110, 0.06));
-        color: #0f766e;
-        border-color: rgba(15, 118, 110, 0.18);
-        box-shadow: 0 12px 24px rgba(15, 118, 110, 0.08);
-    }
-
-    .admin-stat-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 0.8rem;
-        margin-bottom: 1rem;
-    }
-
-    .admin-stat {
-        padding: 1rem;
-        border-radius: 22px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 248, 246, 0.96));
-        color: #102a28;
-        border: 1px solid rgba(15, 118, 110, 0.08);
-        box-shadow: 0 18px 34px rgba(16, 42, 40, 0.06);
-    }
-
-    .admin-stat-label {
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #5a726d;
-        margin-bottom: 0.5rem;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
-    }
-
-    .admin-stat-value {
-        font-size: 1.7rem;
-        font-weight: 700;
-        line-height: 1;
-        color: #0f766e;
-        overflow-wrap: anywhere;
-    }
-
-    @media (max-width: 1200px) {
-        .admin-stat-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-    }
-
-    @media (max-width: 760px) {
-        .admin-stat-grid {
-            grid-template-columns: 1fr;
-        }
+    /* Hide Streamlit elements */
+    #MainMenu, footer, [data-testid="stToolbar"] {
+        display: none !important;
     }
 </style>
 """
+
 
 st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS, unsafe_allow_html=True)
 
@@ -1182,8 +451,19 @@ def render_metric_cards(cards: list[dict[str, str]]) -> None:
             delta_class += " positive"
         elif delta.startswith("-"):
             delta_class += " negative"
+
+        # New: Progress bar if 'progress' key exists (0-100)
+        progress_html = ""
+        if "progress" in card:
+            p_val = card["progress"]
+            progress_html = f'''
+            <div style="background: rgba(15,118,110,0.1); border-radius: 99px; height: 6px; margin-top: 0.6rem; overflow: hidden;">
+                <div style="background: #0f766e; width: {p_val}%; height: 100%; border-radius: 99px;"></div>
+            </div>
+            '''
+
         delta_html = f'<div class="{delta_class}">{escape(delta)}</div>' if delta else ""
-        inner = f'<div class="metric-label">{escape(card["label"])}</div><div class="metric-value">{escape(card["value"])}</div>{delta_html}'
+        inner = f'<div class="metric-label">{escape(card["label"])}</div><div class="metric-value">{escape(card["value"])}</div>{delta_html}{progress_html}'
         cards_html.append(f'<div class="metric-card">{inner}</div>')
 
     st.markdown(f'<div class="metric-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
@@ -1321,13 +601,20 @@ def render_screen_switcher(title: str, options: list[str], *, key: str, descript
         </div>
         """
     )
-    current_value = str(st.session_state.get(key, options[0]))
-    current_index = options.index(current_value) if current_value in options else 0
+
+    # Custom styled selector using radio buttons but making it look cleaner
+    current_value = st.session_state.get(key, options[0])
+
+    # We use st.segmented_control if available (Streamlit 1.35+),
+    # but for compatibility with older versions and more control,
+    # we'll stick to a styled radio for now or use st.columns with buttons.
+    # Actually, st.radio with custom CSS classes is already defined in our CSS.
+
     return str(
         st.radio(
             title,
             options=options,
-            index=current_index,
+            index=options.index(current_value) if current_value in options else 0,
             horizontal=True,
             label_visibility="collapsed",
             key=key,
@@ -1609,9 +896,6 @@ def generate_temp_password(length: int = 10) -> str:
 
 def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_salons: list[str]) -> None:
     apply_pending_widget_resets()
-    st.divider()
-    st.markdown("**Быстрое создание**")
-    st.caption("Создайте салон и сразу выдайте сотруднику логин с паролем.")
 
     created_credentials = st.session_state.get("sidebar_created_credentials")
     if created_credentials:
@@ -1809,7 +1093,7 @@ def render_auth_gate() -> dict[str, str]:
         clear_persistent_auth_token()
         st.session_state["auth_notice"] = "Сессия входа закончилась или стала недействительной. Войдите снова."
 
-    left_col, right_col = st.columns([1.05, 0.95], gap="large")
+    left_col, right_col = st.columns([1.05, 0.95], gap="medium")
 
     with left_col:
         st.markdown(
@@ -2219,7 +1503,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
     users = pd.DataFrame(list_users())
     salons_table = pd.DataFrame({"Салон": registered_salons}) if registered_salons else pd.DataFrame(columns=["Салон"])
 
-    left_col, right_col = st.columns([1.15, 1], gap="large")
+    left_col, right_col = st.columns([1.15, 1], gap="medium")
 
     with left_col:
         with st.container(border=True):
@@ -2386,7 +1670,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
     )
 
     if section == "Салоны":
-        salons_left, salons_right = st.columns([0.95, 1.15], gap="large")
+        salons_left, salons_right = st.columns([0.95, 1.15], gap="medium")
 
         with salons_left:
             with st.container(border=True):
@@ -2519,7 +1803,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 st.error(str(error))
 
     elif section == "Пользователи":
-        users_left, users_right = st.columns([1.05, 1], gap="large")
+        users_left, users_right = st.columns([1.05, 1], gap="medium")
 
         with users_left:
             with st.container(border=True):
@@ -2980,7 +2264,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                                 st.error(str(error))
 
     else:
-        password_left, password_right = st.columns([0.95, 1.05], gap="large")
+        password_left, password_right = st.columns([0.95, 1.05], gap="medium")
 
         with password_left:
             with st.container(border=True):
@@ -3306,7 +2590,7 @@ if promoted_admin and st.session_state.get("auth_user", {}).get("username", "").
 
 current_user = render_auth_gate()
 
-control_col, main_col = st.columns([0.95, 2.25], gap="large")
+control_col, main_col = st.columns([0.82, 2.48], gap="medium")
 
 with control_col:
     with st.container(border=True):
@@ -3406,7 +2690,9 @@ with control_col:
     with st.container(border=True):
         render_sidebar_navigation(current_user, work_mode)
         if can_manage_access(current_user):
-            render_sidebar_admin_quick_actions(current_user, registered_salons)
+            with st.expander("Быстрое создание", expanded=False):
+                st.caption("Создайте салон и сразу выдайте сотруднику логин с паролем.")
+                render_sidebar_admin_quick_actions(current_user, registered_salons)
 
 upload_modes = {"Новая выгрузка", "Загрузка салона", "Разовая загрузка"}
 upload_flash_message = st.session_state.pop("upload_flash_message", "")
@@ -3435,33 +2721,42 @@ if work_mode in upload_modes:
                 )
 
             upload_left, upload_right = st.columns([1.2, 1])
-            with upload_left:
-                uploaded_file = st.file_uploader("Файл из 1С", type=["xlsx", "xls", "csv"], key=f"main_uploader_{work_mode}")
-            with upload_right:
-                upload_scope = selected_salon_name or "Без привязки к салону"
-                if work_mode in {"Новая выгрузка", "Загрузка салона"} and selected_salon_name:
-                    current_manifest = load_manifest()
-                    salon_manifest = current_manifest[current_manifest["salon"].astype(str) == selected_salon_name].copy()
-                    uploads_count = len(salon_manifest)
-                    latest_report_date = ""
-                    if not salon_manifest.empty:
-                        latest_report_date = str(salon_manifest["report_date"].astype(str).max())
-                    status_lines = [
-                        f"Контур загрузки: {upload_scope}",
-                        f"Режим: {work_mode}",
-                        f"Сохранено файлов в архиве: {uploads_count}",
-                    ]
-                    if latest_report_date:
-                        status_lines.append(f"Последняя дата в архиве: {latest_report_date}")
-                    st.info("\n\n".join(status_lines))
-                else:
-                    st.info(
-                        f"Контур загрузки: {upload_scope}\n\n"
-                        f"Режим: {work_mode}\n\n"
-                        "Поддерживаются форматы Excel и CSV. Максимальный размер файла: 50 МБ."
-                    )
+        with upload_left:
+            # Step 1: File Selection
+            st.markdown('<div class="panel-title">Шаг 1: Выбор файла</div>', unsafe_allow_html=True)
+            uploaded_file = st.file_uploader("Файл из 1С", type=["xlsx", "xls", "csv"], key=f"main_uploader_{work_mode}", label_visibility="collapsed")
+            if not uploaded_file:
+                st.info("Пожалуйста, выберите файл Excel или CSV для начала работы.")
+
+        with upload_right:
+            upload_scope = selected_salon_name or "Без привязки к салону"
+            if work_mode in {"Новая выгрузка", "Загрузка салона"} and selected_salon_name:
+                current_manifest = load_manifest()
+                salon_manifest = current_manifest[current_manifest["salon"].astype(str) == selected_salon_name].copy()
+                uploads_count = len(salon_manifest)
+                latest_report_date = ""
+                if not salon_manifest.empty:
+                    latest_report_date = str(salon_manifest["report_date"].astype(str).max())
+
+                # Modern status card instead of st.info
+                st.markdown(f"""
+                <div style="background: rgba(15,118,110,0.05); border: 1px solid rgba(15,118,110,0.1); border-radius: 18px; padding: 1.2rem;">
+                    <div style="color: #0f766e; font-size: 0.75rem; text-transform: uppercase; font-weight: 700; margin-bottom: 0.5rem;">Контекст загрузки</div>
+                    <div style="font-weight: 700; color: #102a28; margin-bottom: 0.3rem;">{upload_scope}</div>
+                    <div style="color: #56706b; font-size: 0.88rem;">Режим: {work_mode}</div>
+                    <div style="color: #56706b; font-size: 0.88rem;">В архиве: {uploads_count} файлов</div>
+                    {f'<div style="color: #56706b; font-size: 0.88rem;">Последний: {latest_report_date}</div>' if latest_report_date else ""}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info(
+                    f"Контур загрузки: {upload_scope}\n\n"
+                    f"Режим: {work_mode}\n\n"
+                    "Поддерживаются форматы Excel и CSV. Максимальный размер файла: 50 МБ."
+                )
 
 if uploaded_file is not None:
+    # Step 2: Configuration & Preview (Wizard-like flow)
     file_bytes = uploaded_file.getvalue()
     try:
         filename = validate_uploaded_file(file_bytes, uploaded_file.name)
@@ -3469,15 +2764,21 @@ if uploaded_file is not None:
         st.error(str(error))
         st.stop()
 
-    with control_col:
+    st.markdown("---")
+    conf_col, map_col = st.columns([1, 1.5])
+
+    with conf_col:
+        st.markdown('<div class="panel-title">Шаг 2: Настройка чтения</div>', unsafe_allow_html=True)
         with st.container(border=True):
-            with st.expander("Параметры загрузки", expanded=False):
-                if filename.lower().endswith(".csv"):
-                    csv_separator = st.selectbox("Разделитель CSV", options=[";", ",", "\t"], index=0, key="upload_csv_separator")
-                    csv_encoding = st.selectbox("Кодировка CSV", options=["utf-8", "cp1251", "utf-8-sig"], index=0, key="upload_csv_encoding")
-                else:
-                    sheet_names = list_excel_sheets(file_bytes)
-                    sheet_name = st.selectbox("Лист Excel", options=sheet_names, index=0, key="upload_sheet_name")
+            if filename.lower().endswith(".csv"):
+                csv_separator = st.selectbox("Разделитель CSV", options=[";", ",", "\t"], index=0, key="upload_csv_separator")
+                csv_encoding = st.selectbox("Кодировка CSV", options=["utf-8", "cp1251", "utf-8-sig"], index=0, key="upload_csv_encoding")
+                sheet_name = None
+            else:
+                sheet_names = list_excel_sheets(file_bytes)
+                sheet_name = st.selectbox("Лист Excel", options=sheet_names, index=0, key="upload_sheet_name")
+                csv_separator = ";"
+                csv_encoding = "utf-8"
 
     try:
         raw_data = cached_load_input_file(file_bytes, filename, csv_separator, csv_encoding, sheet_name)
@@ -3492,22 +2793,33 @@ if uploaded_file is not None:
     columns = raw_data.columns.astype(str).tolist()
     guesses = guess_column_mapping(columns)
 
-    with control_col:
+    with map_col:
+        st.markdown('<div class="panel-title">Шаг 3: Сопоставление колонок</div>', unsafe_allow_html=True)
         with st.container(border=True):
-            with st.expander("Сопоставление колонок", expanded=False):
-                st.caption("Если автоподбор ошибся, выберите нужные поля вручную.")
-                selected_mapping = {
-                    "date": select_column("Дата", columns, guesses.get("date"), help_text="Обязательное поле."),
-                    "product": select_column("Товар", columns, guesses.get("product"), help_text="Обязательное поле."),
-                    "revenue": select_column("Выручка", columns, guesses.get("revenue")),
-                    "cost": select_column("Себестоимость", columns, guesses.get("cost")),
-                    "margin": select_column("Маржа", columns, guesses.get("margin")),
-                    "quantity": select_column("Количество", columns, guesses.get("quantity")),
-                    "unit_price": select_column("Цена за единицу", columns, guesses.get("unit_price")),
-                    "unit_cost": select_column("Себестоимость за единицу", columns, guesses.get("unit_cost")),
-                    "category": select_column("Категория", columns, guesses.get("category")),
-                    "manager": select_column("Менеджер", columns, guesses.get("manager")),
-                }
+            st.caption("Выберите соответствующие поля из вашего файла.")
+
+            # Using columns inside container for more compact mapping
+            m1, m2 = st.columns(2)
+            with m1:
+                col_date = select_column("Дата (обязательно)", columns, guesses.get("date"), key="map_date")
+                col_product = select_column("Товар (обязательно)", columns, guesses.get("product"), key="map_product")
+                col_cat = select_column("Категория", columns, guesses.get("category"), key="map_cat")
+                col_manager = select_column("Менеджер", columns, guesses.get("manager"), key="map_man")
+            with m2:
+                col_rev = select_column("Выручка", columns, guesses.get("revenue"), key="map_rev")
+                col_cost = select_column("Себестоимость", columns, guesses.get("cost"), key="map_cost")
+                col_qty = select_column("Количество", columns, guesses.get("quantity"), key="map_qty")
+                col_price = select_column("Цена ед.", columns, guesses.get("unit_price"), key="map_price")
+
+            selected_mapping = {
+                "date": col_date, "product": col_product, "revenue": col_rev,
+                "cost": col_cost, "margin": None, "quantity": col_qty,
+                "unit_price": col_price, "unit_cost": None, "category": col_cat,
+                "manager": col_manager
+            }
+
+    st.markdown("---")
+    st.markdown('<div class="panel-title">Шаг 4: Проверка и сохранение</div>', unsafe_allow_html=True)
 
     mapping_items = tuple(sorted(selected_mapping.items()))
 
@@ -3527,57 +2839,38 @@ if uploaded_file is not None:
         with st.container(border=True):
             render_panel_header(
                 "Сохранение в архив",
-                "После проверки файла нажмите кнопку ниже, чтобы закрепить выгрузку за выбранным салоном и датой. Сохранённые файлы попадают в архив и участвуют в сводной аналитике.",
+                "После проверки данных ниже, подтвердите сохранение выгрузки в базу данных.",
             )
             if auto_detected_report_date is not None:
-                st.caption(f"Дата, найденная в файле: {auto_detected_report_date.strftime('%d.%m.%Y')}")
+                st.markdown(f"**Найдена дата в файле:** `{auto_detected_report_date.strftime('%d.%m.%Y')}`")
+
             if not selected_salon_name:
                 st.warning("Сначала выберите салон, иначе выгрузку нельзя сохранить в архив.")
             else:
-                save_col, helper_col = st.columns([1.2, 1])
-                with save_col:
-                    if st.button("Сохранить выгрузку в архив", key="main_save_upload_button", use_container_width=True):
+                s1, s2, s3 = st.columns([1, 1, 1])
+                with s1:
+                    target_date = st.date_input("Дата отчёта", value=current_file_report_date, key="final_save_date")
+                with s2:
+                    st.write("") # vertical spacer
+                    replace_check = st.checkbox("Заменить существующий", value=replace_existing_upload, key="final_save_replace")
+                with s3:
+                    st.write("") # vertical spacer
+                    if st.button("🚀 Сохранить в архив", key="main_save_upload_button", use_container_width=True, type="primary"):
                         save_upload_with_feedback(
                             file_bytes=file_bytes,
                             filename=filename,
                             salon_name=selected_salon_name,
-                            report_date=current_file_report_date,
+                            report_date=target_date,
                             mapping=selected_mapping,
                             csv_separator=csv_separator,
                             csv_encoding=csv_encoding,
                             sheet_name=sheet_name,
-                            replace_existing=replace_existing_upload,
+                            replace_existing=replace_check,
                             actor_username=current_user["username"],
                         )
                         st.rerun()
-                with helper_col:
-                    st.caption(
-                        "Сохранение доступно только в режимах салонной загрузки. "
-                        "В режиме разового анализа файл не попадает в архив."
-                    )
 
-        with control_col:
-            with st.container(border=True):
-                with st.expander("Сохранение в архив", expanded=True):
-                    if auto_detected_report_date is not None:
-                        st.caption(f"Дата из файла: {auto_detected_report_date.strftime('%d.%m.%Y')}")
-                    if not selected_salon_name:
-                        st.info("Укажите салон, чтобы сохранить выгрузку в архив.")
-                    else:
-                        if st.button("Сохранить выгрузку в архив", key="sidebar_save_upload_button", use_container_width=True):
-                            save_upload_with_feedback(
-                                file_bytes=file_bytes,
-                                filename=filename,
-                                salon_name=selected_salon_name,
-                                report_date=current_file_report_date,
-                                mapping=selected_mapping,
-                                csv_separator=csv_separator,
-                                csv_encoding=csv_encoding,
-                                sheet_name=sheet_name,
-                                replace_existing=replace_existing_upload,
-                                actor_username=current_user["username"],
-                            )
-                            st.rerun()
+    # Clean up old redundant sidebar preservation code if needed, but keeping logic for now
 
 if work_mode == "Разовая загрузка":
     if prepared_result is None:
@@ -3622,38 +2915,37 @@ if prepared_result is not None and work_mode in {"Разовая загрузк�
 
 with control_col:
     with st.container(border=True):
-        st.header("Фильтры")
+        with st.expander("Фильтры", expanded=False):
+            min_date = data["date"].min().date()
+            max_date = data["date"].max().date()
+            selected_dates = st.date_input(
+                "Период продаж",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                key="main_selected_dates",
+            )
 
-        min_date = data["date"].min().date()
-        max_date = data["date"].max().date()
-        selected_dates = st.date_input(
-            "Период продаж",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="main_selected_dates",
-        )
+            if len(selected_dates) == 2:
+                date_from, date_to = selected_dates
+                data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
 
-        if len(selected_dates) == 2:
-            date_from, date_to = selected_dates
-            data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
+            if is_network_role(current_user["role"]) and "salon" in data.columns and data["salon"].nunique() > 1:
+                all_salons = sorted(data["salon"].dropna().unique().tolist())
+                selected_salons_filter = st.multiselect("Салоны", all_salons, default=all_salons, key="main_selected_salons_filter")
+                data = data[data["salon"].isin(selected_salons_filter)]
 
-        if is_network_role(current_user["role"]) and "salon" in data.columns and data["salon"].nunique() > 1:
-            all_salons = sorted(data["salon"].dropna().unique().tolist())
-            selected_salons_filter = st.multiselect("Салоны", all_salons, default=all_salons, key="main_selected_salons_filter")
-            data = data[data["salon"].isin(selected_salons_filter)]
+            plan_fact_source_data = data.copy()
 
-        plan_fact_source_data = data.copy()
+            if data["category"].nunique() > 1:
+                all_categories = sorted(data["category"].dropna().unique().tolist())
+                selected_categories = st.multiselect("Категории", all_categories, default=all_categories, key="main_selected_categories")
+                data = data[data["category"].isin(selected_categories)]
 
-        if data["category"].nunique() > 1:
-            all_categories = sorted(data["category"].dropna().unique().tolist())
-            selected_categories = st.multiselect("Категории", all_categories, default=all_categories, key="main_selected_categories")
-            data = data[data["category"].isin(selected_categories)]
-
-        if data["manager"].nunique() > 1:
-            all_managers = sorted(data["manager"].dropna().unique().tolist())
-            selected_managers = st.multiselect("Менеджеры", all_managers, default=all_managers, key="main_selected_managers")
-            data = data[data["manager"].isin(selected_managers)]
+            if data["manager"].nunique() > 1:
+                all_managers = sorted(data["manager"].dropna().unique().tolist())
+                selected_managers = st.multiselect("Менеджеры", all_managers, default=all_managers, key="main_selected_managers")
+                data = data[data["manager"].isin(selected_managers)]
 
 if data.empty:
     st.warning("После применения фильтров не осталось данных.")
@@ -3794,7 +3086,7 @@ if active_screen == "Обзор":
     insights = insights[:6]
     latest_month = monthly_summary.iloc[-1]
     top_products = product_summary.head(7)
-    left_col, right_col = st.columns([2.2, 0.95], gap="large")
+    left_col, right_col = st.columns([2.2, 0.95], gap="medium")
 
     with left_col:
         with st.container(border=True):
@@ -3907,7 +3199,7 @@ if active_screen == "Обзор":
                 ]
             )
 
-    second_left, second_right = st.columns(2, gap="large")
+    second_left, second_right = st.columns(2, gap="medium")
     category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
     manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
     overview_breakdown_height = compact_bar_chart_height(max(len(category_chart_data), len(manager_chart_data), 3))
@@ -4022,7 +3314,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "ABC-а�
         ]
     )
 
-    left_col, right_col = st.columns(2, gap="large")
+    left_col, right_col = st.columns(2, gap="medium")
 
     with left_col:
         with st.container(border=True):
@@ -4173,7 +3465,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
             "Сначала смотрите лидеров и зону риска, затем переходите к карте распределения и детальной таблице. Такой порядок помогает не потеряться в цифрах и сразу выделить товары для действия.",
         )
 
-        leaders_left, leaders_right = st.columns(2, gap="large")
+        leaders_left, leaders_right = st.columns(2, gap="medium")
 
         with leaders_left:
             with st.container(border=True):
@@ -4289,7 +3581,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
         default_left_index = max(len(available_months) - 2, 0)
         default_right_index = len(available_months) - 1
 
-        left_col, right_col = st.columns(2, gap="large")
+        left_col, right_col = st.columns(2, gap="medium")
         with left_col:
             selected_left_month = st.selectbox("Базовый месяц", options=available_months, index=default_left_index)
         with right_col:
@@ -4341,7 +3633,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                 )
             render_snapshot_strip(comparison_snapshot_items)
 
-            chart_left, chart_right = st.columns(2, gap="large")
+            chart_left, chart_right = st.columns(2, gap="medium")
 
             with chart_left:
                 with st.container(border=True):
@@ -4522,7 +3814,7 @@ if active_screen == "План / факт":
             ]
         render_snapshot_strip(plan_snapshot_items)
 
-        plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="large")
+        plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="medium")
 
         with plan_chart_left:
             with st.container(border=True):
@@ -4601,7 +3893,7 @@ if active_screen == "План / факт":
                 editor_month_options = sorted(existing_month_labels)
 
                 scope_options = ["Вся сеть", *registered_salons] if is_network_role(current_user["role"]) else [current_user.get("salon", "Текущий салон")]
-                plan_form_left, plan_form_right = st.columns([1, 1.2], gap="large")
+                plan_form_left, plan_form_right = st.columns([1, 1.2], gap="medium")
                 with plan_form_left:
                     selected_plan_scope_label = st.selectbox(
                         "Контур плана",
@@ -4654,7 +3946,7 @@ if active_screen == "План / факт":
                         f"количество {format_number(fact_hint.get('quantity'))}."
                     )
 
-                save_plan_col, delete_plan_col = st.columns([1, 1], gap="large")
+                save_plan_col, delete_plan_col = st.columns([1, 1], gap="medium")
                 with save_plan_col:
                     if st.button("Сохранить план", key="plan_save_button", use_container_width=True):
                         try:
@@ -4834,7 +4126,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
             st.info("Для RFM-анализа нужны данные по менеджерам или категориям.")
         else:
             rfm_data["monetary_bubble"] = build_safe_marker_size(rfm_data["monetary"], absolute=False)
-            rfm_left, rfm_right = st.columns(2, gap="large")
+            rfm_left, rfm_right = st.columns(2, gap="medium")
 
             with rfm_left:
                 with st.container(border=True):
@@ -5057,7 +4349,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                     ]
                 )
 
-                returns_left, returns_right = st.columns(2, gap="large")
+                returns_left, returns_right = st.columns(2, gap="medium")
 
                 with returns_left:
                     with st.container(border=True):
@@ -5237,7 +4529,7 @@ if active_screen == "Данные":
             },
         ]
     )
-    top_left, top_right = st.columns(2, gap="large")
+    top_left, top_right = st.columns(2, gap="medium")
 
     with top_left:
         with st.container(border=True):
