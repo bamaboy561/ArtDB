@@ -1891,6 +1891,25 @@ def _format_datetime_value(value: object, *, include_time: bool) -> str:
     return parsed.strftime("%d.%m.%Y %H:%M" if include_time else "%d.%m.%Y")
 
 
+def format_date_value(value: object, *, fallback: str = "—") -> str:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return fallback
+    return parsed.strftime("%d.%m.%Y")
+
+
+def format_date_range_values(start_value: object, end_value: object, *, fallback: str = "—") -> str:
+    start_text = format_date_value(start_value, fallback="")
+    end_text = format_date_value(end_value, fallback="")
+    if start_text and end_text:
+        return f"{start_text} - {end_text}"
+    if start_text:
+        return start_text
+    if end_text:
+        return end_text
+    return fallback
+
+
 def _coerce_float_for_display(value: object) -> float:
     if isinstance(value, (int, float)) and not pd.isna(value):
         return float(value)
@@ -2898,8 +2917,8 @@ def render_dataset_hero(
     selected_managers: list[str] | None,
     current_user: dict[str, str],
 ) -> None:
-    min_date = data["date"].min().strftime("%d.%m.%Y")
-    max_date = data["date"].max().strftime("%d.%m.%Y")
+    min_date = format_date_value(data["date"].min())
+    max_date = format_date_value(data["date"].max())
 
     category_text = "Все категории"
     manager_text = "Все менеджеры"
@@ -5155,7 +5174,7 @@ if active_screen == "Данные":
             "Источники и выгрузки",
             "Здесь собраны исходные данные, служебная информация по сопоставлению колонок, журнал загрузок и сводка по месяцам. Эта вкладка нужна для проверки качества загрузки и состава данных.",
         )
-        data_period_text = f"{data['date'].min().strftime('%d.%m.%Y')} - {data['date'].max().strftime('%d.%m.%Y')}"
+        data_period_text = format_date_range_values(data["date"].min(), data["date"].max())
         archive_upload_count = len(manifest_view) if manifest_view is not None else 0
         data_salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
         mapping_count = sum(1 for value in visible_mapping.values() if value) if visible_mapping else 0
