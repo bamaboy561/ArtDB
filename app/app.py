@@ -3234,7 +3234,8 @@ main_col = st.container()
 control_col = main_col
 
 if work_mode in upload_modes:
-    with st.container(border=True):
+    upload_shell = st.container(border=True)
+    with upload_shell:
         st.markdown('<div class="panel-title">Загрузка файла</div>', unsafe_allow_html=True)
         if work_mode == "Разовая загрузка":
             st.markdown('<div class="panel-caption">Загрузите файл для быстрого анализа без сохранения в архив.</div>', unsafe_allow_html=True)
@@ -3285,7 +3286,8 @@ if work_mode in upload_modes:
             st.error(str(error))
             st.stop()
 
-        with main_col:
+        with upload_shell:
+            st.divider()
             st.markdown('<div class="panel-title" style="margin-top: 1rem;">Шаг 2: Настройка и сопоставление</div>', unsafe_allow_html=True)
             conf_col, map_col = st.columns([1, 1.5], gap="medium")
 
@@ -3338,6 +3340,7 @@ if work_mode in upload_modes:
                         "manager": col_manager
                     }
 
+            st.divider()
             st.markdown('<div class="panel-title">Шаг 4: Проверка и сохранение</div>', unsafe_allow_html=True)
             mapping_items = tuple(sorted(selected_mapping.items()))
             try:
@@ -3354,39 +3357,48 @@ if work_mode in upload_modes:
                     current_file_report_date = auto_detected_report_date
 
             if work_mode in {"Новая выгрузка", "Загрузка салона"}:
-                with st.container(border=True):
-                    render_panel_header(
-                        "Сохранение в архив",
-                        "Подтвердите сохранение выгрузки в базу данных.",
-                    )
-                    if auto_detected_report_date is not None:
-                        st.markdown(f"**Найдена дата в файле:** `{auto_detected_report_date.strftime('%d.%m.%Y')}`")
+                render_panel_header(
+                    "Сохранение в архив",
+                    "Все параметры сохранения собраны прямо в этом окне.",
+                )
+                if auto_detected_report_date is not None:
+                    st.markdown(f"**Найдена дата в файле:** `{auto_detected_report_date.strftime('%d.%m.%Y')}`")
 
-                    if not selected_salon_name:
-                        st.warning("Сначала выберите салон.")
-                    else:
-                        s1, s2, s3 = st.columns([1.2, 1, 1.2])
-                        with s1:
-                            target_date = st.date_input("Дата отчёта", value=current_file_report_date, key="final_save_date")
-                        with s2:
-                            st.write("")
-                            replace_check = st.checkbox("Заменить", value=replace_existing_upload, key="final_save_replace")
-                        with s3:
-                            st.write("")
-                            if st.button("🚀 Сохранить", key="main_save_upload_button", use_container_width=True, type="primary"):
-                                save_upload_with_feedback(
-                                    file_bytes=file_bytes,
-                                    filename=filename,
-                                    salon_name=selected_salon_name,
-                                    report_date=target_date,
-                                    mapping=selected_mapping,
-                                    csv_separator=csv_separator,
-                                    csv_encoding=csv_encoding,
-                                    sheet_name=sheet_name,
-                                    replace_existing=replace_check,
-                                    actor_username=current_user["username"],
-                                )
-                                st.rerun()
+                if not selected_salon_name:
+                    st.warning("Сначала выберите салон.")
+                else:
+                    settings_left, settings_right = st.columns([1.25, 0.95], gap="medium")
+                    with settings_left:
+                        target_date = st.date_input("Дата отчёта", value=current_file_report_date, key="final_save_date")
+                    with settings_right:
+                        replace_check = st.checkbox(
+                            "Заменить существующий файл за эту дату",
+                            value=replace_existing_upload,
+                            key="final_save_replace",
+                        )
+
+                    save_meta_left, save_meta_right = st.columns([1.15, 1], gap="medium")
+                    with save_meta_left:
+                        st.caption(f"Файл: {filename}")
+                        st.caption(f"Салон: {selected_salon_name}")
+                    with save_meta_right:
+                        st.caption(f"Строк после подготовки: {format_number(len(prepared_result.data))}")
+                        st.caption(f"Распознано полей: {sum(1 for value in selected_mapping.values() if value)}")
+
+                    if st.button("🚀 Сохранить в архив", key="main_save_upload_button", use_container_width=True, type="primary"):
+                        save_upload_with_feedback(
+                            file_bytes=file_bytes,
+                            filename=filename,
+                            salon_name=selected_salon_name,
+                            report_date=target_date,
+                            mapping=selected_mapping,
+                            csv_separator=csv_separator,
+                            csv_encoding=csv_encoding,
+                            sheet_name=sheet_name,
+                            replace_existing=replace_check,
+                            actor_username=current_user["username"],
+                        )
+                        st.rerun()
 
     if work_mode == "Разовая загрузка":
         if prepared_result is None:
