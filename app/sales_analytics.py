@@ -650,8 +650,54 @@ def build_abc_analysis(product_summary: pd.DataFrame, metric: str = "revenue") -
 
 
 def build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "month",
+                "month_label",
+                "revenue",
+                "cost",
+                "margin",
+                "quantity",
+                "product_count",
+                "revenue_change_pct",
+                "margin_change_pct",
+            ]
+        )
+
+    monthly_frame = frame.copy()
+    if "date" in monthly_frame.columns:
+        monthly_frame["date"] = pd.to_datetime(monthly_frame["date"], errors="coerce")
+
+    if "month" not in monthly_frame.columns:
+        if "date" not in monthly_frame.columns:
+            return pd.DataFrame(
+                columns=[
+                    "month",
+                    "month_label",
+                    "revenue",
+                    "cost",
+                    "margin",
+                    "quantity",
+                    "product_count",
+                    "revenue_change_pct",
+                    "margin_change_pct",
+                ]
+            )
+        monthly_frame["month"] = monthly_frame["date"].dt.to_period("M").dt.to_timestamp()
+
+    if "month_label" not in monthly_frame.columns:
+        monthly_frame["month_label"] = pd.to_datetime(monthly_frame["month"], errors="coerce").dt.strftime("%Y-%m")
+
+    for metric_column in ["revenue", "cost", "margin", "quantity"]:
+        if metric_column not in monthly_frame.columns:
+            monthly_frame[metric_column] = 0.0
+        monthly_frame[metric_column] = pd.to_numeric(monthly_frame[metric_column], errors="coerce").fillna(0.0)
+    if "product" not in monthly_frame.columns:
+        monthly_frame["product"] = ""
+
     monthly = (
-        frame.groupby(["month", "month_label"], as_index=False)
+        monthly_frame.groupby(["month", "month_label"], as_index=False)
         .agg(
             revenue=("revenue", "sum"),
             cost=("cost", "sum"),
