@@ -108,6 +108,22 @@ CREATE INDEX IF NOT EXISTS monthly_plans_month_idx
 CREATE INDEX IF NOT EXISTS monthly_plans_salon_idx
     ON monthly_plans (salon);
 
+CREATE TABLE IF NOT EXISTS procurement_items (
+    product TEXT PRIMARY KEY,
+    supplier TEXT NOT NULL DEFAULT '',
+    stock_on_hand DOUBLE PRECISION NOT NULL DEFAULT 0,
+    stock_in_transit DOUBLE PRECISION NOT NULL DEFAULT 0,
+    min_order_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    order_multiple DOUBLE PRECISION NOT NULL DEFAULT 0,
+    lead_time_days INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS procurement_items_supplier_idx
+    ON procurement_items (supplier);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id BIGSERIAL PRIMARY KEY,
     user_id TEXT NOT NULL,

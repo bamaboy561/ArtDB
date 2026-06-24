@@ -33,6 +33,12 @@ from auth_store import (
 )
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
+from procurement_analytics import (
+    build_procurement_forecast,
+    build_procurement_overview,
+    build_procurement_supplier_summary,
+)
+from procurement_store import load_procurement_items, upsert_procurement_items
 from sales_analytics import (
     DISPLAY_NAMES,
     build_abc_analysis,
@@ -884,7 +890,11 @@ def can_manage_access(current_user: dict[str, str]) -> bool:
 
 
 def can_manage_plans(current_user: dict[str, str]) -> bool:
-    return current_user["role"] in {"admin", "manager"}
+    return current_user["role"] == "admin"
+
+
+def can_manage_procurement(current_user: dict[str, str]) -> bool:
+    return current_user["role"] == "admin"
 
 
 MARGIN_HIDDEN_COLUMNS = {
@@ -3154,6 +3164,8 @@ csv_encoding = "utf-8"
 replace_existing_upload = True
 data = pd.DataFrame()
 plan_fact_source_data = pd.DataFrame()
+procurement_source_data = pd.DataFrame()
+procurement_uses_manager_unfiltered_scope = False
 
 if current_user["role"] == "salon":
     if not current_user.get("salon"):
@@ -3479,6 +3491,7 @@ monthly_summary = build_monthly_summary(data)
 returns_overview = build_returns_overview(data)
 plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
 monthly_plans = load_monthly_plans()
+procurement_items = load_procurement_items()
 plan_scope_salons = (
     sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
     if "salon" in plan_fact_source_data.columns
@@ -3544,10 +3557,16 @@ screen_options = ["Обзор", "Аналитика", "План / факт", "Д
 if can_manage_access(current_user):
     screen_options.append("Управление")
 
+screen_options.insert(3, "Закупки")
 active_screen = screen_options[0]
 active_analytics_screen = ""
 active_advanced_screen = ""
 abc_metric = "revenue"
+procurement_history_months = min(max(int(monthly_summary["month_label"].nunique()) if not monthly_summary.empty else 6, 3), 6)
+procurement_coverage_days = 30
+procurement_lead_time_days = 14
+procurement_safety_days = 7
+procurement_min_active_months = 2
 selected_categories = []
 selected_managers = []
 selected_salons_filter = []
@@ -3600,6 +3619,49 @@ with st.sidebar:
             key="abc_metric_sidebar",
         )
 
+    if active_screen == "Закупки":
+        procurement_month_cap = max(3, min(12, int(data["date"].dt.to_period("M").nunique()) if not data.empty else 6))
+        with st.expander("Параметры закупки", expanded=False):
+            procurement_history_months = st.slider(
+                "История для прогноза, мес.",
+                min_value=3,
+                max_value=procurement_month_cap,
+                value=min(procurement_history_months, procurement_month_cap),
+                key="procurement_history_months",
+            )
+            procurement_coverage_days = st.slider(
+                "Период покрытия, дней",
+                min_value=7,
+                max_value=90,
+                value=procurement_coverage_days,
+                step=1,
+                key="procurement_coverage_days",
+            )
+            procurement_lead_time_days = st.slider(
+                "Срок поставки, дней",
+                min_value=0,
+                max_value=60,
+                value=procurement_lead_time_days,
+                step=1,
+                key="procurement_lead_time_days",
+            )
+            procurement_safety_days = st.slider(
+                "Страховой запас, дней",
+                min_value=0,
+                max_value=45,
+                value=procurement_safety_days,
+                step=1,
+                key="procurement_safety_days",
+            )
+            procurement_min_active_months = st.slider(
+                "Мин. активных месяцев",
+                min_value=1,
+                max_value=min(6, procurement_month_cap),
+                value=min(procurement_min_active_months, min(6, procurement_month_cap)),
+                step=1,
+                key="procurement_min_active_months",
+            )
+
     with st.expander("Фильтры", expanded=True):
         min_date = data["date"].min().date()
         max_date = data["date"].max().date()
@@ -3637,6 +3699,9 @@ with st.sidebar:
             )
             data = data[data["category"].isin(selected_categories)]
 
+        procurement_source_data = data.copy()
+        procurement_uses_manager_unfiltered_scope = False
+
         if data["manager"].nunique() > 1:
             all_managers = sorted(data["manager"].dropna().unique().tolist())
             selected_managers = st.multiselect(
@@ -3645,7 +3710,21 @@ with st.sidebar:
                 default=all_managers,
                 key="main_selected_managers",
             )
-            data = data[data["manager"].isin(selected_managers)]
+            manager_filtered_data = data[data["manager"].isin(selected_managers)]
+            procurement_uses_manager_unfiltered_scope = len(manager_filtered_data) != len(data)
+            data = manager_filtered_data
+
+procurement_forecast = build_procurement_forecast(
+    procurement_source_data,
+    history_months=procurement_history_months,
+    coverage_days=procurement_coverage_days,
+    lead_time_days=procurement_lead_time_days,
+    safety_days=procurement_safety_days,
+    min_active_months=procurement_min_active_months,
+    procurement_items=procurement_items,
+)
+procurement_overview = build_procurement_overview(procurement_forecast)
+procurement_supplier_summary = build_procurement_supplier_summary(procurement_forecast)
 
 if active_screen == "Обзор":
     abc_data = build_abc_analysis(product_summary, "revenue")
@@ -4446,6 +4525,459 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
             yoy_fig.update_xaxes(tickmode="array", tickvals=list(range(1, 13)), ticktext=["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"])
             polish_figure(yoy_fig, height=420)
             st.plotly_chart(yoy_fig, use_container_width=True)
+
+if active_screen == "Закупки":
+    render_section_intro(
+        "Закупки",
+        "Прогнозирует потребность по SKU на основе последних продаж и помогает собрать приоритетный заказ на следующий цикл поставки.",
+    )
+
+    procurement_total_window_days = (
+        procurement_coverage_days
+        + procurement_lead_time_days
+        + procurement_safety_days
+    )
+    st.caption(
+        f"Окно расчёта: {procurement_history_months} мес. истории, "
+        f"{procurement_coverage_days} дн. покрытия, "
+        f"{procurement_lead_time_days} дн. поставки и "
+        f"{procurement_safety_days} дн. страхового запаса."
+    )
+
+    if procurement_uses_manager_unfiltered_scope:
+        st.info(
+            "Прогноз закупки учитывает фильтры по периоду, салонам и категориям, "
+            "но не сужается по менеджерам, чтобы персональные продажи не искажали потребность."
+        )
+
+    procurement_flash_message = st.session_state.pop("procurement_flash_message", "")
+    if procurement_flash_message:
+        st.success(procurement_flash_message)
+
+    if procurement_forecast.empty:
+        st.info(
+            "Для прогноза нужны положительные продажи по товарам хотя бы за один месяц "
+            "в выбранном контуре."
+        )
+    else:
+        if can_manage_procurement(current_user):
+            with st.container(border=True):
+                render_panel_header(
+                    "Параметры пополнения",
+                    "Заполните реальные остатки, поставщика и правила заказа. После сохранения прогноз сразу пересоберётся.",
+                )
+                st.caption("Редактируются SKU текущего контура. Удобно сначала сузить категории, а потом быстро внести параметры пополнения.")
+
+                procurement_editor_source = procurement_forecast[
+                    [
+                        "product",
+                        "supplier",
+                        "stock_on_hand",
+                        "stock_in_transit",
+                        "min_order_qty",
+                        "order_multiple",
+                        "lead_time_days",
+                        "notes",
+                    ]
+                ].copy()
+                procurement_editor = st.data_editor(
+                    procurement_editor_source,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=360,
+                    key="procurement_editor_table",
+                    disabled=["product"],
+                    column_config={
+                        "product": st.column_config.TextColumn("SKU / Товар"),
+                        "supplier": st.column_config.TextColumn("Поставщик"),
+                        "stock_on_hand": st.column_config.NumberColumn("Остаток", min_value=0.0, step=1.0, format="%.2f"),
+                        "stock_in_transit": st.column_config.NumberColumn("В пути", min_value=0.0, step=1.0, format="%.2f"),
+                        "min_order_qty": st.column_config.NumberColumn("MOQ", min_value=0.0, step=1.0, format="%.2f"),
+                        "order_multiple": st.column_config.NumberColumn("Кратность", min_value=0.0, step=1.0, format="%.2f"),
+                        "lead_time_days": st.column_config.NumberColumn("Срок поставки, дн.", min_value=0, step=1),
+                        "notes": st.column_config.TextColumn("Примечание"),
+                    },
+                )
+                if st.button("Сохранить параметры закупки", key="procurement_save_button", use_container_width=True, type="primary"):
+                    saved_count = upsert_procurement_items(
+                        procurement_editor,
+                        updated_by=current_user["username"],
+                    )
+                    audit_event(
+                        action="procurement.settings_upsert",
+                        user_id=current_user["username"],
+                        details={
+                            "saved_count": int(saved_count),
+                            "history_months": int(procurement_history_months),
+                            "coverage_days": int(procurement_coverage_days),
+                            "lead_time_days": int(procurement_lead_time_days),
+                            "safety_days": int(procurement_safety_days),
+                            "categories": selected_categories or [],
+                            "salons": selected_salons_filter or [],
+                        },
+                    )
+                    st.session_state["procurement_flash_message"] = f"Параметры закупки сохранены для {saved_count} SKU."
+                    st.rerun()
+
+        procurement_snapshot_items = [
+            {
+                "label": "SKU в расчёте",
+                "value": format_number(procurement_overview["sku_count"]),
+                "hint": "Все товары, попавшие в расчёт прогноза",
+            },
+            {
+                "label": "Нужно заказать",
+                "value": format_number(procurement_overview["reorder_sku_count"]),
+                "hint": "SKU с ненулевой рекомендацией к заказу",
+            },
+            {
+                "label": "Риск дефицита",
+                "value": format_number(procurement_overview["critical_stock_count"]),
+                "hint": "Позиции без остатка или с риском не дожить до поставки",
+            },
+            {
+                "label": "Рекомендованный заказ",
+                "value": format_number(procurement_overview["recommended_order_qty_total"]),
+                "hint": f"Уже с учётом MOQ и кратности на окно {procurement_total_window_days} дней",
+            },
+            {
+                "label": "Доступный остаток",
+                "value": format_number(procurement_overview["available_stock_qty_total"]),
+                "hint": "Сумма остатка и товара в пути по текущему контуру",
+            },
+            {
+                "label": "Поставщиков",
+                "value": format_number(procurement_overview["supplier_count"]),
+                "hint": "Сколько поставщиков уже привязано к SKU в этом срезе",
+            },
+        ]
+        render_snapshot_strip(procurement_snapshot_items)
+
+        priority_color_map = {
+            "Критичный": "#991B1B",
+            "Высокий": "#D97706",
+            "Средний": PRIMARY_COLOR,
+            "Низкий": "#64748B",
+            "Новый": "#0F766E",
+            "Спящий": "#CBD5E1",
+        }
+        stock_status_color_map = {
+            "Нет остатка": "#991B1B",
+            "Риск дефицита": "#D97706",
+            "Нужно пополнение": PRIMARY_COLOR,
+            "Покрыто остатком": SECONDARY_COLOR,
+            "Нет спроса": "#CBD5E1",
+        }
+
+        top_procurement = procurement_forecast[
+            procurement_forecast["recommended_order_qty"].fillna(0) > 0
+        ].head(12).copy()
+        top_procurement = top_procurement.sort_values("recommended_order_qty", ascending=True)
+
+        scatter_data = procurement_forecast[
+            procurement_forecast["forecast_qty"].fillna(0) > 0
+        ].copy()
+        scatter_data["stock_coverage_days"] = pd.to_numeric(
+            scatter_data["stock_coverage_days"],
+            errors="coerce",
+        ).fillna(0.0)
+        scatter_data["bubble_size"] = (
+            build_safe_marker_size(
+                scatter_data["recommended_order_qty"].where(
+                    scatter_data["recommended_order_qty"].fillna(0) > 0,
+                    scatter_data["forecast_qty"],
+                ),
+                absolute=True,
+            )
+            .clip(lower=1.0)
+        )
+
+        procurement_left, procurement_right = st.columns([1.18, 0.82], gap="medium")
+
+        with procurement_left:
+            with st.container(border=True):
+                render_panel_header(
+                    "Что заказывать сейчас",
+                    "Позиции отсортированы по рекомендованному заказу после вычета остатка и товара в пути.",
+                )
+                if top_procurement.empty:
+                    st.info("В текущем контуре нет SKU, которым уже нужно формировать заказ.")
+                else:
+                    procurement_bar = px.bar(
+                        top_procurement,
+                        x="recommended_order_qty",
+                        y="product",
+                        orientation="h",
+                        color="priority",
+                        color_discrete_map=priority_color_map,
+                        hover_data={
+                            "supplier": True,
+                            "stock_status": True,
+                            "available_stock_qty": ":.2f",
+                            "net_requirement_qty": ":.2f",
+                            "category": True,
+                            "forecast_qty": ":.2f",
+                            "gross_requirement_qty": ":.2f",
+                            "min_order_qty": ":.2f",
+                            "order_multiple": ":.2f",
+                            "abc_class": True,
+                            "xyz_class": True,
+                        },
+                        labels={
+                            "recommended_order_qty": "Рекомендованный заказ, шт",
+                            "product": "",
+                            "priority": "Приоритет",
+                        },
+                        title="",
+                    )
+                    procurement_bar.update_layout(
+                        xaxis_title="Рекомендованный заказ, шт",
+                        yaxis_title="",
+                        showlegend=False,
+                    )
+                    polish_figure(
+                        procurement_bar,
+                        height=compact_bar_chart_height(
+                            len(top_procurement),
+                            minimum=360,
+                            maximum=520,
+                            base=160,
+                            row_step=28,
+                        ),
+                    )
+                    st.plotly_chart(procurement_bar, use_container_width=True)
+
+        with procurement_right:
+            with st.container(border=True):
+                render_panel_header(
+                    "Карта спроса и покрытия",
+                    "Помогает увидеть, где спрос уже есть, а остатка и покрытия в днях недостаточно.",
+                )
+                if scatter_data.empty:
+                    st.info("Недостаточно данных для карты покрытия по закупкам.")
+                else:
+                    procurement_scatter = px.scatter(
+                        scatter_data,
+                        x="forecast_qty",
+                        y="stock_coverage_days",
+                        size="bubble_size",
+                        size_max=34,
+                        color="stock_status",
+                        color_discrete_map=stock_status_color_map,
+                        hover_name="product",
+                        hover_data={
+                            "supplier": True,
+                            "category": True,
+                            "abc_class": True,
+                            "xyz_class": True,
+                            "available_stock_qty": ":.2f",
+                            "net_requirement_qty": ":.2f",
+                            "recommended_order_qty": ":.2f",
+                            "avg_daily_qty": ":.2f",
+                            "days_since_last_sale": True,
+                            "bubble_size": False,
+                        },
+                        labels={
+                            "forecast_qty": "Прогноз потребности, шт / мес.",
+                            "stock_coverage_days": "Покрытие остатком, дней",
+                            "stock_status": "Статус остатка",
+                        },
+                        title="",
+                    )
+                    procurement_scatter.update_layout(
+                        xaxis_title="Прогноз потребности, шт / мес.",
+                        yaxis_title="Покрытие остатком, дней",
+                    )
+                    polish_figure(procurement_scatter, height=420)
+                    st.plotly_chart(procurement_scatter, use_container_width=True)
+
+        supplier_reorder_summary = procurement_supplier_summary[
+            procurement_supplier_summary["recommended_order_qty"].fillna(0) > 0
+        ].copy()
+        supplier_chart_data = supplier_reorder_summary.head(10).sort_values(
+            "recommended_order_qty",
+            ascending=True,
+        )
+        supplier_summary_rename_map = {
+            "supplier": "Поставщик",
+            "sku_count": "SKU в контуре",
+            "reorder_sku_count": "SKU к заказу",
+            "critical_sku_count": "Критичных SKU",
+            "recommended_order_qty": "Рекомендованный заказ, шт",
+            "net_requirement_qty": "Чистая потребность, шт",
+            "available_stock_qty": "Доступный остаток",
+            "forecast_qty": "Прогноз спроса, шт",
+            "forecast_revenue": "Прогноз выручки",
+            "max_lead_time_days": "Макс. срок поставки, дн.",
+        }
+
+        supplier_summary_left, supplier_summary_right = st.columns([0.92, 1.08], gap="medium")
+
+        with supplier_summary_left:
+            with st.container(border=True):
+                render_panel_header(
+                    "Поставщики к заказу",
+                    "Показывает, кому уже нужно отправлять заказ и где сосредоточен риск дефицита.",
+                )
+                if supplier_chart_data.empty:
+                    st.info("Пока нет поставщиков с ненулевой рекомендацией к заказу.")
+                else:
+                    supplier_bar = px.bar(
+                        supplier_chart_data,
+                        x="recommended_order_qty",
+                        y="supplier",
+                        orientation="h",
+                        text="recommended_order_qty",
+                        color_discrete_sequence=[SECONDARY_COLOR],
+                        hover_data={
+                            "reorder_sku_count": True,
+                            "critical_sku_count": True,
+                            "sku_count": True,
+                            "net_requirement_qty": ":.2f",
+                            "available_stock_qty": ":.2f",
+                            "max_lead_time_days": True,
+                        },
+                        labels={
+                            "recommended_order_qty": "Рекомендованный заказ, шт",
+                            "supplier": "",
+                        },
+                        title="",
+                    )
+                    supplier_bar.update_traces(texttemplate="%{text:.0f}", textposition="outside")
+                    supplier_bar.update_layout(
+                        xaxis_title="Рекомендованный заказ, шт",
+                        yaxis_title="",
+                        showlegend=False,
+                    )
+                    polish_figure(
+                        supplier_bar,
+                        height=compact_bar_chart_height(
+                            len(supplier_chart_data),
+                            minimum=340,
+                            maximum=480,
+                            base=160,
+                            row_step=28,
+                        ),
+                    )
+                    st.plotly_chart(supplier_bar, use_container_width=True)
+
+        with supplier_summary_right:
+            with st.container(border=True):
+                render_panel_header(
+                    "Сводка по поставщикам",
+                    "Готовая таблица для переговоров и сборки ближайшей закупочной волны.",
+                )
+                st.dataframe(
+                    supplier_reorder_summary.rename(columns=supplier_summary_rename_map),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=390,
+                )
+                st.download_button(
+                    "Скачать сводку по поставщикам",
+                    data=to_csv_bytes(supplier_reorder_summary.rename(columns=supplier_summary_rename_map)),
+                    file_name="procurement_suppliers.csv",
+                    mime="text/csv",
+                )
+
+        procurement_table_columns = [
+            "product",
+            "category",
+            "supplier",
+            "abc_class",
+            "xyz_class",
+            "priority",
+            "stock_status",
+            "demand_state",
+            "active_months",
+            "history_months_used",
+            "last_month_qty",
+            "avg_monthly_qty",
+            "recent_avg_qty",
+            "trend_factor",
+            "forecast_qty",
+            "avg_daily_qty",
+            "stock_on_hand",
+            "stock_in_transit",
+            "available_stock_qty",
+            "stock_coverage_days",
+            "lead_time_days",
+            "lead_time_requirement_qty",
+            "coverage_requirement_qty",
+            "safety_stock_qty",
+            "gross_requirement_qty",
+            "net_requirement_qty",
+            "min_order_qty",
+            "order_multiple",
+            "recommended_order_qty",
+            "demand_variability_pct",
+            "days_since_last_sale",
+            "forecast_revenue",
+            "notes",
+        ]
+        procurement_rename_map = {
+            "product": "SKU / Товар",
+            "category": "Категория",
+            "supplier": "Поставщик",
+            "abc_class": "ABC",
+            "xyz_class": "XYZ",
+            "priority": "Приоритет",
+            "stock_status": "Статус остатка",
+            "demand_state": "Состояние спроса",
+            "active_months": "Активных месяцев",
+            "history_months_used": "Месяцев в истории",
+            "last_month_qty": "Последний месяц, шт",
+            "avg_monthly_qty": "Средний спрос, шт",
+            "recent_avg_qty": "Последние месяцы, шт",
+            "trend_factor": "Тренд",
+            "forecast_qty": "Прогноз потребности, шт",
+            "avg_daily_qty": "Среднедневной спрос",
+            "stock_on_hand": "Остаток",
+            "stock_in_transit": "В пути",
+            "available_stock_qty": "Доступно сейчас",
+            "stock_coverage_days": "Покрытие остатком, дней",
+            "lead_time_days": "Срок поставки, дн.",
+            "lead_time_requirement_qty": "Потребность до поставки, шт",
+            "coverage_requirement_qty": "Покрытие окна, шт",
+            "safety_stock_qty": "Страховой запас, шт",
+            "gross_requirement_qty": "Брутто-потребность, шт",
+            "net_requirement_qty": "Чистая потребность, шт",
+            "min_order_qty": "MOQ",
+            "order_multiple": "Кратность",
+            "recommended_order_qty": "Рекомендованный заказ, шт",
+            "demand_variability_pct": "Вариативность спроса, %",
+            "days_since_last_sale": "Дней с последней продажи",
+            "forecast_revenue": "Прогноз выручки",
+            "notes": "Примечание",
+        }
+        if margin_visible:
+            procurement_table_columns.extend(["avg_margin_per_unit", "forecast_margin"])
+            procurement_rename_map["avg_margin_per_unit"] = "Маржа на единицу"
+            procurement_rename_map["forecast_margin"] = "Прогноз маржи"
+
+        procurement_table = procurement_forecast[procurement_table_columns].copy()
+
+        with st.container(border=True):
+            render_panel_header(
+                "Таблица закупок",
+                "Полный список товаров с прогнозом потребности, стабильностью спроса и приоритетом к закупке.",
+            )
+            st.dataframe(
+                format_display_frame_for_role(
+                    procurement_table,
+                    current_user,
+                    rename_map=procurement_rename_map,
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=560,
+            )
+            st.download_button(
+                "Скачать прогноз закупки",
+                data=to_csv_bytes(margin_safe_frame(procurement_table.rename(columns=procurement_rename_map), current_user)),
+                file_name="procurement_forecast.csv",
+                mime="text/csv",
+            )
 
 if active_screen == "План / факт":
     render_section_intro(
