@@ -38,6 +38,18 @@ from procurement_analytics import (
     build_procurement_overview,
     build_procurement_supplier_summary,
 )
+from procurement_order_store import (
+    PROCUREMENT_ORDER_STATUSES,
+    PROCUREMENT_ORDER_STATUS_LABELS,
+    ACTIVE_INBOUND_ORDER_STATUSES,
+    apply_procurement_order_receipt,
+    build_open_order_summary,
+    build_procurement_order_overview,
+    create_procurement_order,
+    load_procurement_order_items,
+    load_procurement_orders,
+    update_procurement_order,
+)
 from procurement_store import load_procurement_items, upsert_procurement_items
 from sales_analytics import (
     DISPLAY_NAMES,
@@ -108,7 +120,7 @@ DASHBOARD_CSS = f"""
     .block-container {{
         padding-top: 1.5rem;
         padding-bottom: 2rem;
-        max-width: 1440px;
+        max-width: 1660px;
     }}
 
     .sticky-rail-marker {{
@@ -305,6 +317,15 @@ DASHBOARD_CSS = f"""
     [data-testid="stPlotlyChart"] > div {{
         border-radius: 16px;
         overflow: hidden;
+    }}
+
+    [data-testid="stDataFrame"] [role="gridcell"],
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataEditor"] [role="gridcell"],
+    [data-testid="stDataEditor"] [role="columnheader"] {{
+        white-space: normal !important;
+        word-break: break-word !important;
+        line-height: 1.35 !important;
     }}
 
     @media (prefers-reduced-motion: reduce) {{
@@ -1874,6 +1895,10 @@ def _is_percent_label(label: str) -> bool:
 
 def _is_count_label(label: str) -> bool:
     normalized = _normalized_label(label)
+    if "/" in normalized:
+        return False
+    if normalized == "sku":
+        return True
     return normalized.startswith(
         (
             "количество",
@@ -1946,6 +1971,15 @@ def _coerce_float_for_display(value: object) -> float:
     return float(numeric)
 
 
+def _format_numeric_value_for_display(value: object, formatter) -> object:
+    if is_missing(value):
+        return "вЂ”"
+    try:
+        return formatter(_coerce_float_for_display(value))
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _make_unique_label(label: str, source_column: str, used_labels: dict[str, int]) -> str:
     if label not in used_labels:
         used_labels[label] = 1
@@ -2006,6 +2040,24 @@ def format_display_frame(
                     if pd.notna(pd.to_datetime(value, errors="coerce"))
                     else str(value)
                 )
+            )
+            continue
+
+        if _is_percent_label(final_label):
+            formatted_columns[final_label] = series.map(
+                lambda value: _format_numeric_value_for_display(value, format_percent)
+            )
+            continue
+
+        if _is_money_label(final_label):
+            formatted_columns[final_label] = series.map(
+                lambda value: _format_numeric_value_for_display(value, format_money)
+            )
+            continue
+
+        if _is_count_label(final_label):
+            formatted_columns[final_label] = series.map(
+                lambda value: _format_numeric_value_for_display(value, format_number)
             )
             continue
 
@@ -3492,6 +3544,10 @@ returns_overview = build_returns_overview(data)
 plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
 monthly_plans = load_monthly_plans()
 procurement_items = load_procurement_items()
+procurement_orders = load_procurement_orders()
+procurement_order_items = load_procurement_order_items()
+open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
+procurement_order_overview = build_procurement_order_overview(procurement_orders, procurement_order_items)
 plan_scope_salons = (
     sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
     if "salon" in plan_fact_source_data.columns
@@ -3722,6 +3778,7 @@ procurement_forecast = build_procurement_forecast(
     safety_days=procurement_safety_days,
     min_active_months=procurement_min_active_months,
     procurement_items=procurement_items,
+    inbound_orders=open_procurement_orders,
 )
 procurement_overview = build_procurement_overview(procurement_forecast)
 procurement_supplier_summary = build_procurement_supplier_summary(procurement_forecast)
@@ -4553,6 +4610,19 @@ if active_screen == "Закупки":
     procurement_flash_message = st.session_state.pop("procurement_flash_message", "")
     if procurement_flash_message:
         st.success(procurement_flash_message)
+    procurement_error_message = st.session_state.pop("procurement_error_message", "")
+    if procurement_error_message:
+        st.error(procurement_error_message)
+
+    active_order_statuses = ["draft", *[status for status in PROCUREMENT_ORDER_STATUSES if status in ACTIVE_INBOUND_ORDER_STATUSES]]
+    active_procurement_orders = procurement_order_overview[
+        procurement_order_overview["status"].isin(active_order_statuses)
+    ].copy()
+    active_procurement_order_count = (
+        int(active_procurement_orders["order_id"].nunique())
+        if not active_procurement_orders.empty
+        else 0
+    )
 
     if procurement_forecast.empty:
         st.info(
@@ -4573,7 +4643,8 @@ if active_screen == "Закупки":
                         "product",
                         "supplier",
                         "stock_on_hand",
-                        "stock_in_transit",
+                        "manual_stock_in_transit",
+                        "ordered_in_transit_qty",
                         "min_order_qty",
                         "order_multiple",
                         "lead_time_days",
@@ -4584,14 +4655,15 @@ if active_screen == "Закупки":
                     procurement_editor_source,
                     use_container_width=True,
                     hide_index=True,
-                    height=360,
+                    height=460,
                     key="procurement_editor_table",
-                    disabled=["product"],
+                    disabled=["product", "ordered_in_transit_qty"],
                     column_config={
                         "product": st.column_config.TextColumn("SKU / Товар"),
                         "supplier": st.column_config.TextColumn("Поставщик"),
                         "stock_on_hand": st.column_config.NumberColumn("Остаток", min_value=0.0, step=1.0, format="%.2f"),
-                        "stock_in_transit": st.column_config.NumberColumn("В пути", min_value=0.0, step=1.0, format="%.2f"),
+                        "manual_stock_in_transit": st.column_config.NumberColumn("В пути (ручной)", min_value=0.0, step=1.0, format="%.2f"),
+                        "ordered_in_transit_qty": st.column_config.NumberColumn("В пути по заказам", min_value=0.0, step=1.0, format="%.2f"),
                         "min_order_qty": st.column_config.NumberColumn("MOQ", min_value=0.0, step=1.0, format="%.2f"),
                         "order_multiple": st.column_config.NumberColumn("Кратность", min_value=0.0, step=1.0, format="%.2f"),
                         "lead_time_days": st.column_config.NumberColumn("Срок поставки, дн.", min_value=0, step=1),
@@ -4599,8 +4671,22 @@ if active_screen == "Закупки":
                     },
                 )
                 if st.button("Сохранить параметры закупки", key="procurement_save_button", use_container_width=True, type="primary"):
+                    procurement_editor_to_save = procurement_editor.rename(
+                        columns={"manual_stock_in_transit": "stock_in_transit"}
+                    )[
+                        [
+                            "product",
+                            "supplier",
+                            "stock_on_hand",
+                            "stock_in_transit",
+                            "min_order_qty",
+                            "order_multiple",
+                            "lead_time_days",
+                            "notes",
+                        ]
+                    ].copy()
                     saved_count = upsert_procurement_items(
-                        procurement_editor,
+                        procurement_editor_to_save,
                         updated_by=current_user["username"],
                     )
                     audit_event(
@@ -4646,9 +4732,19 @@ if active_screen == "Закупки":
                 "hint": "Сумма остатка и товара в пути по текущему контуру",
             },
             {
+                "label": "В пути по заказам",
+                "value": format_number(procurement_overview["ordered_in_transit_qty_total"]),
+                "hint": "Количество, которое уже заказано и должно доехать",
+            },
+            {
                 "label": "Поставщиков",
                 "value": format_number(procurement_overview["supplier_count"]),
                 "hint": "Сколько поставщиков уже привязано к SKU в этом срезе",
+            },
+            {
+                "label": "Активных заказов",
+                "value": format_number(active_procurement_order_count),
+                "hint": "Черновики, заказанные и заказы в пути",
             },
         ]
         render_snapshot_strip(procurement_snapshot_items)
@@ -4715,6 +4811,8 @@ if active_screen == "Закупки":
                             "stock_status": True,
                             "available_stock_qty": ":.2f",
                             "net_requirement_qty": ":.2f",
+                            "ordered_in_transit_qty": ":.2f",
+                            "open_order_count": True,
                             "category": True,
                             "forecast_qty": ":.2f",
                             "gross_requirement_qty": ":.2f",
@@ -4771,6 +4869,8 @@ if active_screen == "Закупки":
                             "abc_class": True,
                             "xyz_class": True,
                             "available_stock_qty": ":.2f",
+                            "ordered_in_transit_qty": ":.2f",
+                            "open_order_count": True,
                             "net_requirement_qty": ":.2f",
                             "recommended_order_qty": ":.2f",
                             "avg_daily_qty": ":.2f",
@@ -4880,6 +4980,360 @@ if active_screen == "Закупки":
                     mime="text/csv",
                 )
 
+        if can_manage_procurement(current_user):
+            with st.container(border=True):
+                render_panel_header(
+                    "Создать заказ поставщику",
+                    "Соберите заказ прямо из текущего прогноза. В расчёт попадут только строки с количеством больше нуля.",
+                )
+                order_candidates = procurement_forecast[
+                    procurement_forecast["recommended_order_qty"].fillna(0) > 0
+                ].copy()
+                order_candidates["supplier_group"] = (
+                    order_candidates["supplier"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .replace("", "Не назначен")
+                )
+                order_supplier_options = (
+                    order_candidates["supplier_group"].dropna().astype(str).drop_duplicates().tolist()
+                    if not order_candidates.empty
+                    else []
+                )
+                if not order_supplier_options:
+                    st.info("Сейчас нет поставщиков, по которым уже нужно формировать заказ.")
+                else:
+                    selected_order_supplier = st.selectbox(
+                        "Поставщик для заказа",
+                        options=order_supplier_options,
+                        key="procurement_order_supplier",
+                    )
+                    selected_order_source = order_candidates[
+                        order_candidates["supplier_group"] == selected_order_supplier
+                    ][
+                        [
+                            "product",
+                            "category",
+                            "recommended_order_qty",
+                            "available_stock_qty",
+                            "lead_time_days",
+                            "notes",
+                        ]
+                    ].copy()
+                    selected_order_source["order_qty"] = selected_order_source["recommended_order_qty"]
+                    selected_order_source["line_comment"] = ""
+
+                    order_editor_col, order_meta_col = st.columns([1.24, 0.76], gap="medium")
+                    with order_editor_col:
+                        order_editor = st.data_editor(
+                            selected_order_source,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=430,
+                            key=f"procurement_order_editor_{selected_order_supplier}",
+                            disabled=[
+                                "product",
+                                "category",
+                                "recommended_order_qty",
+                                "available_stock_qty",
+                                "lead_time_days",
+                                "notes",
+                            ],
+                            column_config={
+                                "product": st.column_config.TextColumn("SKU / Товар"),
+                                "category": st.column_config.TextColumn("Категория"),
+                                "recommended_order_qty": st.column_config.NumberColumn("Рекомендовано", format="%.2f"),
+                                "available_stock_qty": st.column_config.NumberColumn("Доступно сейчас", format="%.2f"),
+                                "lead_time_days": st.column_config.NumberColumn("Срок поставки, дн.", format="%d"),
+                                "notes": st.column_config.TextColumn("Примечание SKU"),
+                                "order_qty": st.column_config.NumberColumn("Заказать", min_value=0.0, step=1.0, format="%.2f"),
+                                "line_comment": st.column_config.TextColumn("Комментарий строки"),
+                            },
+                        )
+                    with order_meta_col:
+                        order_creation_status = st.selectbox(
+                            "Статус при создании",
+                            options=["draft", "ordered", "in_transit"],
+                            index=1,
+                            format_func=lambda value: PROCUREMENT_ORDER_STATUS_LABELS.get(value, value),
+                            key="procurement_order_creation_status",
+                        )
+                        order_date_value = st.date_input(
+                            "Дата заказа",
+                            value=date.today(),
+                            key="procurement_order_date",
+                        )
+                        order_expected_default = (
+                            pd.Timestamp(date.today()) + pd.Timedelta(days=max(procurement_lead_time_days, 1))
+                        ).date()
+                        order_expected_date_value = st.date_input(
+                            "Ожидаемая дата",
+                            value=order_expected_default,
+                            key="procurement_order_expected_date",
+                        )
+                        order_comment = st.text_area(
+                            "Комментарий к заказу",
+                            key="procurement_order_comment",
+                            placeholder="Например: срочная поставка, частичная отгрузка, согласовано с поставщиком.",
+                        )
+                        if st.button(
+                            "Создать заказ поставщику",
+                            key="procurement_create_order_button",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            try:
+                                order_items_to_create = order_editor.rename(
+                                    columns={"order_qty": "quantity", "line_comment": "comment"}
+                                )[["product", "quantity", "comment"]].copy()
+                                created_order = create_procurement_order(
+                                    supplier=selected_order_supplier,
+                                    items_frame=order_items_to_create,
+                                    order_date=order_date_value,
+                                    expected_date=order_expected_date_value,
+                                    comment=order_comment,
+                                    created_by=current_user["username"],
+                                    status=order_creation_status,
+                                )
+                                created_item_count = int((order_items_to_create["quantity"] > 0).sum())
+                                audit_event(
+                                    action="procurement.order_create",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "order_id": created_order["order_id"],
+                                        "supplier": selected_order_supplier,
+                                        "status": order_creation_status,
+                                        "item_count": created_item_count,
+                                    },
+                                )
+                                st.session_state["procurement_flash_message"] = (
+                                    f"Заказ {created_order['order_id']} создан для поставщика {selected_order_supplier}."
+                                )
+                            except ValueError as error:
+                                st.session_state["procurement_error_message"] = str(error)
+                            st.rerun()
+
+        with st.container(border=True):
+            render_panel_header(
+                "Заказы в работе",
+                "Следите за созданными заказами, обновляйте статусы и принимайте поставки прямо из системы.",
+            )
+            if procurement_order_overview.empty:
+                st.info("Заказы ещё не создавались. Сформируйте первый заказ из прогноза выше.")
+            else:
+                order_filter_options = ["Активные", "Все", *[PROCUREMENT_ORDER_STATUS_LABELS[status] for status in PROCUREMENT_ORDER_STATUSES]]
+                selected_order_filter = st.selectbox(
+                    "Какие заказы показать",
+                    options=order_filter_options,
+                    index=0,
+                    key="procurement_order_filter",
+                )
+                filtered_order_overview = procurement_order_overview.copy()
+                if selected_order_filter == "Активные":
+                    filtered_order_overview = filtered_order_overview[
+                        filtered_order_overview["status"].isin(active_order_statuses)
+                    ].copy()
+                elif selected_order_filter != "Все":
+                    matching_status = next(
+                        (
+                            status
+                            for status, label in PROCUREMENT_ORDER_STATUS_LABELS.items()
+                            if label == selected_order_filter
+                        ),
+                        "",
+                    )
+                    filtered_order_overview = filtered_order_overview[
+                        filtered_order_overview["status"] == matching_status
+                    ].copy()
+
+                order_summary_col, order_detail_col = st.columns([1.08, 0.92], gap="medium")
+                with order_summary_col:
+                    order_table_rename_map = {
+                        "order_id": "Заказ",
+                        "supplier": "Поставщик",
+                        "status_label": "Статус",
+                        "order_date": "Дата заказа",
+                        "expected_date": "Ожидаемая дата",
+                        "sku_count": "SKU",
+                        "total_quantity": "Количество",
+                        "updated_by": "Последнее изменение",
+                        "updated_at": "Обновлён",
+                    }
+                    order_table_for_display = filtered_order_overview[
+                        [
+                            "order_id",
+                            "supplier",
+                            "status_label",
+                            "order_date",
+                            "expected_date",
+                            "sku_count",
+                            "total_quantity",
+                            "updated_by",
+                            "updated_at",
+                        ]
+                    ].rename(columns=order_table_rename_map)
+                    order_table_column_config = {
+                        order_table_rename_map["supplier"]: st.column_config.TextColumn(width="medium"),
+                        order_table_rename_map["status_label"]: st.column_config.TextColumn(width="medium"),
+                        order_table_rename_map["updated_by"]: st.column_config.TextColumn(width="medium"),
+                    }
+                    st.dataframe(
+                        order_table_for_display,
+                        column_config=order_table_column_config,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=430,
+                    )
+
+                with order_detail_col:
+                    if filtered_order_overview.empty:
+                        st.info("Под выбранный фильтр пока нет заказов.")
+                    else:
+                        order_option_labels = {
+                            row["order_id"]: (
+                                f"{row['order_id']} • {row['supplier'] or 'Без поставщика'} • {row['status_label']}"
+                            )
+                            for _, row in filtered_order_overview.iterrows()
+                        }
+                        selected_order_id = st.selectbox(
+                            "Карточка заказа",
+                            options=filtered_order_overview["order_id"].tolist(),
+                            format_func=lambda value: order_option_labels.get(value, value),
+                            key="procurement_selected_order_id",
+                        )
+                        selected_order_row = filtered_order_overview[
+                            filtered_order_overview["order_id"] == selected_order_id
+                        ].iloc[0]
+                        selected_order_lines = procurement_order_items[
+                            procurement_order_items["order_id"] == selected_order_id
+                        ][["product", "quantity", "unit_cost", "comment"]].copy()
+                        order_lines_rename_map = {
+                            "product": "SKU / РўРѕРІР°СЂ",
+                            "quantity": "РљРѕР»РёС‡РµСЃС‚РІРѕ",
+                            "unit_cost": "Р¦РµРЅР° Р·Р°РєСѓРїРєРё",
+                            "comment": "РљРѕРјРјРµРЅС‚Р°СЂРёР№",
+                        }
+                        selected_order_lines_display = selected_order_lines.rename(columns=order_lines_rename_map)
+
+                        render_snapshot_strip(
+                            [
+                                {
+                                    "label": "Статус",
+                                    "value": str(selected_order_row["status_label"]),
+                                    "hint": f"Поставщик: {selected_order_row['supplier'] or 'Без поставщика'}",
+                                },
+                                {
+                                    "label": "SKU в заказе",
+                                    "value": format_number(selected_order_row["sku_count"]),
+                                    "hint": f"Всего единиц: {format_number(selected_order_row['total_quantity'])}",
+                                },
+                                {
+                                    "label": "Ожидаемая дата",
+                                    "value": (
+                                        pd.to_datetime(selected_order_row["expected_date"], errors="coerce").strftime("%d.%m.%Y")
+                                        if pd.notna(pd.to_datetime(selected_order_row["expected_date"], errors="coerce"))
+                                        else "Не указана"
+                                    ),
+                                    "hint": f"Создал: {selected_order_row['created_by'] or 'н/д'}",
+                                },
+                            ]
+                        )
+                        st.dataframe(
+                            selected_order_lines.rename(
+                                columns={
+                                    "product": "SKU / Товар",
+                                    "quantity": "Количество",
+                                    "unit_cost": "Цена закупки",
+                                    "comment": "Комментарий",
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=300,
+                        )
+
+                        if can_manage_procurement(current_user):
+                            current_status_value = str(selected_order_row["status"]).strip()
+                            selected_order_comment = str(selected_order_row.get("comment", "") or "")
+                            parsed_expected_date = pd.to_datetime(
+                                selected_order_row["expected_date"],
+                                errors="coerce",
+                            )
+                            expected_date_input_value = (
+                                parsed_expected_date.date()
+                                if pd.notna(parsed_expected_date)
+                                else (pd.Timestamp(date.today()) + pd.Timedelta(days=max(procurement_lead_time_days, 1))).date()
+                            )
+                            updated_status_value = st.selectbox(
+                                "Новый статус",
+                                options=list(PROCUREMENT_ORDER_STATUSES),
+                                index=list(PROCUREMENT_ORDER_STATUSES).index(current_status_value)
+                                if current_status_value in PROCUREMENT_ORDER_STATUSES
+                                else 0,
+                                format_func=lambda value: PROCUREMENT_ORDER_STATUS_LABELS.get(value, value),
+                                key=f"procurement_order_status_{selected_order_id}",
+                            )
+                            updated_expected_date = st.date_input(
+                                "Обновить ожидаемую дату",
+                                value=expected_date_input_value,
+                                key=f"procurement_order_expected_{selected_order_id}",
+                            )
+                            updated_order_comment = st.text_area(
+                                "Комментарий заказа",
+                                value=selected_order_comment,
+                                key=f"procurement_order_comment_{selected_order_id}",
+                            )
+
+                            action_label = (
+                                "Принять заказ и зачислить на остаток"
+                                if updated_status_value == "received"
+                                else "Сохранить статус заказа"
+                            )
+                            if st.button(
+                                action_label,
+                                key=f"procurement_order_update_{selected_order_id}",
+                                use_container_width=True,
+                            ):
+                                try:
+                                    if updated_status_value == "received":
+                                        apply_procurement_order_receipt(
+                                            selected_order_id,
+                                            updated_by=current_user["username"],
+                                            expected_date=updated_expected_date,
+                                            comment=updated_order_comment,
+                                        )
+                                        audit_event(
+                                            action="procurement.order_receive",
+                                            user_id=current_user["username"],
+                                            details={"order_id": selected_order_id},
+                                        )
+                                        st.session_state["procurement_flash_message"] = (
+                                            f"Заказ {selected_order_id} принят, остатки обновлены."
+                                        )
+                                    else:
+                                        update_procurement_order(
+                                            selected_order_id,
+                                            status=updated_status_value,
+                                            expected_date=updated_expected_date,
+                                            comment=updated_order_comment,
+                                            updated_by=current_user["username"],
+                                        )
+                                        audit_event(
+                                            action="procurement.order_update",
+                                            user_id=current_user["username"],
+                                            details={
+                                                "order_id": selected_order_id,
+                                                "status": updated_status_value,
+                                            },
+                                        )
+                                        st.session_state["procurement_flash_message"] = (
+                                            f"Заказ {selected_order_id} обновлён."
+                                        )
+                                except ValueError as error:
+                                    st.session_state["procurement_error_message"] = str(error)
+                                st.rerun()
+
         procurement_table_columns = [
             "product",
             "category",
@@ -4898,8 +5352,11 @@ if active_screen == "Закупки":
             "forecast_qty",
             "avg_daily_qty",
             "stock_on_hand",
+            "manual_stock_in_transit",
+            "ordered_in_transit_qty",
             "stock_in_transit",
             "available_stock_qty",
+            "open_order_count",
             "stock_coverage_days",
             "lead_time_days",
             "lead_time_requirement_qty",
@@ -4933,8 +5390,11 @@ if active_screen == "Закупки":
             "forecast_qty": "Прогноз потребности, шт",
             "avg_daily_qty": "Среднедневной спрос",
             "stock_on_hand": "Остаток",
+            "manual_stock_in_transit": "В пути (ручной)",
+            "ordered_in_transit_qty": "В пути по заказам",
             "stock_in_transit": "В пути",
             "available_stock_qty": "Доступно сейчас",
+            "open_order_count": "Активных заказов",
             "stock_coverage_days": "Покрытие остатком, дней",
             "lead_time_days": "Срок поставки, дн.",
             "lead_time_requirement_qty": "Потребность до поставки, шт",
@@ -4970,7 +5430,7 @@ if active_screen == "Закупки":
                 ),
                 use_container_width=True,
                 hide_index=True,
-                height=560,
+                height=680,
             )
             st.download_button(
                 "Скачать прогноз закупки",

@@ -196,3 +196,60 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
         encoding="utf-8",
     )
     return len(records)
+
+
+def apply_procurement_receipts(frame: pd.DataFrame, *, updated_by: str) -> int:
+    ensure_procurement_store()
+    if frame.empty or "product" not in frame.columns or "quantity" not in frame.columns:
+        return 0
+
+    receipts = frame.copy()
+    receipts["product"] = receipts["product"].fillna("").astype(str).str.strip()
+    receipts["quantity"] = pd.to_numeric(receipts["quantity"], errors="coerce").fillna(0.0)
+    receipts = receipts[(receipts["product"] != "") & (receipts["quantity"] > 0)].copy()
+    if receipts.empty:
+        return 0
+
+    receipt_totals = (
+        receipts.groupby("product", as_index=False)
+        .agg(quantity=("quantity", "sum"))
+        .reset_index(drop=True)
+    )
+
+    existing = load_procurement_items()
+    if existing.empty:
+        existing = pd.DataFrame(columns=PROCUREMENT_COLUMNS)
+
+    existing["product"] = existing["product"].fillna("").astype(str).str.strip()
+    existing = existing[existing["product"] != ""].copy()
+    merged = existing.merge(receipt_totals, on="product", how="outer")
+
+    for text_column in ("supplier", "notes", "updated_by", "updated_at"):
+        if text_column not in merged.columns:
+            merged[text_column] = ""
+        merged[text_column] = merged[text_column].fillna("").astype(str)
+
+    for numeric_column in ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple"):
+        if numeric_column not in merged.columns:
+            merged[numeric_column] = 0.0
+        merged[numeric_column] = pd.to_numeric(merged[numeric_column], errors="coerce").fillna(0.0)
+
+    if "lead_time_days" not in merged.columns:
+        merged["lead_time_days"] = 0
+    merged["lead_time_days"] = pd.to_numeric(merged["lead_time_days"], errors="coerce").fillna(0).astype(int)
+    merged["quantity"] = pd.to_numeric(merged["quantity"], errors="coerce").fillna(0.0)
+    merged["stock_on_hand"] = merged["stock_on_hand"] + merged["quantity"]
+
+    upsert_frame = merged[
+        [
+            "product",
+            "supplier",
+            "stock_on_hand",
+            "stock_in_transit",
+            "min_order_qty",
+            "order_multiple",
+            "lead_time_days",
+            "notes",
+        ]
+    ].copy()
+    return upsert_procurement_items(upsert_frame, updated_by=updated_by)

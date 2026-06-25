@@ -73,6 +73,7 @@ def build_procurement_forecast(
     safety_days: int = 7,
     min_active_months: int = 2,
     procurement_items: pd.DataFrame | None = None,
+    inbound_orders: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     columns = [
         "product",
@@ -92,8 +93,11 @@ def build_procurement_forecast(
         "forecast_qty",
         "avg_daily_qty",
         "stock_on_hand",
+        "manual_stock_in_transit",
+        "ordered_in_transit_qty",
         "stock_in_transit",
         "available_stock_qty",
+        "open_order_count",
         "stock_coverage_days",
         "lead_time_days",
         "lead_time_requirement_qty",
@@ -290,6 +294,27 @@ def build_procurement_forecast(
     procurement["lead_time_days"] = procurement["lead_time_days"].map(_safe_non_negative_int)
     procurement["lead_time_days"] = procurement["lead_time_days"].where(procurement["lead_time_days"] > 0, safe_lead_time_days)
 
+    procurement["manual_stock_in_transit"] = procurement["stock_in_transit"]
+    inbound_summary = inbound_orders.copy() if inbound_orders is not None else pd.DataFrame(columns=["product", "ordered_in_transit_qty", "open_order_count"])
+    if inbound_summary.empty:
+        inbound_summary = pd.DataFrame(columns=["product", "ordered_in_transit_qty", "open_order_count"])
+    for column in ("product", "ordered_in_transit_qty", "open_order_count"):
+        if column not in inbound_summary.columns:
+            inbound_summary[column] = pd.NA
+    inbound_summary["product"] = inbound_summary["product"].fillna("").astype(str).str.strip()
+    inbound_summary = inbound_summary[inbound_summary["product"] != ""].copy()
+    inbound_summary["ordered_in_transit_qty"] = inbound_summary["ordered_in_transit_qty"].map(_safe_non_negative_number)
+    inbound_summary["open_order_count"] = pd.to_numeric(inbound_summary["open_order_count"], errors="coerce").fillna(0).astype(int)
+    inbound_summary = inbound_summary.drop_duplicates(subset=["product"], keep="last")
+
+    procurement = procurement.merge(
+        inbound_summary[["product", "ordered_in_transit_qty", "open_order_count"]],
+        on="product",
+        how="left",
+    )
+    procurement["ordered_in_transit_qty"] = procurement["ordered_in_transit_qty"].map(_safe_non_negative_number)
+    procurement["open_order_count"] = pd.to_numeric(procurement["open_order_count"], errors="coerce").fillna(0).astype(int)
+    procurement["stock_in_transit"] = procurement["manual_stock_in_transit"] + procurement["ordered_in_transit_qty"]
     procurement["lead_time_requirement_qty"] = procurement["avg_daily_qty"] * procurement["lead_time_days"]
     procurement["coverage_requirement_qty"] = procurement["avg_daily_qty"] * safe_coverage_days
     procurement["safety_stock_qty"] = procurement["avg_daily_qty"] * safe_safety_days
@@ -428,6 +453,7 @@ def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, flo
             "stable_sku_count": 0.0,
             "supplier_count": 0.0,
             "available_stock_qty_total": 0.0,
+            "ordered_in_transit_qty_total": 0.0,
             "forecast_qty_total": 0.0,
             "coverage_requirement_qty_total": 0.0,
             "gross_requirement_qty_total": 0.0,
@@ -453,6 +479,7 @@ def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, flo
         "stable_sku_count": float(stable_mask.sum()),
         "supplier_count": float(supplier_count),
         "available_stock_qty_total": float(procurement_frame["available_stock_qty"].sum()),
+        "ordered_in_transit_qty_total": float(procurement_frame["ordered_in_transit_qty"].sum()),
         "forecast_qty_total": float(procurement_frame["forecast_qty"].sum()),
         "coverage_requirement_qty_total": float(procurement_frame["coverage_requirement_qty"].sum()),
         "gross_requirement_qty_total": float(procurement_frame["gross_requirement_qty"].sum()),

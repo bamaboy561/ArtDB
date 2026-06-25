@@ -124,6 +124,40 @@ CREATE TABLE IF NOT EXISTS procurement_items (
 CREATE INDEX IF NOT EXISTS procurement_items_supplier_idx
     ON procurement_items (supplier);
 
+CREATE TABLE IF NOT EXISTS procurement_orders (
+    order_id TEXT PRIMARY KEY,
+    supplier TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    order_date DATE,
+    expected_date DATE,
+    comment TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS procurement_orders_status_idx
+    ON procurement_orders (status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS procurement_orders_supplier_idx
+    ON procurement_orders (supplier, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS procurement_order_items (
+    line_id BIGSERIAL PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES procurement_orders(order_id) ON DELETE CASCADE,
+    product TEXT NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    comment TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS procurement_order_items_order_idx
+    ON procurement_order_items (order_id);
+
+CREATE INDEX IF NOT EXISTS procurement_order_items_product_idx
+    ON procurement_order_items (product);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id BIGSERIAL PRIMARY KEY,
     user_id TEXT NOT NULL,
