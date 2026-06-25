@@ -41,6 +41,7 @@ from inventory_analytics import (
 from procurement_analytics import (
     build_procurement_forecast,
     build_procurement_overview,
+    build_procurement_stock_risk_frames,
     build_procurement_supplier_summary,
 )
 from procurement_order_store import (
@@ -89,6 +90,7 @@ from salon_data_store import (
     register_upload,
     save_salon,
 )
+from telegram_reports import send_telegram_report_pack, telegram_is_configured
 
 # Design System Tokens
 PRIMARY_COLOR = "#003461"
@@ -3801,6 +3803,30 @@ with st.sidebar:
             procurement_uses_manager_unfiltered_scope = len(manager_filtered_data) != len(data)
             data = manager_filtered_data
 
+    if is_network_role(current_user["role"]):
+        with st.expander("Telegram", expanded=False):
+            st.caption("Отправляет управленческую сводку и CSV-отчёты в настроенный чат.")
+            telegram_ready = telegram_is_configured()
+            if not telegram_ready:
+                st.warning("Заполните TG_BOT_TOKEN и TG_CHAT_ID в переменных окружения.")
+            if st.button(
+                "Отправить отчёт в Telegram",
+                key="telegram_send_report_button",
+                use_container_width=True,
+                disabled=not telegram_ready,
+            ):
+                try:
+                    with st.spinner("Отправляю отчёт в Telegram..."):
+                        sent_files = send_telegram_report_pack(with_files=True)
+                    audit_event(
+                        action="telegram.report_send",
+                        user_id=current_user["username"],
+                        details={"sent_files": int(sent_files)},
+                    )
+                    st.success(f"Отчёт отправлен. Файлов: {sent_files}.")
+                except Exception as error:
+                    st.error(f"Не удалось отправить отчёт: {error}")
+
 procurement_forecast = build_procurement_forecast(
     procurement_source_data,
     history_months=procurement_history_months,
@@ -5003,6 +5029,281 @@ if active_screen == "Закупки":
             "Покрыто остатком": SECONDARY_COLOR,
             "Нет спроса": "#CBD5E1",
         }
+
+        stock_risk_frames = build_procurement_stock_risk_frames(
+            procurement_forecast,
+            total_window_days=procurement_total_window_days,
+        )
+        stock_risk_frame = stock_risk_frames["all"]
+        shortage_risks = stock_risk_frames["shortage"]
+        out_of_stock_risks = stock_risk_frames["out_of_stock"]
+        reorder_risks = stock_risk_frames["reorder"]
+        overstock_risks = stock_risk_frames["overstock"]
+        dormant_stock_risks = stock_risk_frames["dormant"]
+        stock_risk_report = stock_risk_frames["report"]
+        overstock_days_threshold = stock_risk_frames["overstock_days_threshold"]
+        stock_risk_rename_map = {
+            "risk_type": "Тип риска",
+            "product": "SKU / Товар",
+            "category": "Категория",
+            "supplier": "Поставщик",
+            "abc_class": "ABC",
+            "xyz_class": "XYZ",
+            "priority": "Приоритет",
+            "stock_status": "Статус остатка",
+            "demand_state": "Состояние спроса",
+            "forecast_qty": "Количество прогноза, шт/мес.",
+            "avg_daily_qty": "Среднедневной спрос",
+            "stock_on_hand": "Количество остатка",
+            "manual_stock_in_transit": "Количество в пути вручную",
+            "ordered_in_transit_qty": "Количество в заказах",
+            "stock_in_transit": "Количество в пути",
+            "available_stock_qty": "Количество доступно",
+            "stock_coverage_days": "Покрытие, дней",
+            "gross_requirement_qty": "Брутто-потребность, шт",
+            "net_requirement_qty": "Чистая потребность, шт",
+            "recommended_order_qty": "Количество к заказу",
+            "lead_time_days": "Срок поставки, дней",
+            "last_sale_date": "Последняя продажа",
+            "days_since_last_sale": "Дней без продаж",
+            "notes": "Примечание",
+        }
+
+        def render_stock_risk_table(
+            frame: pd.DataFrame,
+            columns: list[str],
+            *,
+            empty_message: str,
+            height: int = 330,
+        ) -> None:
+            if frame.empty:
+                st.info(empty_message)
+                return
+            visible_columns = [column for column in columns if column in frame.columns]
+            st.dataframe(
+                format_display_frame_for_role(
+                    frame[visible_columns].copy(),
+                    current_user,
+                    rename_map=stock_risk_rename_map,
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=height,
+            )
+
+        with st.container(border=True):
+            render_panel_header(
+                "Остатки и риски",
+                f"Сверка текущих остатков с прогнозом спроса на окно {procurement_total_window_days} дней.",
+            )
+            render_snapshot_strip(
+                [
+                    {
+                        "label": "Дефицит",
+                        "value": format_number(len(shortage_risks)),
+                        "hint": "Нет остатка или не хватает до поставки",
+                    },
+                    {
+                        "label": "Без остатка",
+                        "value": format_number(len(out_of_stock_risks)),
+                        "hint": "Спрос есть, доступный остаток нулевой",
+                    },
+                    {
+                        "label": "Излишки",
+                        "value": format_number(len(overstock_risks)),
+                        "hint": f"Покрытие больше {format_number(overstock_days_threshold)} дней",
+                    },
+                    {
+                        "label": "Неликвид",
+                        "value": format_number(len(dormant_stock_risks)),
+                        "hint": "Остаток есть, текущего спроса нет",
+                    },
+                    {
+                        "label": "Чистая потребность",
+                        "value": format_number(stock_risk_frame["net_requirement_qty"].sum()),
+                        "hint": "Потребность после вычета остатков",
+                    },
+                    {
+                        "label": "К заказу",
+                        "value": format_number(stock_risk_frame["recommended_order_qty"].sum()),
+                        "hint": "С учётом MOQ и кратности",
+                    },
+                ]
+            )
+
+            stock_status_summary = (
+                stock_risk_frame.assign(
+                    stock_status=stock_risk_frame["stock_status"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .replace("", "Не указан")
+                )
+                .groupby("stock_status", as_index=False)
+                .agg(
+                    sku_count=("product", "nunique"),
+                    recommended_order_qty=("recommended_order_qty", "sum"),
+                    available_stock_qty=("available_stock_qty", "sum"),
+                )
+                .sort_values("sku_count", ascending=True)
+            )
+            status_col, urgent_col = st.columns([0.78, 1.22], gap="medium")
+            with status_col:
+                if stock_status_summary.empty:
+                    st.info("Нет данных для сводки по статусам остатка.")
+                else:
+                    stock_status_chart = px.bar(
+                        stock_status_summary,
+                        x="sku_count",
+                        y="stock_status",
+                        orientation="h",
+                        color="stock_status",
+                        color_discrete_map=stock_status_color_map,
+                        text="sku_count",
+                        labels={
+                            "sku_count": "SKU",
+                            "stock_status": "",
+                        },
+                        title="",
+                    )
+                    stock_status_chart.update_traces(texttemplate="%{text:.0f}", textposition="outside")
+                    stock_status_chart.update_layout(
+                        xaxis_title="SKU",
+                        yaxis_title="",
+                        showlegend=False,
+                    )
+                    polish_figure(stock_status_chart, height=280)
+                    st.plotly_chart(stock_status_chart, use_container_width=True)
+
+            with urgent_col:
+                st.markdown("**Самые срочные позиции**")
+                render_stock_risk_table(
+                    shortage_risks.head(8),
+                    [
+                        "product",
+                        "category",
+                        "supplier",
+                        "stock_status",
+                        "available_stock_qty",
+                        "stock_coverage_days",
+                        "forecast_qty",
+                        "recommended_order_qty",
+                        "abc_class",
+                        "xyz_class",
+                    ],
+                    empty_message="Сейчас нет критичных позиций по остаткам.",
+                    height=280,
+                )
+
+            deficit_tab, overstock_tab, dormant_tab, reorder_tab = st.tabs(
+                ["Дефицит", "Излишки", "Неликвид", "Заказ"]
+            )
+            with deficit_tab:
+                render_stock_risk_table(
+                    shortage_risks.head(30),
+                    [
+                        "product",
+                        "category",
+                        "supplier",
+                        "priority",
+                        "stock_status",
+                        "available_stock_qty",
+                        "stock_coverage_days",
+                        "gross_requirement_qty",
+                        "net_requirement_qty",
+                        "recommended_order_qty",
+                    ],
+                    empty_message="Дефицита в текущем контуре не найдено.",
+                )
+            with overstock_tab:
+                render_stock_risk_table(
+                    overstock_risks.head(30),
+                    [
+                        "product",
+                        "category",
+                        "supplier",
+                        "stock_status",
+                        "available_stock_qty",
+                        "stock_coverage_days",
+                        "forecast_qty",
+                        "last_sale_date",
+                        "days_since_last_sale",
+                    ],
+                    empty_message="Излишков по выбранному порогу покрытия не найдено.",
+                )
+            with dormant_tab:
+                render_stock_risk_table(
+                    dormant_stock_risks.head(30),
+                    [
+                        "product",
+                        "category",
+                        "supplier",
+                        "available_stock_qty",
+                        "stock_on_hand",
+                        "stock_in_transit",
+                        "demand_state",
+                        "last_sale_date",
+                        "days_since_last_sale",
+                        "notes",
+                    ],
+                    empty_message="Неликвидного остатка в текущем контуре не найдено.",
+                )
+            with reorder_tab:
+                render_stock_risk_table(
+                    reorder_risks.head(30),
+                    [
+                        "product",
+                        "category",
+                        "supplier",
+                        "priority",
+                        "stock_status",
+                        "forecast_qty",
+                        "available_stock_qty",
+                        "net_requirement_qty",
+                        "recommended_order_qty",
+                        "lead_time_days",
+                    ],
+                    empty_message="Пока нет SKU с рекомендацией к заказу.",
+                )
+
+            if not stock_risk_report.empty:
+                stock_risk_download_columns = [
+                    "risk_type",
+                    "product",
+                    "category",
+                    "supplier",
+                    "priority",
+                    "stock_status",
+                    "demand_state",
+                    "abc_class",
+                    "xyz_class",
+                    "forecast_qty",
+                    "stock_on_hand",
+                    "stock_in_transit",
+                    "available_stock_qty",
+                    "stock_coverage_days",
+                    "net_requirement_qty",
+                    "recommended_order_qty",
+                    "last_sale_date",
+                    "days_since_last_sale",
+                    "notes",
+                ]
+                stock_risk_export_columns = [
+                    column for column in stock_risk_download_columns if column in stock_risk_report.columns
+                ]
+                st.download_button(
+                    "Скачать отчёт по остаткам и рискам",
+                    data=to_csv_bytes(
+                        margin_safe_frame(
+                            stock_risk_report[stock_risk_export_columns]
+                            .rename(columns=stock_risk_rename_map),
+                            current_user,
+                        )
+                    ),
+                    file_name="stock_risks_report.csv",
+                    mime="text/csv",
+                    key="dl_stock_risks_report",
+                )
 
         top_procurement = procurement_forecast[
             procurement_forecast["recommended_order_qty"].fillna(0) > 0

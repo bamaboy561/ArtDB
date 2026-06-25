@@ -282,6 +282,50 @@ def build_procurement_forecast(
         item_settings[numeric_column] = item_settings[numeric_column].map(_safe_non_negative_number)
     item_settings["lead_time_days"] = item_settings["lead_time_days"].map(_safe_non_negative_int)
 
+    procurement_product_keys = (
+        procurement["product"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+    )
+    inventory_only_settings = item_settings[
+        ~item_settings["product"].str.casefold().isin(procurement_product_keys)
+    ].copy()
+    if not inventory_only_settings.empty:
+        inventory_only_records: list[dict[str, object]] = []
+        for row in inventory_only_settings.to_dict(orient="records"):
+            product_name = str(row.get("product", "")).strip()
+            if not product_name:
+                continue
+            inventory_only_records.append(
+                {
+                    "product": product_name,
+                    "active_months": 0,
+                    "history_months_used": history_months_used,
+                    "last_month_qty": 0.0,
+                    "avg_monthly_qty": 0.0,
+                    "recent_avg_qty": 0.0,
+                    "trend_factor": 1.0,
+                    "forecast_qty": 0.0,
+                    "avg_daily_qty": 0.0,
+                    "demand_variability_pct": float("nan"),
+                    "xyz_class": "Z",
+                    "sales_lines": 0,
+                    "last_sale_date": pd.NaT,
+                    "total_quantity": 0.0,
+                    "total_revenue": 0.0,
+                    "total_margin": 0.0,
+                    "category": "Без категории",
+                    "abc_class": "C",
+                }
+            )
+        if inventory_only_records:
+            procurement = pd.concat(
+                [procurement, pd.DataFrame.from_records(inventory_only_records)],
+                ignore_index=True,
+            )
+
     procurement = procurement.merge(
         item_settings[PROCUREMENT_ITEM_COLUMNS],
         on="product",
@@ -440,6 +484,127 @@ def build_procurement_forecast(
             procurement[column] = pd.NA
 
     return procurement[columns]
+
+
+def build_procurement_stock_risk_frames(
+    procurement_frame: pd.DataFrame,
+    *,
+    total_window_days: int,
+) -> dict[str, object]:
+    stock_numeric_columns = [
+        "forecast_qty",
+        "avg_daily_qty",
+        "stock_on_hand",
+        "manual_stock_in_transit",
+        "ordered_in_transit_qty",
+        "stock_in_transit",
+        "available_stock_qty",
+        "stock_coverage_days",
+        "gross_requirement_qty",
+        "net_requirement_qty",
+        "recommended_order_qty",
+        "lead_time_days",
+        "days_since_last_sale",
+    ]
+    stock_risk_frame = procurement_frame.copy()
+    for stock_column in stock_numeric_columns:
+        if stock_column not in stock_risk_frame.columns:
+            stock_risk_frame[stock_column] = pd.NA
+        stock_risk_frame[stock_column] = pd.to_numeric(
+            stock_risk_frame[stock_column],
+            errors="coerce",
+        )
+        if stock_column not in {"stock_coverage_days", "days_since_last_sale"}:
+            stock_risk_frame[stock_column] = stock_risk_frame[stock_column].fillna(0.0)
+
+    if "priority" not in stock_risk_frame.columns:
+        stock_risk_frame["priority"] = ""
+    if "stock_status" not in stock_risk_frame.columns:
+        stock_risk_frame["stock_status"] = ""
+
+    stock_risk_frame["stock_coverage_days"] = stock_risk_frame["stock_coverage_days"].replace(
+        [float("inf"), -float("inf")],
+        pd.NA,
+    )
+    stock_coverage_compare = pd.to_numeric(
+        stock_risk_frame["stock_coverage_days"],
+        errors="coerce",
+    ).fillna(-1.0)
+    priority_rank_map = {
+        "Критичный": 5,
+        "Высокий": 4,
+        "Средний": 3,
+        "Низкий": 2,
+        "Новый": 1,
+        "Спящий": 0,
+    }
+    stock_risk_frame["_priority_rank"] = stock_risk_frame["priority"].map(priority_rank_map).fillna(0)
+    shortage_statuses = ["Нет остатка", "Риск дефицита"]
+    shortage_risks = stock_risk_frame[
+        stock_risk_frame["stock_status"].isin(shortage_statuses)
+    ].sort_values(
+        ["_priority_rank", "recommended_order_qty", "net_requirement_qty", "forecast_qty"],
+        ascending=[False, False, False, False],
+        na_position="last",
+    )
+    out_of_stock_risks = stock_risk_frame[
+        (stock_risk_frame["forecast_qty"] > 0)
+        & (stock_risk_frame["available_stock_qty"] <= 0)
+    ].copy()
+    reorder_risks = stock_risk_frame[
+        stock_risk_frame["recommended_order_qty"] > 0
+    ].sort_values(
+        ["recommended_order_qty", "net_requirement_qty", "_priority_rank"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+    overstock_days_threshold = max(float(total_window_days) * 2, 90.0)
+    overstock_risks = stock_risk_frame[
+        (stock_risk_frame["forecast_qty"] > 0)
+        & (stock_risk_frame["available_stock_qty"] > 0)
+        & (stock_coverage_compare > overstock_days_threshold)
+    ].sort_values(
+        ["stock_coverage_days", "available_stock_qty"],
+        ascending=[False, False],
+        na_position="last",
+    )
+    dormant_stock_risks = stock_risk_frame[
+        (stock_risk_frame["forecast_qty"] <= 0)
+        & (stock_risk_frame["available_stock_qty"] > 0)
+    ].sort_values(
+        ["available_stock_qty", "stock_on_hand"],
+        ascending=[False, False],
+        na_position="last",
+    )
+
+    report_parts = []
+    for risk_label, risk_source in [
+        ("Дефицит", shortage_risks),
+        ("Излишек", overstock_risks),
+        ("Неликвид", dormant_stock_risks),
+        ("К заказу", reorder_risks),
+    ]:
+        if risk_source.empty:
+            continue
+        risk_part = risk_source.copy()
+        risk_part.insert(0, "risk_type", risk_label)
+        report_parts.append(risk_part)
+
+    stock_risk_report = (
+        pd.concat(report_parts, ignore_index=True)
+        if report_parts
+        else pd.DataFrame(columns=["risk_type", *stock_risk_frame.columns])
+    )
+    return {
+        "all": stock_risk_frame,
+        "shortage": shortage_risks,
+        "out_of_stock": out_of_stock_risks,
+        "reorder": reorder_risks,
+        "overstock": overstock_risks,
+        "dormant": dormant_stock_risks,
+        "report": stock_risk_report,
+        "overstock_days_threshold": overstock_days_threshold,
+    }
 
 
 def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, float]:

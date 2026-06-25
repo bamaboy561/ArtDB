@@ -128,6 +128,8 @@ INITIAL_ADMIN_DISPLAY_NAME=Администратор
 INITIAL_ADMIN_EMAIL=admin@example.com
 TG_BOT_TOKEN=your_bot_token
 TG_CHAT_ID=your_chat_id
+TELEGRAM_SEND_REPORT_FILES=false
+TELEGRAM_REPORT_TOP_ROWS=100
 ```
 
 `APP_PGCRYPTO_KEY` обязателен для PostgreSQL-режима: email и телефон пользователей хранятся в базе в зашифрованном виде, а поиск и уникальность работают через хеши.
@@ -176,6 +178,20 @@ DNS домена уже должен смотреть на VPS.
 ./deploy.sh logs db
 ./deploy.sh logs telegram-bot
 ```
+
+### 6.1. Telegram-отчёты
+
+Бот отправляет ежедневную сводку по расписанию `TELEGRAM_DAILY_REPORT_HOUR` / `TELEGRAM_DAILY_REPORT_MINUTE`.
+Если включить `TELEGRAM_SEND_REPORT_FILES=true`, вместе со сводкой будут уходить CSV-файлы: загрузки, помесячная сводка, топ товаров, прогноз закупок, поставщики и риски по остаткам.
+
+Ручная проверка:
+
+```bash
+docker compose run --rm telegram-bot python scripts/telegram_notifier.py test --message "ArtDB Telegram работает"
+docker compose run --rm telegram-bot python scripts/telegram_notifier.py report
+```
+
+В приложении для администратора и руководителя также есть кнопка `Telegram -> Отправить отчёт в Telegram` в боковой панели.
 
 ### 7. Ручной backup
 
