@@ -125,9 +125,9 @@ DASHBOARD_CSS = f"""
     }}
 
     .block-container {{
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-        max-width: 1660px;
+        padding-top: 1rem;
+        padding-bottom: 1.6rem;
+        max-width: 1600px;
     }}
 
     .sticky-rail-marker {{
@@ -190,19 +190,29 @@ DASHBOARD_CSS = f"""
     [data-testid="stVerticalBlockBorderWrapper"] {{
         background-color: {SURFACE_COLOR} !important;
         border: 1px solid {BORDER_COLOR} !important;
-        border-radius: 16px !important;
-        padding: 1.5rem !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+        border-radius: 14px !important;
+        padding: 1.05rem !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
     }}
 
     /* Hero Section */
     .dashboard-hero {{
-        padding: 2rem;
-        border-radius: 16px;
-        border: 1px solid {BORDER_COLOR};
-        background: {SURFACE_COLOR};
-        margin-bottom: 1.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        padding: 1.05rem 1.15rem;
+        border-radius: 14px;
+        border: 1px solid rgba(0, 108, 73, 0.16);
+        background:
+            linear-gradient(135deg, rgba(0, 108, 73, 0.08), rgba(255, 255, 255, 0) 34%),
+            {SURFACE_COLOR};
+        margin-bottom: 0.85rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }}
+
+    .dashboard-hero-meta {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.7rem;
+        flex-wrap: wrap;
     }}
 
     .dashboard-eyebrow {{
@@ -215,55 +225,113 @@ DASHBOARD_CSS = f"""
     }}
 
     .dashboard-title {{
-        font-size: 2rem;
+        font-size: 1.62rem;
         color: {PRIMARY_COLOR};
         margin: 0;
-        line-height: 1.2;
+        line-height: 1.12;
     }}
 
     .dashboard-subtitle {{
-        margin-top: 0.75rem;
+        margin: 0.55rem 0 0;
         color: {TEXT_SECONDARY};
-        font-size: 1rem;
-        line-height: 1.6;
+        font-size: 0.94rem;
+        line-height: 1.45;
+        max-width: 68rem;
+    }}
+
+    .scope-strip {{
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        margin-top: 0.7rem;
+    }}
+
+    .scope-chip,
+    .app-build-badge {{
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0.28rem 0.62rem;
+        border: 1px solid rgba(0, 52, 97, 0.10);
+        background: rgba(244, 247, 249, 0.84);
+        color: {TEXT_SECONDARY};
+        font-size: 0.78rem;
+        font-weight: 650;
+        line-height: 1.25;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+    }}
+
+    .app-build-badge {{
+        color: {PRIMARY_COLOR};
+        background: rgba(0, 52, 97, 0.06);
+        white-space: nowrap;
     }}
 
     /* Metric Cards Grid */
     .metric-grid {{
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 1.25rem;
-        margin: 1.25rem 0;
+        grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+        gap: 0.7rem;
+        margin: 0.8rem 0 1rem;
     }}
 
     .metric-card {{
-        padding: 1.5rem;
-        border-radius: 16px;
+        padding: 0.9rem 0.95rem;
+        border-radius: 12px;
         background: {SURFACE_COLOR};
         border: 1px solid {BORDER_COLOR};
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        transition: transform 0.2s ease;
+        border-left: 4px solid rgba(0, 108, 73, 0.72);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }}
+
+    .metric-card:hover {{
+        transform: translateY(-1px);
+        border-color: rgba(0, 52, 97, 0.22);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+    }}
+
+    .metric-card.info {{
+        border-left-color: {PRIMARY_COLOR};
+    }}
+
+    .metric-card.success {{
+        border-left-color: {SECONDARY_COLOR};
+    }}
+
+    .metric-card.warning {{
+        border-left-color: #D97706;
+        background: linear-gradient(180deg, rgba(255,251,235,0.72), rgba(255,255,255,0.98));
+    }}
+
+    .metric-card.danger {{
+        border-left-color: #dc2626;
+        background: linear-gradient(180deg, rgba(254,242,242,0.72), rgba(255,255,255,0.98));
     }}
 
     .metric-label {{
         color: {TEXT_MUTED};
-        font-size: 0.8rem;
+        font-size: 0.72rem;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.75rem;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.42rem;
     }}
 
     .metric-value {{
         color: {PRIMARY_COLOR};
-        font-size: 1.75rem;
+        font-size: 1.45rem;
         font-weight: 800;
         font-family: 'Manrope', sans-serif;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.08;
     }}
 
     .metric-delta {{
-        margin-top: 0.5rem;
-        font-size: 0.9rem;
+        margin-top: 0.38rem;
+        font-size: 0.78rem;
         font-weight: 700;
     }}
 
@@ -271,17 +339,23 @@ DASHBOARD_CSS = f"""
     .metric-delta.negative {{ color: #dc2626; }}
 
     /* Button Styling */
-    .stButton > button {{
-        border-radius: 10px;
+    .stButton > button,
+    .stDownloadButton > button,
+    div[data-testid="stFormSubmitButton"] > button {{
+        border-radius: 8px;
         font-weight: 700;
         padding: 0.5rem 1rem;
         background-color: {PRIMARY_COLOR} !important;
         color: white !important;
         border: none !important;
+        box-shadow: 0 7px 18px rgba(0, 52, 97, 0.12);
     }}
 
-    .stButton > button:hover {{
+    .stButton > button:hover,
+    .stDownloadButton > button:hover,
+    div[data-testid="stFormSubmitButton"] > button:hover {{
         opacity: 0.9;
+        transform: translateY(-1px);
     }}
 
     @keyframes chartReveal {{
@@ -322,8 +396,16 @@ DASHBOARD_CSS = f"""
     }}
 
     [data-testid="stPlotlyChart"] > div {{
-        border-radius: 16px;
+        border-radius: 12px;
         overflow: hidden;
+    }}
+
+    [data-testid="stDataFrame"],
+    [data-testid="stDataEditor"] {{
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 12px;
+        overflow: hidden;
+        background: {SURFACE_COLOR};
     }}
 
     [data-testid="stDataFrame"] [role="gridcell"],
@@ -332,7 +414,15 @@ DASHBOARD_CSS = f"""
     [data-testid="stDataEditor"] [role="columnheader"] {{
         white-space: normal !important;
         word-break: break-word !important;
-        line-height: 1.35 !important;
+        line-height: 1.3 !important;
+        font-size: 0.82rem !important;
+    }}
+
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataEditor"] [role="columnheader"] {{
+        color: {TEXT_PRIMARY} !important;
+        font-weight: 800 !important;
+        background: #f8fafc !important;
     }}
 
     @media (prefers-reduced-motion: reduce) {{
@@ -344,15 +434,16 @@ DASHBOARD_CSS = f"""
     /* Section Headers */
     .panel-title {{
         color: {PRIMARY_COLOR};
-        font-size: 1.25rem;
-        margin-bottom: 0.5rem;
+        font-size: 1.08rem;
+        line-height: 1.2;
+        margin-bottom: 0.28rem;
     }}
 
     .panel-caption {{
         color: {TEXT_SECONDARY};
-        font-size: 0.9rem;
-        margin-bottom: 1.25rem;
-        line-height: 1.5;
+        font-size: 0.84rem;
+        margin-bottom: 0.78rem;
+        line-height: 1.4;
     }}
 
     .section-intro,
@@ -361,10 +452,10 @@ DASHBOARD_CSS = f"""
     .login-shell {{
         background: {SURFACE_COLOR};
         border: 1px solid {BORDER_COLOR};
-        border-radius: 16px;
-        padding: 1.15rem 1.2rem;
-        margin: 0 0 1rem 0;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        border-radius: 14px;
+        padding: 0.85rem 0.95rem;
+        margin: 0 0 0.78rem 0;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }}
 
     .section-intro-title,
@@ -381,7 +472,7 @@ DASHBOARD_CSS = f"""
     .section-intro-title,
     .section-marker-title {{
         font-size: 1.12rem;
-        margin-bottom: 0.35rem;
+        margin-bottom: 0.24rem;
     }}
 
     .section-intro-body,
@@ -390,8 +481,8 @@ DASHBOARD_CSS = f"""
     .insight-body,
     .auth-copy {{
         color: {TEXT_SECONDARY};
-        font-size: 0.94rem;
-        line-height: 1.55;
+        font-size: 0.86rem;
+        line-height: 1.42;
     }}
 
     .section-marker-kicker,
@@ -411,8 +502,8 @@ DASHBOARD_CSS = f"""
     .admin-stat-grid {{
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 0.9rem;
-        margin: 1rem 0;
+        gap: 0.65rem;
+        margin: 0.7rem 0;
     }}
 
     .journey-grid {{
@@ -426,8 +517,8 @@ DASHBOARD_CSS = f"""
     .insight-item {{
         background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.98) 100%);
         border: 1px solid {BORDER_COLOR};
-        border-radius: 14px;
-        padding: 1rem 1.05rem;
+        border-radius: 12px;
+        padding: 0.8rem 0.9rem;
         min-height: 100%;
     }}
 
@@ -436,7 +527,7 @@ DASHBOARD_CSS = f"""
     .admin-stat-label,
     .journey-step {{
         color: {TEXT_MUTED};
-        font-size: 0.74rem;
+        font-size: 0.7rem;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         font-weight: 700;
@@ -447,9 +538,11 @@ DASHBOARD_CSS = f"""
     .admin-stat-value {{
         color: {PRIMARY_COLOR};
         font-family: 'Manrope', sans-serif;
-        font-size: 1.4rem;
+        font-size: 1.22rem;
         font-weight: 800;
-        margin-top: 0.35rem;
+        margin-top: 0.24rem;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.08;
     }}
 
     .workspace-band-meta,
@@ -457,9 +550,32 @@ DASHBOARD_CSS = f"""
     .journey-body,
     .insight-body {{
         color: {TEXT_SECONDARY};
-        font-size: 0.88rem;
-        line-height: 1.5;
-        margin-top: 0.45rem;
+        font-size: 0.8rem;
+        line-height: 1.35;
+        margin-top: 0.32rem;
+    }}
+
+    .snapshot-card {{
+        border-left: 4px solid rgba(100, 116, 139, 0.32);
+    }}
+
+    .snapshot-card.success {{
+        border-left-color: {SECONDARY_COLOR};
+        background: linear-gradient(180deg, rgba(240,253,244,0.78), rgba(255,255,255,0.98));
+    }}
+
+    .snapshot-card.warning {{
+        border-left-color: #D97706;
+        background: linear-gradient(180deg, rgba(255,251,235,0.84), rgba(255,255,255,0.98));
+    }}
+
+    .snapshot-card.danger {{
+        border-left-color: #dc2626;
+        background: linear-gradient(180deg, rgba(254,242,242,0.84), rgba(255,255,255,0.98));
+    }}
+
+    .snapshot-card.info {{
+        border-left-color: {PRIMARY_COLOR};
     }}
 
     .journey-title {{
@@ -491,8 +607,8 @@ DASHBOARD_CSS = f"""
     .insight-compact-list {{
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.6rem;
-        margin-top: 0.2rem;
+        gap: 0.55rem;
+        margin-top: 0.35rem;
         align-items: stretch;
         grid-auto-rows: 1fr;
     }}
@@ -500,8 +616,9 @@ DASHBOARD_CSS = f"""
     .insight-compact-item {{
         background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.98) 100%);
         border: 1px solid {BORDER_COLOR};
+        border-left: 4px solid rgba(100, 116, 139, 0.32);
         border-radius: 12px;
-        padding: 0.62rem 0.78rem;
+        padding: 0.62rem 0.72rem;
         min-height: 100%;
         height: 100%;
         display: flex;
@@ -512,16 +629,84 @@ DASHBOARD_CSS = f"""
     .insight-compact-title {{
         color: {PRIMARY_COLOR};
         font-family: 'Manrope', sans-serif;
-        font-size: 0.88rem;
+        font-size: 0.84rem;
         font-weight: 800;
         line-height: 1.25;
     }}
 
     .insight-compact-body {{
         color: {TEXT_SECONDARY};
-        font-size: 0.8rem;
-        line-height: 1.4;
+        font-size: 0.76rem;
+        line-height: 1.34;
         margin-top: 0.22rem;
+    }}
+
+    .insight-compact-item.success {{
+        border-left-color: {SECONDARY_COLOR};
+    }}
+
+    .insight-compact-item.warning {{
+        border-left-color: #D97706;
+        background: linear-gradient(180deg, rgba(255,251,235,0.78), rgba(255,255,255,0.98));
+    }}
+
+    .insight-compact-item.danger {{
+        border-left-color: #dc2626;
+        background: linear-gradient(180deg, rgba(254,242,242,0.78), rgba(255,255,255,0.98));
+    }}
+
+    .insight-compact-item.info {{
+        border-left-color: {PRIMARY_COLOR};
+    }}
+
+    .spotlight-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 0.65rem;
+        margin: 0.65rem 0 0.9rem;
+    }}
+
+    .spotlight-card {{
+        padding: 0.85rem 0.95rem;
+        border-radius: 12px;
+        border: 1px solid {BORDER_COLOR};
+        background: {SURFACE_COLOR};
+        min-height: 120px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }}
+
+    .spotlight-card.accent {{
+        border-left: 4px solid {SECONDARY_COLOR};
+    }}
+
+    .spotlight-card.warm {{
+        border-left: 4px solid #D97706;
+    }}
+
+    .spotlight-label {{
+        color: {TEXT_MUTED};
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 700;
+        line-height: 1.25;
+    }}
+
+    .spotlight-value {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.22rem;
+        font-weight: 800;
+        margin-top: 0.28rem;
+        line-height: 1.12;
+        overflow-wrap: anywhere;
+    }}
+
+    .spotlight-body {{
+        color: {TEXT_SECONDARY};
+        font-size: 0.8rem;
+        line-height: 1.36;
+        margin-top: 0.32rem;
     }}
 
     @media (max-width: 1180px) {{
@@ -577,6 +762,38 @@ DASHBOARD_CSS = f"""
         background-color: #f1f5f9;
         color: {PRIMARY_COLOR};
         border-color: {BORDER_COLOR};
+    }}
+
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 0.35rem;
+        background: #f8fafc;
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 12px;
+        padding: 0.28rem;
+    }}
+
+    .stTabs [data-baseweb="tab"] {{
+        border-radius: 9px;
+        color: {TEXT_SECONDARY};
+        font-weight: 700;
+        padding: 0.42rem 0.72rem;
+    }}
+
+    .stTabs [aria-selected="true"] {{
+        background: {SURFACE_COLOR};
+        color: {PRIMARY_COLOR} !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }}
+
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {{
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 12px;
+        background: #f8fafc;
+    }}
+
+    section[data-testid="stSidebar"] [role="radiogroup"] label {{
+        border-radius: 10px;
+        padding: 0.32rem 0.45rem;
     }}
 </style>
 """
@@ -1015,6 +1232,52 @@ def compact_bar_chart_height(
     return max(minimum, min(maximum, base + safe_rows * row_step))
 
 
+def infer_dashboard_tone(*values: object) -> str:
+    text = " ".join(str(value) for value in values if value is not None).lower()
+    if not text:
+        return "info"
+    if any(isinstance(value, str) and value.strip().startswith("-") for value in values):
+        return "danger"
+    if any(isinstance(value, str) and value.strip().startswith("+") for value in values):
+        return "success"
+
+    danger_markers = (
+        "дефицит",
+        "без остатка",
+        "риск",
+        "ниже",
+        "аномал",
+        "ошиб",
+        "критич",
+        "неликвид",
+    )
+    warning_markers = (
+        "возврат",
+        "излиш",
+        "спящий",
+        "нет спроса",
+        "план:",
+        "предуп",
+    )
+    success_markers = (
+        "лидер",
+        "сильнейший",
+        "главная",
+        "маржа %",
+        "покрыто",
+        "рост",
+        "+",
+    )
+
+    if any(marker in text for marker in danger_markers):
+        return "danger"
+    if any(marker in text for marker in warning_markers):
+        return "warning"
+    if any(marker in text for marker in success_markers):
+        return "success"
+    return "info"
+
+
 def render_metric_cards(cards: list[dict[str, str]]) -> None:
     cards_html: list[str] = []
     for card in cards:
@@ -1037,7 +1300,8 @@ def render_metric_cards(cards: list[dict[str, str]]) -> None:
 
         delta_html = f'<div class="{delta_class}">{escape(delta)}</div>' if delta else ""
         inner = f'<div class="metric-label">{escape(card["label"])}</div><div class="metric-value">{escape(card["value"])}</div>{delta_html}{progress_html}'
-        cards_html.append(f'<div class="metric-card">{inner}</div>')
+        tone = card.get("tone") or infer_dashboard_tone(card.get("label", ""), delta)
+        cards_html.append(f'<div class="metric-card {escape(str(tone))}">{inner}</div>')
 
     st.markdown(f'<div class="metric-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
@@ -1141,10 +1405,11 @@ def render_snapshot_strip(items: list[dict[str, str]]) -> None:
         if not delta:
             delta_class += " neutral"
             delta = item.get("hint", "")
+        tone = item.get("tone") or infer_dashboard_tone(item.get("label", ""), item.get("value", ""), delta)
         cards_html.append(
             dedent(
                 f"""
-                <div class="snapshot-card">
+                <div class="snapshot-card {escape(str(tone))}">
                     <div class="snapshot-label">{escape(item["label"])}</div>
                     <div class="snapshot-value">{escape(item["value"])}</div>
                     <div class="{delta_class}">{escape(delta)}</div>
@@ -3157,10 +3422,11 @@ def render_insight_panel(insights: list[tuple[str, str]]) -> None:
         )
         items_html = []
         for title, body in insights:
+            tone = infer_dashboard_tone(title, body)
             items_html.append(
                 dedent(
                     f"""
-                    <div class="insight-compact-item">
+                    <div class="insight-compact-item {escape(tone)}">
                         <div class="insight-compact-title">{escape(title)}</div>
                         <div class="insight-compact-body">{escape(body)}</div>
                     </div>
