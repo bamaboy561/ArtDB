@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
+from io import BytesIO
 import json
 import os
+import re
 import secrets
 from typing import Iterable
 from urllib import parse, request
@@ -41,8 +43,71 @@ class TelegramReportFile:
     content_type: str = "text/csv"
 
 
+PROCUREMENT_ORDER_COLUMNS = [
+    "supplier",
+    "product",
+    "category",
+    "priority",
+    "stock_status",
+    "abc_class",
+    "xyz_class",
+    "forecast_qty",
+    "stock_on_hand",
+    "stock_in_transit",
+    "available_stock_qty",
+    "stock_coverage_days",
+    "net_requirement_qty",
+    "recommended_order_qty",
+    "lead_time_days",
+    "last_sale_date",
+    "days_since_last_sale",
+    "notes",
+]
+
+PROCUREMENT_ORDER_RENAME_MAP = {
+    "supplier": "Поставщик",
+    "product": "SKU / Товар",
+    "category": "Категория",
+    "priority": "Приоритет",
+    "stock_status": "Статус остатка",
+    "abc_class": "ABC",
+    "xyz_class": "XYZ",
+    "forecast_qty": "Прогноз спроса, шт",
+    "stock_on_hand": "Остаток",
+    "stock_in_transit": "В пути",
+    "available_stock_qty": "Доступно",
+    "stock_coverage_days": "Покрытие, дней",
+    "net_requirement_qty": "Чистая потребность, шт",
+    "recommended_order_qty": "К заказу, шт",
+    "lead_time_days": "Срок поставки, дней",
+    "last_sale_date": "Последняя продажа",
+    "days_since_last_sale": "Дней без продаж",
+    "notes": "Примечание",
+}
+
+
 def get_timezone() -> ZoneInfo:
     return ZoneInfo(os.getenv("APP_TIMEZONE", os.getenv("TZ", "Asia/Omsk")))
+
+
+def env_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name, "").strip().replace(",", ".")
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
+def env_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
 
 
 def telegram_is_configured() -> bool:
@@ -168,6 +233,48 @@ def format_percent_plain(value: object) -> str:
     return f"{float(numeric):.1f}%"
 
 
+def _safe_excel_sheet_name(value: object, used_names: set[str]) -> str:
+    raw_name = str(value or "Лист").strip() or "Лист"
+    safe_name = re.sub(r"[\[\]\:\*\?\/\\]", " ", raw_name)
+    safe_name = re.sub(r"\s+", " ", safe_name).strip()[:31] or "Лист"
+    candidate = safe_name
+    suffix = 2
+    while candidate.casefold() in used_names:
+        suffix_text = f" {suffix}"
+        candidate = f"{safe_name[:31 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate.casefold())
+    return candidate
+
+
+def _prepare_excel_frame(frame: pd.DataFrame, columns: list[str], rename_map: dict[str, str]) -> pd.DataFrame:
+    export_columns = [column for column in columns if column in frame.columns]
+    export_frame = frame[export_columns].copy() if export_columns else pd.DataFrame()
+    for column in export_frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(export_frame[column]):
+            export_frame[column] = pd.to_datetime(export_frame[column], errors="coerce").dt.strftime("%Y-%m-%d")
+    return export_frame.rename(columns=rename_map)
+
+
+def _export_excel_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
+    buffer = BytesIO()
+    used_names: set[str] = set()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for raw_sheet_name, frame in sheets.items():
+            sheet_name = _safe_excel_sheet_name(raw_sheet_name, used_names)
+            frame.to_excel(writer, sheet_name=sheet_name, index=False)
+            worksheet = writer.sheets[sheet_name]
+            worksheet.freeze_panes = "A2"
+            for column_cells in worksheet.columns:
+                header = str(column_cells[0].value or "")
+                max_length = min(
+                    max([len(str(cell.value or "")) for cell in column_cells[:80]] + [len(header), 8]),
+                    42,
+                )
+                worksheet.column_dimensions[column_cells[0].column_letter].width = max_length + 2
+    return buffer.getvalue()
+
+
 def build_upload_status(today: datetime.date, salons: Iterable[str], manifest: pd.DataFrame) -> tuple[list[str], list[str]]:
     if manifest.empty or "report_date" not in manifest.columns:
         return [], sorted({salon for salon in salons if salon})
@@ -209,6 +316,7 @@ def build_daily_summary() -> str:
         summary_lines.append("Все салоны загрузили данные за сегодня.")
 
     archive_result = load_archive_data(salons=salons if salons else None)
+    procurement_forecast = pd.DataFrame()
     if not archive_result.data.empty:
         monthly_summary = build_monthly_summary(archive_result.data)
         overview = build_overview_metrics(archive_result.data)
@@ -245,6 +353,16 @@ def build_daily_summary() -> str:
                 ]
             )
 
+    alerts = build_automation_alerts(
+        archive_result.data,
+        salons=salons,
+        manifest=manifest,
+        procurement_forecast=procurement_forecast,
+    )
+    if alerts:
+        summary_lines.extend(["", "<b>Что требует внимания</b>"])
+        summary_lines.extend(f"• {alert}" for alert in alerts[:6])
+
     if archive_result.warnings:
         summary_lines.extend(["", "Предупреждения архива:"])
         summary_lines.extend(f"• {escape(warning)}" for warning in archive_result.warnings[:5])
@@ -272,6 +390,216 @@ def build_default_procurement_forecast(data: pd.DataFrame) -> pd.DataFrame:
         procurement_items=procurement_items,
         inbound_orders=open_procurement_orders,
     )
+
+
+def build_automation_alerts(
+    data: pd.DataFrame,
+    *,
+    salons: Iterable[str],
+    manifest: pd.DataFrame,
+    procurement_forecast: pd.DataFrame,
+) -> list[str]:
+    alerts: list[str] = []
+    now = datetime.now(get_timezone())
+    today = now.date()
+    margin_threshold = env_float("TELEGRAM_MARGIN_RISK_THRESHOLD", 15.0)
+    revenue_drop_threshold = env_float("TELEGRAM_REVENUE_DROP_ALERT_PCT", 20.0)
+
+    uploaded_salons, missing_salons = build_upload_status(today, salons, manifest)
+    if missing_salons:
+        missing_preview = ", ".join(missing_salons[:8])
+        if len(missing_salons) > 8:
+            missing_preview += f" +{len(missing_salons) - 8}"
+        alerts.append(f"Нет загрузки за сегодня: {escape(missing_preview)}.")
+    elif uploaded_salons:
+        alerts.append("Все активные салоны загрузили данные за сегодня.")
+
+    if data.empty:
+        alerts.append("В архиве пока нет данных для автоматического анализа продаж.")
+        return alerts
+
+    monthly_summary = build_monthly_summary(data)
+    if not monthly_summary.empty and "revenue_change_pct" in monthly_summary.columns:
+        latest_month = monthly_summary.iloc[-1]
+        revenue_change = pd.to_numeric(latest_month.get("revenue_change_pct"), errors="coerce")
+        if pd.notna(revenue_change) and float(revenue_change) <= -abs(revenue_drop_threshold):
+            alerts.append(
+                f"Выручка за {escape(str(latest_month.get('month_label', 'последний месяц')))} "
+                f"снизилась на {format_percent_plain(abs(float(revenue_change)))} к предыдущему месяцу."
+            )
+
+    product_summary = build_product_summary(data)
+    if not product_summary.empty and "margin_pct" in product_summary.columns:
+        low_margin = product_summary[
+            pd.to_numeric(product_summary["margin_pct"], errors="coerce") < margin_threshold
+        ].copy()
+        if not low_margin.empty:
+            top_low_margin = low_margin.sort_values("revenue", ascending=False).head(3)
+            preview = "; ".join(
+                f"{row['group_name']} ({format_percent_plain(row['margin_pct'])})"
+                for _, row in top_low_margin.iterrows()
+            )
+            alerts.append(
+                f"Маржа ниже {format_percent_plain(margin_threshold)} у {len(low_margin)} SKU. "
+                f"Главные по выручке: {escape(preview)}."
+            )
+
+    if not procurement_forecast.empty:
+        stock_frames = build_procurement_stock_risk_frames(procurement_forecast, total_window_days=51)
+        shortage = stock_frames["shortage"]
+        out_of_stock = stock_frames["out_of_stock"]
+        overstock = stock_frames["overstock"]
+        dormant = stock_frames["dormant"]
+        reorder = stock_frames["reorder"]
+        if len(out_of_stock) > 0:
+            alerts.append(f"Без остатка при наличии спроса: {format_number_plain(len(out_of_stock))} SKU.")
+        if len(shortage) > 0:
+            top_shortage = shortage.head(3)
+            preview = "; ".join(
+                f"{row.get('product', '')} - {format_number_plain(row.get('recommended_order_qty'))}"
+                for _, row in top_shortage.iterrows()
+            )
+            alerts.append(
+                f"Риск дефицита: {format_number_plain(len(shortage))} SKU. "
+                f"Срочно проверить: {escape(preview)}."
+            )
+        if len(reorder) > 0:
+            alerts.append(
+                f"К заказу: {format_number_plain(len(reorder))} SKU, "
+                f"суммарно {format_number_plain(reorder['recommended_order_qty'].sum())} шт."
+            )
+        if len(overstock) > 0:
+            alerts.append(f"Излишки по остаткам: {format_number_plain(len(overstock))} SKU.")
+        if len(dormant) > 0:
+            alerts.append(f"Неликвид с остатком без текущего спроса: {format_number_plain(len(dormant))} SKU.")
+
+    if not alerts:
+        alerts.append("Критичных автоматических предупреждений нет.")
+    return alerts[:8]
+
+
+def build_risk_alert_message() -> str:
+    salons = load_salons()
+    manifest = load_manifest()
+    archive_result = load_archive_data(salons=salons if salons else None)
+    procurement_forecast = build_default_procurement_forecast(archive_result.data)
+    alerts = build_automation_alerts(
+        archive_result.data,
+        salons=salons,
+        manifest=manifest,
+        procurement_forecast=procurement_forecast,
+    )
+    today = datetime.now(get_timezone()).strftime("%d.%m.%Y")
+    return "\n".join(
+        [
+            "<b>ArtDB: автоматические предупреждения</b>",
+            f"Дата: {today}",
+            "",
+            *[f"• {alert}" for alert in alerts],
+        ]
+    )
+
+
+def build_supplier_order_file(
+    procurement_forecast: pd.DataFrame,
+    *,
+    today_label: str | None = None,
+) -> TelegramReportFile | None:
+    if procurement_forecast.empty or "recommended_order_qty" not in procurement_forecast.columns:
+        return None
+
+    order_frame = procurement_forecast[
+        pd.to_numeric(procurement_forecast["recommended_order_qty"], errors="coerce").fillna(0) > 0
+    ].copy()
+    if order_frame.empty:
+        return None
+
+    if "supplier" not in order_frame.columns:
+        order_frame["supplier"] = ""
+    order_frame["supplier"] = (
+        order_frame["supplier"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", "Не назначен")
+    )
+    for column, default_value in (("priority", ""), ("net_requirement_qty", 0)):
+        if column not in order_frame.columns:
+            order_frame[column] = default_value
+    order_frame = order_frame.sort_values(
+        ["supplier", "priority", "recommended_order_qty", "net_requirement_qty"],
+        ascending=[True, True, False, False],
+        na_position="last",
+    )
+    supplier_summary = build_procurement_supplier_summary(order_frame)
+    today_label = today_label or datetime.now(get_timezone()).strftime("%Y%m%d")
+
+    sheets: dict[str, pd.DataFrame] = {
+        "Сводка": _prepare_excel_frame(
+            supplier_summary,
+            [
+                "supplier",
+                "sku_count",
+                "reorder_sku_count",
+                "critical_sku_count",
+                "recommended_order_qty",
+                "net_requirement_qty",
+                "available_stock_qty",
+                "forecast_qty",
+                "max_lead_time_days",
+            ],
+            {
+                "supplier": "Поставщик",
+                "sku_count": "SKU",
+                "reorder_sku_count": "SKU к заказу",
+                "critical_sku_count": "Критичных SKU",
+                "recommended_order_qty": "К заказу, шт",
+                "net_requirement_qty": "Чистая потребность, шт",
+                "available_stock_qty": "Доступный остаток",
+                "forecast_qty": "Прогноз спроса, шт",
+                "max_lead_time_days": "Макс. срок поставки, дней",
+            },
+        ),
+        "Заказ общий": _prepare_excel_frame(
+            order_frame,
+            PROCUREMENT_ORDER_COLUMNS,
+            PROCUREMENT_ORDER_RENAME_MAP,
+        ),
+    }
+
+    supplier_limit = max(0, env_int("TELEGRAM_ORDER_SUPPLIER_SHEETS_LIMIT", 20))
+    for supplier in supplier_summary["supplier"].astype(str).head(supplier_limit):
+        supplier_frame = order_frame[order_frame["supplier"].astype(str) == supplier]
+        if supplier_frame.empty:
+            continue
+        sheets[str(supplier)] = _prepare_excel_frame(
+            supplier_frame,
+            PROCUREMENT_ORDER_COLUMNS,
+            PROCUREMENT_ORDER_RENAME_MAP,
+        )
+
+    return TelegramReportFile(
+        filename=f"artdb_supplier_order_{today_label}.xlsx",
+        content=_export_excel_workbook(sheets),
+        caption="Excel-заказ поставщикам по прогнозу потребности",
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def build_supplier_order_report_files() -> list[TelegramReportFile]:
+    salons = load_salons()
+    archive_result = load_archive_data(salons=salons if salons else None)
+    procurement_forecast = build_default_procurement_forecast(archive_result.data)
+    order_file = build_supplier_order_file(procurement_forecast)
+    return [order_file] if order_file is not None else []
+
+
+def send_supplier_order_files() -> int:
+    sent_files = 0
+    for report_file in build_supplier_order_report_files():
+        send_telegram_document(report_file)
+        sent_files += 1
+    return sent_files
 
 
 def _export_frame(frame: pd.DataFrame, columns: list[str], rename_map: dict[str, str]) -> bytes:
@@ -448,6 +776,10 @@ def build_telegram_report_files() -> list[TelegramReportFile]:
             )
         )
 
+    supplier_order_file = build_supplier_order_file(procurement_forecast, today_label=today_label)
+    if supplier_order_file is not None:
+        report_files.append(supplier_order_file)
+
     return report_files
 
 
@@ -459,4 +791,3 @@ def send_telegram_report_pack(*, with_files: bool = True, caption: str | None = 
             send_telegram_document(report_file)
             sent_files += 1
     return sent_files
-

@@ -90,7 +90,7 @@ from salon_data_store import (
     register_upload,
     save_salon,
 )
-from telegram_reports import send_telegram_report_pack, telegram_is_configured
+from telegram_reports import build_supplier_order_file, send_telegram_report_pack, telegram_is_configured
 
 # Design System Tokens
 PRIMARY_COLOR = "#003461"
@@ -4071,7 +4071,7 @@ with st.sidebar:
 
     if is_network_role(current_user["role"]):
         with st.expander("Telegram", expanded=False):
-            st.caption("Отправляет управленческую сводку и CSV-отчёты в настроенный чат.")
+            st.caption("Отправляет управленческую сводку, риски, CSV-отчёты и Excel-заказ поставщикам в настроенный чат.")
             telegram_ready = telegram_is_configured()
             if not telegram_ready:
                 st.warning("Заполните TG_BOT_TOKEN и TG_CHAT_ID в переменных окружения.")
@@ -5569,6 +5569,16 @@ if active_screen == "Закупки":
                     file_name="stock_risks_report.csv",
                     mime="text/csv",
                     key="dl_stock_risks_report",
+                )
+
+            supplier_order_file = build_supplier_order_file(procurement_forecast)
+            if supplier_order_file is not None:
+                st.download_button(
+                    "Скачать Excel-заказ поставщикам",
+                    data=supplier_order_file.content,
+                    file_name=supplier_order_file.filename,
+                    mime=supplier_order_file.content_type,
+                    key="dl_supplier_order_workbook",
                 )
 
         top_procurement = procurement_forecast[

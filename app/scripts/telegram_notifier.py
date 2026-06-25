@@ -14,9 +14,11 @@ if str(ROOT_DIR) not in sys.path:
 from db import database_enabled, get_service_state, set_service_state
 from telegram_reports import (
     build_daily_summary,
+    build_risk_alert_message,
     get_timezone,
     send_telegram_message,
     send_telegram_report_pack,
+    send_supplier_order_files,
 )
 
 
@@ -62,7 +64,7 @@ def run_daemon() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Telegram reports for ArtDB analytics.")
-    parser.add_argument("mode", choices=["once", "daemon", "test", "report"], nargs="?", default="once")
+    parser.add_argument("mode", choices=["once", "daemon", "test", "report", "alerts", "orders"], nargs="?", default="once")
     parser.add_argument("--message", default="Тестовое сообщение из ArtDB.", help="Custom test message.")
     parser.add_argument("--with-files", action="store_true", help="Attach CSV report files.")
     args = parser.parse_args()
@@ -75,6 +77,14 @@ def main() -> int:
         return 0
     if args.mode == "report":
         send_telegram_report_pack(with_files=True)
+        return 0
+    if args.mode == "alerts":
+        send_telegram_message(build_risk_alert_message())
+        return 0
+    if args.mode == "orders":
+        sent_files = send_supplier_order_files()
+        if sent_files == 0:
+            send_telegram_message("ArtDB: сейчас нет позиций к заказу по прогнозу потребности.")
         return 0
 
     run_once(with_files=args.with_files)
