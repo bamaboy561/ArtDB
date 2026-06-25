@@ -33,7 +33,11 @@ from auth_store import (
 )
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
-from inventory_analytics import guess_inventory_column_mapping, prepare_inventory_data
+from inventory_analytics import (
+    guess_inventory_column_mapping,
+    load_inventory_input_file,
+    prepare_inventory_data,
+)
 from procurement_analytics import (
     build_procurement_forecast,
     build_procurement_overview,
@@ -1786,6 +1790,23 @@ def cached_prepare_inventory_data(
 ):
     mapping = dict(mapping_items)
     return prepare_inventory_data(frame, mapping)
+
+
+@st.cache_data(show_spinner=False)
+def cached_load_inventory_input_file(
+    file_bytes: bytes,
+    filename: str,
+    csv_separator: str,
+    csv_encoding: str,
+    sheet_name: str | int | None,
+) -> pd.DataFrame:
+    return load_inventory_input_file(
+        file_bytes,
+        filename,
+        csv_separator=csv_separator,
+        csv_encoding=csv_encoding,
+        sheet_name=sheet_name,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -4696,7 +4717,7 @@ if active_screen == "Закупки":
                                         inventory_csv_encoding = "utf-8"
 
                             try:
-                                raw_inventory_data = cached_load_input_file(
+                                raw_inventory_data = cached_load_inventory_input_file(
                                     inventory_file_bytes,
                                     inventory_filename,
                                     inventory_csv_separator,

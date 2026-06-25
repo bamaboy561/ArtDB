@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Iterable
 
 import pandas as pd
@@ -25,6 +26,11 @@ INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "остаток конечный",
         "остаток текущий",
         "количество остаток",
+        "количество",
+        "кол во",
+        "кол-во",
+        "qty",
+        "quantity",
         "available stock",
         "stock",
         "stock on hand",
@@ -82,6 +88,84 @@ INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 class PreparedInventoryData:
     data: pd.DataFrame
     warnings: list[str]
+
+
+def _normalize_header_row(row: list[object]) -> list[str]:
+    headers: list[str] = []
+    used_headers: dict[str, int] = {}
+    for index, value in enumerate(row):
+        base = str(value).strip() if value is not None else ""
+        if not base:
+            base = f"column_{index + 1}"
+        counter = used_headers.get(base, 0)
+        used_headers[base] = counter + 1
+        headers.append(base if counter == 0 else f"{base}_{counter + 1}")
+    return headers
+
+
+def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
+    try:
+        preview = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name, header=None)
+    except Exception:
+        return None
+
+    if preview.empty:
+        return None
+
+    header_index: int | None = None
+    for row_index, row in preview.head(40).iterrows():
+        normalized_values = [normalize_column_name(value) if value is not None else "" for value in row.tolist()]
+        has_product = any(value == "номенклатура" for value in normalized_values)
+        has_quantity = any("колич" in value for value in normalized_values if value)
+        if has_product and has_quantity:
+            header_index = int(row_index)
+            break
+
+    if header_index is None:
+        return None
+
+    header_row = preview.iloc[header_index].tolist()
+    headers = _normalize_header_row(header_row)
+    data = preview.iloc[header_index + 1 :].copy()
+    data.columns = headers
+    data = data.dropna(how="all").reset_index(drop=True)
+    if data.empty:
+        return None
+
+    unit_column = next(
+        (
+            column
+            for column in data.columns
+            if normalize_column_name(column) in {"ед изм", "единица измерения", "ед изм_2"}
+            or "ед" in normalize_column_name(column) and "изм" in normalize_column_name(column)
+        ),
+        None,
+    )
+    if unit_column is not None:
+        unit_series = data[unit_column].fillna("").astype(str).str.strip()
+        filtered = data[unit_series != ""].copy()
+        if not filtered.empty:
+            data = filtered.reset_index(drop=True)
+
+    return data
+
+
+def load_inventory_input_file(
+    file_bytes: bytes,
+    filename: str,
+    *,
+    csv_separator: str = ";",
+    csv_encoding: str = "utf-8",
+    sheet_name: str | int | None = 0,
+) -> pd.DataFrame:
+    if filename.lower().endswith(".csv"):
+        return pd.read_csv(BytesIO(file_bytes), sep=csv_separator, encoding=csv_encoding)
+
+    parsed_1c_report = _parse_1c_inventory_report(file_bytes, sheet_name=sheet_name)
+    if parsed_1c_report is not None:
+        return parsed_1c_report
+
+    return pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name)
 
 
 def guess_inventory_column_mapping(columns: Iterable[str]) -> dict[str, str | None]:
