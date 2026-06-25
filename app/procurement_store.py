@@ -26,6 +26,15 @@ PROCUREMENT_COLUMNS = [
     "updated_by",
     "updated_at",
 ]
+PROCUREMENT_EDITABLE_FIELDS = {
+    "supplier",
+    "stock_on_hand",
+    "stock_in_transit",
+    "min_order_qty",
+    "order_multiple",
+    "lead_time_days",
+    "notes",
+}
 
 
 def ensure_procurement_store() -> None:
@@ -196,6 +205,56 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
         encoding="utf-8",
     )
     return len(records)
+
+
+def merge_procurement_upload(
+    frame: pd.DataFrame,
+    *,
+    updated_by: str,
+    override_fields: set[str] | None = None,
+) -> int:
+    ensure_procurement_store()
+    if frame.empty or "product" not in frame.columns:
+        return 0
+
+    safe_override_fields = {
+        field
+        for field in (override_fields or PROCUREMENT_EDITABLE_FIELDS)
+        if field in PROCUREMENT_EDITABLE_FIELDS
+    }
+    if not safe_override_fields:
+        return 0
+
+    existing = load_procurement_items()
+    existing_map = {
+        str(row.get("product", "")).strip().casefold(): _normalize_procurement_record(row)
+        for row in existing.to_dict(orient="records")
+        if str(row.get("product", "")).strip()
+    }
+
+    merged_records: list[dict[str, Any]] = []
+    for row in frame.to_dict(orient="records"):
+        product = str(row.get("product", "")).strip()
+        if not product:
+            continue
+
+        existing_record = existing_map.get(product.casefold(), _normalize_procurement_record({"product": product}))
+        merged_record = {**existing_record, "product": product}
+
+        for field in safe_override_fields:
+            presence_key = f"__has_{field}"
+            if presence_key in row and not bool(row.get(presence_key)):
+                continue
+            if field not in row:
+                continue
+            merged_record[field] = row.get(field)
+
+        merged_records.append(merged_record)
+
+    if not merged_records:
+        return 0
+
+    return upsert_procurement_items(pd.DataFrame.from_records(merged_records), updated_by=updated_by)
 
 
 def apply_procurement_receipts(frame: pd.DataFrame, *, updated_by: str) -> int:

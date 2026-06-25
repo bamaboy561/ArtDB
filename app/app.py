@@ -33,6 +33,7 @@ from auth_store import (
 )
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
+from inventory_analytics import guess_inventory_column_mapping, prepare_inventory_data
 from procurement_analytics import (
     build_procurement_forecast,
     build_procurement_overview,
@@ -50,7 +51,7 @@ from procurement_order_store import (
     load_procurement_orders,
     update_procurement_order,
 )
-from procurement_store import load_procurement_items, upsert_procurement_items
+from procurement_store import load_procurement_items, merge_procurement_upload, upsert_procurement_items
 from sales_analytics import (
     DISPLAY_NAMES,
     build_abc_analysis,
@@ -1776,6 +1777,15 @@ def cached_prepare_sales_data(
 ):
     mapping = dict(mapping_items)
     return prepare_sales_data(frame, mapping)
+
+
+@st.cache_data(show_spinner=False)
+def cached_prepare_inventory_data(
+    frame: pd.DataFrame,
+    mapping_items: tuple[tuple[str, str | None], ...],
+):
+    mapping = dict(mapping_items)
+    return prepare_inventory_data(frame, mapping)
 
 
 @st.cache_data(show_spinner=False)
@@ -4637,6 +4647,214 @@ if active_screen == "Закупки":
                     "Заполните реальные остатки, поставщика и правила заказа. После сохранения прогноз сразу пересоберётся.",
                 )
                 st.caption("Редактируются SKU текущего контура. Удобно сначала сузить категории, а потом быстро внести параметры пополнения.")
+
+                with st.expander("Загрузить остатки файлом", expanded=False):
+                    st.caption(
+                        "Файл может содержать остаток, товар в пути, поставщика и параметры заказа. "
+                        "Пустые ячейки не затрут уже сохранённые настройки по SKU."
+                    )
+                    inventory_upload_file = st.file_uploader(
+                        "Файл остатков",
+                        type=["xlsx", "xls", "csv"],
+                        key="procurement_stock_upload_file",
+                    )
+
+                    if inventory_upload_file is not None:
+                        inventory_file_bytes = inventory_upload_file.getvalue()
+                        try:
+                            inventory_filename = validate_uploaded_file(inventory_file_bytes, inventory_upload_file.name)
+                        except ValueError as error:
+                            st.error(str(error))
+                        else:
+                            inventory_config_col, inventory_mapping_col = st.columns([1, 1.4], gap="medium")
+                            with inventory_config_col:
+                                with st.container(border=True):
+                                    st.markdown("**Настройка чтения**")
+                                    if inventory_filename.lower().endswith(".csv"):
+                                        inventory_csv_separator = st.selectbox(
+                                            "Разделитель",
+                                            options=[";", ",", "\t"],
+                                            index=0,
+                                            key="procurement_stock_csv_separator",
+                                        )
+                                        inventory_csv_encoding = st.selectbox(
+                                            "Кодировка",
+                                            options=["utf-8", "cp1251", "utf-8-sig"],
+                                            index=0,
+                                            key="procurement_stock_csv_encoding",
+                                        )
+                                        inventory_sheet_name = None
+                                    else:
+                                        inventory_sheet_names = list_excel_sheets(inventory_file_bytes)
+                                        inventory_sheet_name = st.selectbox(
+                                            "Лист Excel",
+                                            options=inventory_sheet_names,
+                                            index=0,
+                                            key="procurement_stock_sheet_name",
+                                        )
+                                        inventory_csv_separator = ";"
+                                        inventory_csv_encoding = "utf-8"
+
+                            try:
+                                raw_inventory_data = cached_load_input_file(
+                                    inventory_file_bytes,
+                                    inventory_filename,
+                                    inventory_csv_separator,
+                                    inventory_csv_encoding,
+                                    inventory_sheet_name,
+                                )
+                            except Exception as error:
+                                st.error(f"Не удалось прочитать файл остатков: {error}")
+                            else:
+                                if raw_inventory_data.empty:
+                                    st.warning("Файл прочитан, но в нём нет строк.")
+                                else:
+                                    inventory_columns = raw_inventory_data.columns.astype(str).tolist()
+                                    inventory_guesses = guess_inventory_column_mapping(inventory_columns)
+
+                                    with inventory_mapping_col:
+                                        with st.container(border=True):
+                                            st.markdown("**Сопоставление колонок**")
+                                            inventory_map_left, inventory_map_right = st.columns(2)
+                                            with inventory_map_left:
+                                                inventory_product_col = select_column(
+                                                    "Товар (обязательно)",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("product"),
+                                                    key="stock_map_product",
+                                                )
+                                                inventory_stock_col = select_column(
+                                                    "Остаток (обязательно)",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("stock_on_hand"),
+                                                    key="stock_map_on_hand",
+                                                )
+                                                inventory_in_transit_col = select_column(
+                                                    "В пути",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("stock_in_transit"),
+                                                    key="stock_map_in_transit",
+                                                )
+                                                inventory_supplier_col = select_column(
+                                                    "Поставщик",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("supplier"),
+                                                    key="stock_map_supplier",
+                                                )
+                                            with inventory_map_right:
+                                                inventory_moq_col = select_column(
+                                                    "MOQ",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("min_order_qty"),
+                                                    key="stock_map_moq",
+                                                )
+                                                inventory_multiple_col = select_column(
+                                                    "Кратность",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("order_multiple"),
+                                                    key="stock_map_multiple",
+                                                )
+                                                inventory_lead_time_col = select_column(
+                                                    "Срок поставки, дн.",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("lead_time_days"),
+                                                    key="stock_map_lead_time",
+                                                )
+                                                inventory_notes_col = select_column(
+                                                    "Примечание",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("notes"),
+                                                    key="stock_map_notes",
+                                                )
+
+                                    inventory_mapping = {
+                                        "product": inventory_product_col,
+                                        "stock_on_hand": inventory_stock_col,
+                                        "stock_in_transit": inventory_in_transit_col,
+                                        "supplier": inventory_supplier_col,
+                                        "min_order_qty": inventory_moq_col,
+                                        "order_multiple": inventory_multiple_col,
+                                        "lead_time_days": inventory_lead_time_col,
+                                        "notes": inventory_notes_col,
+                                    }
+
+                                    try:
+                                        prepared_inventory_result = cached_prepare_inventory_data(
+                                            raw_inventory_data,
+                                            tuple(sorted(inventory_mapping.items())),
+                                        )
+                                    except Exception as error:
+                                        st.error(str(error))
+                                    else:
+                                        for warning in prepared_inventory_result.warnings:
+                                            st.warning(warning)
+
+                                        inventory_preview = prepared_inventory_result.data[
+                                            [
+                                                "product",
+                                                "stock_on_hand",
+                                                "stock_in_transit",
+                                                "supplier",
+                                                "min_order_qty",
+                                                "order_multiple",
+                                                "lead_time_days",
+                                                "notes",
+                                            ]
+                                        ].rename(
+                                            columns={
+                                                "product": "Товар",
+                                                "stock_on_hand": "Остаток",
+                                                "stock_in_transit": "В пути",
+                                                "supplier": "Поставщик",
+                                                "min_order_qty": "MOQ",
+                                                "order_multiple": "Кратность",
+                                                "lead_time_days": "Срок поставки, дн.",
+                                                "notes": "Примечание",
+                                            }
+                                        )
+                                        st.dataframe(
+                                            inventory_preview,
+                                            use_container_width=True,
+                                            hide_index=True,
+                                            height=260,
+                                        )
+
+                                        override_fields = {
+                                            field
+                                            for field, column_name in inventory_mapping.items()
+                                            if field != "product" and column_name
+                                        }
+                                        st.caption(
+                                            f"К загрузке подготовлено SKU: {format_number(len(prepared_inventory_result.data))}. "
+                                            "Обновятся только поля, которые вы сопоставили в файле."
+                                        )
+                                        if st.button(
+                                            "Сохранить остатки из файла",
+                                            key="procurement_stock_upload_save_button",
+                                            use_container_width=True,
+                                            type="primary",
+                                        ):
+                                            saved_count = merge_procurement_upload(
+                                                prepared_inventory_result.data,
+                                                updated_by=current_user["username"],
+                                                override_fields=override_fields,
+                                            )
+                                            st.cache_data.clear()
+                                            audit_event(
+                                                action="procurement.stock_upload",
+                                                user_id=current_user["username"],
+                                                details={
+                                                    "filename": inventory_filename,
+                                                    "saved_count": int(saved_count),
+                                                    "override_fields": sorted(override_fields),
+                                                    "categories": selected_categories or [],
+                                                    "salons": selected_salons_filter or [],
+                                                },
+                                            )
+                                            st.session_state["procurement_flash_message"] = (
+                                                f"Остатки из файла обновлены для {saved_count} SKU."
+                                            )
+                                            st.rerun()
 
                 procurement_editor_source = procurement_forecast[
                     [
