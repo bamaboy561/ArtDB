@@ -31,6 +31,7 @@ from auth_store import (
     set_user_password,
     update_user_role,
 )
+from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
 from inventory_analytics import (
@@ -657,6 +658,112 @@ DASHBOARD_CSS = f"""
 
     .insight-compact-item.info {{
         border-left-color: {PRIMARY_COLOR};
+    }}
+
+    .overview-command-panel {{
+        border: 1px solid rgba(0, 52, 97, 0.12);
+        border-radius: 16px;
+        padding: 0.9rem;
+        margin: 0.75rem 0 0.85rem;
+        background:
+            radial-gradient(circle at top left, rgba(0, 108, 73, 0.10), transparent 34%),
+            linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+    }}
+
+    .overview-command-header {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.7rem;
+    }}
+
+    .overview-command-kicker {{
+        color: {TEXT_MUTED};
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+        margin-bottom: 0.18rem;
+    }}
+
+    .overview-command-title {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.18rem;
+        font-weight: 850;
+        line-height: 1.12;
+    }}
+
+    .overview-command-meta {{
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        border-radius: 999px;
+        padding: 0.28rem 0.56rem;
+        background: rgba(0, 108, 73, 0.08);
+        color: {SECONDARY_COLOR};
+        font-size: 0.72rem;
+        font-weight: 800;
+    }}
+
+    .overview-focus-stack {{
+        display: grid;
+        gap: 0.55rem;
+        margin-top: 0.1rem;
+    }}
+
+    .overview-focus-card {{
+        border: 1px solid {BORDER_COLOR};
+        border-left: 4px solid rgba(100, 116, 139, 0.32);
+        border-radius: 12px;
+        padding: 0.72rem 0.78rem;
+        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+    }}
+
+    .overview-focus-card.success {{
+        border-left-color: {SECONDARY_COLOR};
+        background: linear-gradient(180deg, rgba(240,253,244,0.78), rgba(255,255,255,0.98));
+    }}
+
+    .overview-focus-card.warning {{
+        border-left-color: #D97706;
+        background: linear-gradient(180deg, rgba(255,251,235,0.82), rgba(255,255,255,0.98));
+    }}
+
+    .overview-focus-card.danger {{
+        border-left-color: #dc2626;
+        background: linear-gradient(180deg, rgba(254,242,242,0.82), rgba(255,255,255,0.98));
+    }}
+
+    .overview-focus-card.info {{
+        border-left-color: {PRIMARY_COLOR};
+    }}
+
+    .overview-focus-label {{
+        color: {TEXT_MUTED};
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 800;
+    }}
+
+    .overview-focus-value {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.08rem;
+        font-weight: 850;
+        line-height: 1.12;
+        margin-top: 0.2rem;
+        overflow-wrap: anywhere;
+    }}
+
+    .overview-focus-body {{
+        color: {TEXT_SECONDARY};
+        font-size: 0.76rem;
+        line-height: 1.34;
+        margin-top: 0.25rem;
     }}
 
     .spotlight-grid {{
@@ -1419,6 +1526,73 @@ def render_snapshot_strip(items: list[dict[str, str]]) -> None:
         )
 
     render_html_block(f'<div class="snapshot-strip">{"".join(cards_html)}</div>')
+
+
+def render_data_quality_report(report, current_user: dict[str, str]) -> None:
+    if report.status == "blocked":
+        st.error("Файл пока нельзя сохранять: найдены критичные ошибки качества данных.")
+    elif report.status == "warning":
+        st.warning("Файл можно сохранить, но перед этим стоит проверить предупреждения.")
+    else:
+        st.success("Качество данных выглядит хорошо. Файл готов к сохранению и анализу.")
+
+    new_products = int(report.catalog_metrics.get("new_products", 0))
+    matched_products = int(report.catalog_metrics.get("matched_catalog_products", 0))
+    catalog_products = int(report.catalog_metrics.get("catalog_products", 0))
+    render_snapshot_strip(
+        [
+            {
+                "label": "Индекс качества",
+                "value": f"{report.score}/100",
+                "hint": "Готовность файла к сохранению",
+                "tone": "success" if report.score >= 90 else ("warning" if report.score >= 70 else "danger"),
+            },
+            {
+                "label": "Строк принято",
+                "value": format_number(report.prepared_rows),
+                "hint": f"из {format_number(report.raw_rows)} строк файла",
+                "tone": "info",
+            },
+            {
+                "label": "Исключено строк",
+                "value": format_number(report.dropped_rows),
+                "hint": "Пустая дата, товар или выручка",
+                "tone": "success" if report.dropped_rows == 0 else "warning",
+            },
+            {
+                "label": "Новые SKU",
+                "value": format_number(new_products),
+                "hint": f"совпало со справочником: {format_number(matched_products)} / {format_number(catalog_products)}",
+                "tone": "success" if new_products == 0 else "warning",
+            },
+        ]
+    )
+
+    if report.issues:
+        issue_rows = [
+            {
+                "Уровень": {
+                    "blocker": "Критично",
+                    "warning": "Проверить",
+                    "info": "Инфо",
+                }.get(issue.severity, issue.severity),
+                "Проблема": issue.title,
+                "Строк": issue.count,
+                "Что значит": issue.detail,
+                "Что сделать": issue.action,
+            }
+            for issue in report.issues
+        ]
+        st.dataframe(pd.DataFrame(issue_rows), use_container_width=True, hide_index=True, height=min(280, 62 + len(issue_rows) * 42))
+
+    if not report.problem_rows.empty:
+        with st.expander("Показать проблемные строки", expanded=False):
+            st.dataframe(
+                format_display_frame_for_role(report.problem_rows, current_user),
+                use_container_width=True,
+                hide_index=True,
+                height=280,
+            )
 
 
 def render_screen_switcher(title: str, options: list[str], *, key: str, description: str = "") -> str:
@@ -3415,25 +3589,134 @@ def render_insight_panel(insights: list[tuple[str, str]]) -> None:
     if not insights:
         return
 
-    with st.container(border=True):
-        render_panel_header(
-            "Что важно сейчас",
-            "",
+    items_html = []
+    for title, body in insights[:6]:
+        tone = infer_dashboard_tone(title, body)
+        items_html.append(
+            dedent(
+                f"""
+                <div class="insight-compact-item {escape(tone)}">
+                    <div class="insight-compact-title">{escape(title)}</div>
+                    <div class="insight-compact-body">{escape(body)}</div>
+                </div>
+                """
+            ).strip()
         )
-        items_html = []
-        for title, body in insights:
-            tone = infer_dashboard_tone(title, body)
-            items_html.append(
-                dedent(
-                    f"""
-                    <div class="insight-compact-item {escape(tone)}">
-                        <div class="insight-compact-title">{escape(title)}</div>
-                        <div class="insight-compact-body">{escape(body)}</div>
-                    </div>
-                    """
-                ).strip()
-            )
-        render_html_block(f'<div class="insight-compact-list">{"".join(items_html)}</div>')
+
+    render_html_block(
+        f"""
+        <section class="overview-command-panel">
+            <div class="overview-command-header">
+                <div>
+                    <div class="overview-command-kicker">Управленческая выжимка</div>
+                    <div class="overview-command-title">Что важно сейчас</div>
+                </div>
+                <div class="overview-command-meta">{len(items_html)} сигналов</div>
+            </div>
+            <div class="insight-compact-list">{"".join(items_html)}</div>
+        </section>
+        """
+    )
+
+
+def build_overview_focus_cards(
+    latest_month: pd.Series,
+    latest_revenue_delta: float,
+    latest_margin_delta: float,
+    plan_fact_summary: pd.DataFrame,
+    procurement_overview: dict[str, float],
+    returns_overview: dict[str, float],
+    *,
+    allow_margin: bool = True,
+) -> list[dict[str, str]]:
+    month_label = str(latest_month.get("month_label", "Текущий период"))
+    revenue_delta = percent_or_none(latest_revenue_delta)
+    cards = [
+        {
+            "label": f"Итог {month_label}",
+            "value": format_money(latest_month.get("revenue", 0)),
+            "body": f"{revenue_delta} к предыдущему месяцу" if revenue_delta else "Выручка последнего доступного месяца",
+            "tone": infer_dashboard_tone("выручка", revenue_delta or ""),
+        }
+    ]
+
+    if allow_margin:
+        margin_delta = percent_or_none(latest_margin_delta)
+        cards.append(
+            {
+                "label": "Маржа месяца",
+                "value": format_money(latest_month.get("margin", 0)),
+                "body": f"{margin_delta} к предыдущему месяцу" if margin_delta else "Валовая маржа за последний месяц",
+                "tone": infer_dashboard_tone("маржа", margin_delta or ""),
+            }
+        )
+
+    if not plan_fact_summary.empty:
+        latest_plan_row = plan_fact_summary.iloc[-1]
+        execution_pct = latest_plan_row.get("revenue_execution_pct")
+        cards.append(
+            {
+                "label": "План / факт",
+                "value": format_percent(execution_pct) if not is_missing(execution_pct) else "план не задан",
+                "body": f"Месяц: {latest_plan_row.get('month_label', month_label)}",
+                "tone": "success" if not is_missing(execution_pct) and float(execution_pct) >= 100 else "warning",
+            }
+        )
+
+    reorder_count = int(procurement_overview.get("reorder_sku_count", 0) or 0)
+    critical_count = int(procurement_overview.get("critical_stock_count", 0) or 0)
+    if reorder_count or critical_count:
+        cards.append(
+            {
+                "label": "Закупки",
+                "value": f"{format_number(reorder_count)} SKU",
+                "body": f"К заказу сейчас, критичных позиций: {format_number(critical_count)}",
+                "tone": "danger" if critical_count else "warning",
+            }
+        )
+    else:
+        cards.append(
+            {
+                "label": "Закупки",
+                "value": "покрыто",
+                "body": "Нет срочных рекомендаций к заказу по текущему срезу",
+                "tone": "success",
+            }
+        )
+
+    return_lines = int(returns_overview.get("return_lines", 0) or 0)
+    cards.append(
+        {
+            "label": "Возвраты",
+            "value": format_percent(returns_overview.get("return_share_pct", 0)),
+            "body": f"Строк возврата: {format_number(return_lines)}, сумма: {format_money(returns_overview.get('return_revenue', 0))}",
+            "tone": "warning" if return_lines else "success",
+        }
+    )
+
+    return cards[:5]
+
+
+def render_overview_focus_stack(cards: list[dict[str, str]]) -> None:
+    if not cards:
+        return
+
+    cards_html = []
+    for card in cards:
+        tone = card.get("tone") or infer_dashboard_tone(card.get("label", ""), card.get("body", ""))
+        cards_html.append(
+            dedent(
+                f"""
+                <div class="overview-focus-card {escape(str(tone))}">
+                    <div class="overview-focus-label">{escape(card["label"])}</div>
+                    <div class="overview-focus-value">{escape(card["value"])}</div>
+                    <div class="overview-focus-body">{escape(card.get("body", ""))}</div>
+                </div>
+                """
+            ).strip()
+        )
+
+    render_html_block(f'<div class="overview-focus-stack">{"".join(cards_html)}</div>')
 
 
 def build_text_summary(
@@ -3497,6 +3780,7 @@ uploaded_file = None
 raw_data: pd.DataFrame | None = None
 selected_mapping: dict[str, str | None] = {}
 prepared_result = None
+quality_report = None
 archive_result = None
 manifest_view = load_manifest()
 registered_salons = load_salons()
@@ -3719,6 +4003,22 @@ if work_mode in upload_modes:
                 if work_mode in {"Новая выгрузка", "Загрузка салона"} and current_file_report_date == date.today():
                     current_file_report_date = auto_detected_report_date
 
+            quality_expected_date = current_file_report_date if work_mode in {"Новая выгрузка", "Загрузка салона"} else None
+            quality_report = analyze_sales_quality(
+                raw_data,
+                prepared_result.data,
+                selected_mapping,
+                procurement_items=load_procurement_items(),
+                expected_report_date=quality_expected_date,
+                include_margin_checks=can_view_margin(current_user),
+            )
+            with st.container(border=True):
+                render_panel_header(
+                    "Контроль качества данных",
+                    "Проверяем даты, товары, выручку, количество, дубли и связь со справочником перед сохранением.",
+                )
+                render_data_quality_report(quality_report, current_user)
+
             if work_mode in {"Новая выгрузка", "Загрузка салона"}:
                 render_panel_header(
                     "Сохранение в архив",
@@ -3748,7 +4048,17 @@ if work_mode in upload_modes:
                         st.caption(f"Строк после подготовки: {format_number(len(prepared_result.data))}")
                         st.caption(f"Распознано полей: {sum(1 for value in selected_mapping.values() if value)}")
 
-                    if st.button("🚀 Сохранить в архив", key="main_save_upload_button", use_container_width=True, type="primary"):
+                    save_disabled = quality_report is not None and not quality_report.can_save
+                    if save_disabled:
+                        st.error("Сохранение отключено до исправления критичных ошибок качества данных.")
+
+                    if st.button(
+                        "🚀 Сохранить в архив",
+                        key="main_save_upload_button",
+                        use_container_width=True,
+                        type="primary",
+                        disabled=save_disabled,
+                    ):
                         save_upload_with_feedback(
                             file_bytes=file_bytes,
                             filename=filename,
@@ -4134,92 +4444,81 @@ if active_screen == "Обзор":
     insights = insights[:6]
     latest_month = monthly_summary.iloc[-1]
     top_products = product_summary.head(7)
-
-    with main_col:
-        with st.container(border=True):
-            render_panel_header(
-                "Динамика продаж",
-                "Выручка по месяцам, а для руководителя ещё и маржа.",
-            )
-            trend_chart = go.Figure()
-            trend_chart.add_trace(
-                go.Bar(
-                    x=monthly_summary["month_label"],
-                    y=monthly_summary["revenue"],
-                    name="Выручка",
-                    marker_color=PRIMARY_COLOR,
-                )
-            )
-            if margin_visible:
-                trend_chart.add_trace(
-                    go.Scatter(
-                        x=monthly_summary["month_label"],
-                        y=monthly_summary["margin"],
-                        name="Маржа",
-                        mode="lines+markers",
-                        line=dict(color=SECONDARY_COLOR, width=3),
-                    )
-                )
-            if not forecast_data.empty:
-                trend_chart.add_trace(
-                    go.Bar(
-                        x=forecast_data["month_label"],
-                        y=forecast_data["revenue"],
-                        name="Прогноз выручки",
-                        marker_color=PRIMARY_COLOR,
-                        opacity=0.4,
-                    )
-                )
-                if margin_visible and not forecast_data["margin"].isna().all():
-                    trend_chart.add_trace(
-                        go.Scatter(
-                            x=forecast_data["month_label"],
-                            y=forecast_data["margin"],
-                            name="Прогноз маржи",
-                            mode="lines+markers",
-                            line=dict(color=SECONDARY_COLOR, width=2, dash="dot"),
-                            marker=dict(symbol="diamond", size=8),
-                        )
-                    )
-            trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
-            polish_figure(trend_chart, height=380)
-            st.plotly_chart(trend_chart, use_container_width=True)
-            if not forecast_data.empty:
-                st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
+    overview_focus_cards = build_overview_focus_cards(
+        latest_month,
+        latest_revenue_delta,
+        latest_margin_delta,
+        plan_fact_summary,
+        procurement_overview,
+        returns_overview,
+        allow_margin=margin_visible,
+    )
 
     with main_col:
         render_insight_panel(insights)
 
     with main_col:
-        with st.container(border=True):
-            render_panel_header(
-                f"Итог: {latest_month['month_label']}",
-                "Ключевые показатели последнего месяца.",
-            )
-        latest_snapshot_items = [
-            {
-                "label": "Выручка",
-                "value": format_money(latest_month["revenue"]),
-                "delta": percent_or_none(latest_revenue_delta) or "",
-                "hint": "К предыдущему месяцу",
-            },
-            {
-                "label": "Количество",
-                "value": format_number(latest_month["quantity"]),
-                "hint": "Объём за месяц",
-            },
-        ]
-        if margin_visible:
-            latest_snapshot_items.insert(
-                1,
-                {
-                    "label": "Маржа",
-                    "value": format_money(latest_month["margin"]),
-                    "delta": percent_or_none(latest_margin_delta) or "",
-                    "hint": "К предыдущему месяцу",
-                },
-            )
-        render_snapshot_strip(latest_snapshot_items)
+        overview_left, overview_right = st.columns([1.38, 0.82], gap="medium")
+
+        with overview_left:
+            with st.container(border=True):
+                render_panel_header(
+                    "Динамика продаж",
+                    "Выручка по месяцам, а для руководителя ещё и маржа.",
+                )
+                trend_chart = go.Figure()
+                trend_chart.add_trace(
+                    go.Bar(
+                        x=monthly_summary["month_label"],
+                        y=monthly_summary["revenue"],
+                        name="Выручка",
+                        marker_color=PRIMARY_COLOR,
+                    )
+                )
+                if margin_visible:
+                    trend_chart.add_trace(
+                        go.Scatter(
+                            x=monthly_summary["month_label"],
+                            y=monthly_summary["margin"],
+                            name="Маржа",
+                            mode="lines+markers",
+                            line=dict(color=SECONDARY_COLOR, width=3),
+                        )
+                    )
+                if not forecast_data.empty:
+                    trend_chart.add_trace(
+                        go.Bar(
+                            x=forecast_data["month_label"],
+                            y=forecast_data["revenue"],
+                            name="Прогноз выручки",
+                            marker_color=PRIMARY_COLOR,
+                            opacity=0.4,
+                        )
+                    )
+                    if margin_visible and not forecast_data["margin"].isna().all():
+                        trend_chart.add_trace(
+                            go.Scatter(
+                                x=forecast_data["month_label"],
+                                y=forecast_data["margin"],
+                                name="Прогноз маржи",
+                                mode="lines+markers",
+                                line=dict(color=SECONDARY_COLOR, width=2, dash="dot"),
+                                marker=dict(symbol="diamond", size=8),
+                            )
+                        )
+                trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
+                polish_figure(trend_chart, height=360)
+                st.plotly_chart(trend_chart, use_container_width=True)
+                if not forecast_data.empty:
+                    st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
+
+        with overview_right:
+            with st.container(border=True):
+                render_panel_header(
+                    "Рабочий пульс",
+                    "Короткие статусы, которые помогают понять, куда смотреть дальше.",
+                )
+                render_overview_focus_stack(overview_focus_cards)
 
     if not salon_summary.empty and len(salon_summary) > 1:
         with main_col:
@@ -4236,18 +4535,6 @@ if active_screen == "Обзор":
                 salon_chart.update_layout(xaxis_tickangle=-20)
                 polish_figure(salon_chart, height=360)
                 st.plotly_chart(salon_chart, use_container_width=True)
-
-    if returns_overview["return_lines"] > 0:
-        with main_col:
-            with st.container(border=True):
-                render_panel_header("Возвраты", "Сводка по возвратам в текущем срезе.")
-                render_snapshot_strip(
-                    [
-                        {"label": "Сумма возвратов", "value": format_money(returns_overview["return_revenue"]), "hint": ""},
-                        {"label": "Доля возвратов", "value": format_percent(returns_overview["return_share_pct"]), "hint": "От положительной выручки"},
-                        {"label": "Строк", "value": format_number(returns_overview["return_lines"]), "hint": ""},
-                    ]
-                )
 
     with main_col:
         second_left, second_right = st.columns(2, gap="medium")
@@ -4946,6 +5233,55 @@ if active_screen == "Закупки":
         if not active_procurement_orders.empty
         else 0
     )
+    catalog_health = build_catalog_health(procurement_items, procurement_forecast)
+
+    with st.container(border=True):
+        render_panel_header(
+            "Паспорт справочника товаров",
+            "Показывает, насколько текущий ассортимент готов к точному прогнозу закупок: поставщики, сроки, правила заказа и связь с продажами.",
+        )
+        render_snapshot_strip(
+            [
+                {
+                    "label": "Готовность",
+                    "value": format_percent(float(catalog_health["readiness_pct"])),
+                    "hint": "Чем выше, тем точнее закупочный автопилот",
+                    "tone": "success"
+                    if float(catalog_health["readiness_pct"]) >= 85
+                    else ("warning" if float(catalog_health["readiness_pct"]) >= 60 else "danger"),
+                },
+                {
+                    "label": "SKU в справочнике",
+                    "value": format_number(float(catalog_health["catalog_products"])),
+                    "hint": f"в прогнозе: {format_number(float(catalog_health['forecast_products']))}",
+                    "tone": "info",
+                },
+                {
+                    "label": "Новых вне справочника",
+                    "value": format_number(float(catalog_health["missing_in_catalog"])),
+                    "hint": "Товары из продаж без карточки закупки",
+                    "tone": "success" if int(catalog_health["missing_in_catalog"]) == 0 else "warning",
+                },
+                {
+                    "label": "Без поставщика",
+                    "value": format_number(float(catalog_health["missing_supplier"])),
+                    "hint": f"поставщиков: {format_number(float(catalog_health['supplier_count']))}",
+                    "tone": "success" if int(catalog_health["missing_supplier"]) == 0 else "warning",
+                },
+                {
+                    "label": "Без срока поставки",
+                    "value": format_number(float(catalog_health["missing_lead_time"])),
+                    "hint": "Иначе берется общий срок из настроек",
+                    "tone": "success" if int(catalog_health["missing_lead_time"]) == 0 else "warning",
+                },
+                {
+                    "label": "Без правил заказа",
+                    "value": format_number(float(catalog_health["missing_order_rules"])),
+                    "hint": "MOQ или кратность не заданы",
+                    "tone": "success" if int(catalog_health["missing_order_rules"]) == 0 else "info",
+                },
+            ]
+        )
 
     if procurement_forecast.empty:
         st.info(
