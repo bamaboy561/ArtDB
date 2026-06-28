@@ -4218,11 +4218,11 @@ with main_col:
     overview_cards.append({"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""})
     render_metric_cards(overview_cards)
 
-screen_options = ["Обзор", "Аналитика", "План / факт", "Данные"]
+screen_options = ["Обзор", "ABC-анализ", "Аналитика", "План / факт", "Данные"]
 if can_manage_access(current_user):
     screen_options.append("Управление")
 
-screen_options.insert(3, "Закупки")
+screen_options.insert(4, "Закупки")
 active_screen = screen_options[0]
 active_analytics_screen = ""
 active_advanced_screen = ""
@@ -4235,10 +4235,16 @@ procurement_min_active_months = 2
 selected_categories = []
 selected_managers = []
 selected_salons_filter = []
-analytics_screen_options = ["ABC-анализ"]
+analytics_screen_options = []
 if margin_visible:
     analytics_screen_options.append("Маржинальность")
 analytics_screen_options.extend(["Сравнение месяцев", "Расширенный"])
+
+if (
+    st.session_state.get("primary_screen_nav") == "Аналитика"
+    and st.session_state.get("analytics_screen_nav") == "ABC-анализ"
+):
+    st.session_state["primary_screen_nav"] = "ABC-анализ"
 
 with st.sidebar:
     st.markdown("---")
@@ -4272,7 +4278,7 @@ with st.sidebar:
     else:
         active_advanced_screen = ""
 
-    if active_screen == "Аналитика" and active_analytics_screen == "ABC-анализ":
+    if active_screen == "ABC-анализ":
         abc_metric_options = {"revenue": "Выручка", "quantity": "Количество"}
         if margin_visible:
             abc_metric_options["margin"] = "Маржа"
@@ -4603,7 +4609,7 @@ if active_screen == "Обзор":
                 height=300,
             )
 
-if active_screen == "Аналитика" and active_analytics_screen == "ABC-анализ":
+if active_screen == "ABC-анализ":
     with main_col:
         render_section_intro(
             "ABC-анализ",
