@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import date
 from html import escape
+from io import BytesIO
 from pathlib import Path
 import secrets
 from textwrap import dedent
@@ -80,7 +81,6 @@ from sales_analytics import (
     list_excel_sheets,
     load_input_file,
     prepare_sales_data,
-    to_csv_bytes,
 )
 from salon_data_store import (
     count_uploads_for_salon,
@@ -102,6 +102,7 @@ SURFACE_COLOR = "#FFFFFF"
 TEXT_PRIMARY = "#0f172a"
 TEXT_SECONDARY = "#475569"
 TEXT_MUTED = "#64748b"
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 st.set_page_config(
     page_title="Аналитика продаж 1С",
@@ -2284,7 +2285,14 @@ def build_download_frame(selected_mapping: dict[str, str | None]) -> pd.DataFram
 DISPLAY_COLUMN_NAMES = {
     "date": "Дата",
     "Дата": "Дата",
+    "metric": "Показатель",
+    "amount": "Сумма",
+    "comment": "Комментарий",
+    "item_code": "Код товара",
+    "product_key": "Ключ товара",
+    "group_key": "Ключ товара",
     "product": "Товар",
+    "product_name": "Название товара",
     "Номенклатура": "Товар",
     "group_name": "Позиция",
     "category": "Категория",
@@ -2305,6 +2313,15 @@ DISPLAY_COLUMN_NAMES = {
     "product_count": "Товаров",
     "sales_lines": "Строк продаж",
     "line_count": "Строк",
+    "supplier": "Поставщик",
+    "stock_on_hand": "Остаток",
+    "available_stock_qty": "Доступный остаток",
+    "stock_coverage_days": "Покрытие, дней",
+    "recommended_order_qty": "К заказу",
+    "avg_unit_cost": "Средняя себестоимость",
+    "stock_value": "Стоимость остатка",
+    "available_stock_value": "Стоимость доступного остатка",
+    "monthly_cogs_forecast": "Прогноз себестоимости/мес.",
     "abc_basis": "База ABC",
     "abc_class": "Класс ABC",
     "share_pct": "Доля, %",
@@ -2338,10 +2355,17 @@ def _is_money_label(label: str) -> bool:
     return normalized.startswith(
         (
             "выручка",
+            "валовая выручка",
+            "чистая выручка",
             "себестоимость",
+            "стоимость",
             "маржа",
+            "средняя себестоимость",
             "доход",
             "прибыль",
+            "сумма",
+            "деньги",
+            "прогноз себестоимости",
             "изменение выручки",
             "изменение маржи",
             "ндс",
@@ -2374,6 +2398,10 @@ def _is_count_label(label: str) -> bool:
     return normalized.startswith(
         (
             "количество",
+            "остаток",
+            "доступный остаток",
+            "покрытие",
+            "к заказу",
             "изменение количества",
             "товаров",
             "строк",
@@ -2577,6 +2605,164 @@ def format_display_frame_for_role(
         safe_rename_map,
         columns=safe_columns,
     )
+
+
+def _safe_excel_sheet_name(raw_name: str, used_names: set[str]) -> str:
+    invalid_chars = "\\/*?:[]"
+    safe_name = "".join("_" if char in invalid_chars else char for char in str(raw_name).strip())
+    safe_name = (safe_name or "Лист")[:31]
+    candidate = safe_name
+    suffix = 2
+    while candidate.casefold() in used_names:
+        suffix_text = f" {suffix}"
+        candidate = f"{safe_name[:31 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate.casefold())
+    return candidate
+
+
+def _normalize_excel_cell(value: object) -> object:
+    if isinstance(value, pd.Timestamp):
+        if value.tzinfo is not None:
+            return value.tz_convert(None)
+        return value
+    if isinstance(value, (list, tuple, set, dict)):
+        return str(value)
+    return value
+
+
+def _normalize_excel_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    normalized = frame.copy()
+    for column in normalized.columns:
+        series = normalized[column]
+        if isinstance(series.dtype, pd.DatetimeTZDtype):
+            normalized[column] = pd.to_datetime(series, errors="coerce").dt.tz_convert(None)
+        elif pd.api.types.is_datetime64_any_dtype(series):
+            normalized[column] = pd.to_datetime(series, errors="coerce")
+        elif series.dtype == "object":
+            normalized[column] = series.map(_normalize_excel_cell)
+    return normalized
+
+
+def prepare_excel_report_frame(
+    frame: pd.DataFrame,
+    current_user: dict[str, str] | None = None,
+    rename_map: dict[str, str] | None = None,
+    *,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    view = frame.copy()
+    safe_rename_map = rename_map
+    safe_columns = columns
+    if current_user is not None:
+        view = margin_safe_frame(view, current_user)
+        safe_rename_map = margin_safe_rename_map(rename_map, current_user)
+        safe_columns = margin_safe_columns(columns, current_user) if columns is not None else None
+
+    if safe_columns is not None:
+        available_columns = [column for column in safe_columns if column in view.columns]
+        view = view[available_columns]
+
+    used_labels: dict[str, int] = {}
+    labels: list[str] = []
+    for source_column in view.columns:
+        preferred_label = (
+            safe_rename_map[source_column]
+            if safe_rename_map and source_column in safe_rename_map
+            else DISPLAY_COLUMN_NAMES.get(source_column, str(source_column))
+        )
+        labels.append(_make_unique_label(preferred_label, source_column, used_labels))
+
+    export_frame = _normalize_excel_frame(view)
+    export_frame.columns = labels
+    return export_frame
+
+
+def _excel_column_format(header: str) -> str | None:
+    if _is_date_label(header):
+        return "DD.MM.YYYY"
+    if _is_percent_label(header):
+        return '0.0"%"'
+    if _is_money_label(header):
+        return '#,##0" сом"'
+    if _is_count_label(header):
+        return "#,##0.00"
+    return None
+
+
+def _style_excel_worksheet(worksheet) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    if worksheet.max_row < 1 or worksheet.max_column < 1:
+        return
+
+    worksheet.sheet_view.showGridLines = False
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    header_fill = PatternFill("solid", fgColor=PRIMARY_COLOR.replace("#", ""))
+    header_font = Font(color="FFFFFF", bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    body_alignment = Alignment(vertical="top", wrap_text=True)
+    thin_border = Border(bottom=Side(style="thin", color=BORDER_COLOR.replace("#", "")))
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = body_alignment
+
+    for column_index in range(1, worksheet.max_column + 1):
+        column_letter = get_column_letter(column_index)
+        header = str(worksheet.cell(row=1, column=column_index).value or "")
+        number_format = _excel_column_format(header)
+        max_length = len(header)
+
+        for cell in worksheet[column_letter][1:]:
+            if cell.value is not None:
+                max_length = max(max_length, len(str(cell.value)))
+            if number_format is not None:
+                cell.number_format = number_format
+
+        worksheet.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 52)
+
+    worksheet.row_dimensions[1].height = 32
+
+
+@st.cache_data(show_spinner=False)
+def to_excel_report_bytes(
+    sheets: dict[str, pd.DataFrame],
+    *,
+    report_title: str | None = None,
+) -> bytes:
+    buffer = BytesIO()
+    used_names: set[str] = set()
+    export_sheets: dict[str, pd.DataFrame] = {}
+
+    if report_title:
+        export_sheets["Обзор"] = pd.DataFrame(
+            [
+                {"Показатель": "Отчет", "Значение": report_title},
+                {"Показатель": "Сформировано", "Значение": pd.Timestamp.now().strftime("%d.%m.%Y %H:%M")},
+            ]
+        )
+
+    export_sheets.update(sheets)
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for raw_sheet_name, frame in export_sheets.items():
+            sheet_name = _safe_excel_sheet_name(raw_sheet_name, used_names)
+            export_frame = frame.copy() if not frame.empty else pd.DataFrame({"Сообщение": ["Нет данных"]})
+            export_frame = _normalize_excel_frame(export_frame)
+            export_frame.to_excel(writer, sheet_name=sheet_name, index=False)
+            _style_excel_worksheet(writer.sheets[sheet_name])
+
+    return buffer.getvalue()
 
 
 def render_access_tab(registered_salons: list[str]) -> None:
@@ -3750,6 +3936,527 @@ def build_text_summary(
     return lines
 
 
+def get_numeric_column(frame: pd.DataFrame, column: str, *, default: float = 0.0) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(default, index=frame.index, dtype="float64")
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def safe_pct(numerator: float, denominator: float) -> float:
+    if is_missing(numerator) or is_missing(denominator) or abs(float(denominator)) < 1e-9:
+        return float("nan")
+    return float(numerator) / float(denominator) * 100.0
+
+
+def build_financial_pnl_frame(frame: pd.DataFrame, returns_overview: dict[str, float]) -> pd.DataFrame:
+    revenue = get_numeric_column(frame, "revenue").fillna(0.0)
+    cost = get_numeric_column(frame, "cost", default=float("nan"))
+    margin = get_numeric_column(frame, "margin", default=float("nan"))
+
+    gross_revenue = float(revenue.clip(lower=0).sum())
+    return_revenue = float(returns_overview.get("return_revenue", 0.0) or 0.0)
+    net_revenue = float(revenue.sum())
+    total_cost_raw = cost.sum(min_count=1)
+    total_cost = float(total_cost_raw) if pd.notna(total_cost_raw) else float("nan")
+    total_margin_raw = margin.sum(min_count=1)
+    total_margin = float(total_margin_raw) if pd.notna(total_margin_raw) else float("nan")
+    if is_missing(total_margin) and not is_missing(total_cost):
+        total_margin = net_revenue - total_cost
+
+    return pd.DataFrame(
+        [
+            {
+                "metric": "Валовая выручка",
+                "amount": gross_revenue,
+                "share_pct": 100.0 if gross_revenue else float("nan"),
+                "comment": "Продажи до учёта возвратов.",
+            },
+            {
+                "metric": "Возвраты",
+                "amount": -return_revenue,
+                "share_pct": safe_pct(return_revenue, gross_revenue),
+                "comment": "Сколько выручки вернулось клиентам.",
+            },
+            {
+                "metric": "Чистая выручка",
+                "amount": net_revenue,
+                "share_pct": safe_pct(net_revenue, gross_revenue),
+                "comment": "Итоговая выручка после возвратов.",
+            },
+            {
+                "metric": "Себестоимость",
+                "amount": -total_cost if not is_missing(total_cost) else float("nan"),
+                "share_pct": safe_pct(total_cost, net_revenue),
+                "comment": "Закупочная стоимость проданных товаров.",
+            },
+            {
+                "metric": "Валовая маржа",
+                "amount": total_margin,
+                "share_pct": safe_pct(total_margin, net_revenue),
+                "comment": "Управленческая валовая прибыль до операционных расходов.",
+            },
+        ]
+    )
+
+
+def build_financial_inventory_frame(procurement_forecast: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "product",
+        "category",
+        "supplier",
+        "stock_on_hand",
+        "available_stock_qty",
+        "avg_unit_cost",
+        "stock_value",
+        "available_stock_value",
+        "monthly_cogs_forecast",
+        "stock_coverage_days",
+        "recommended_order_qty",
+        "priority",
+        "stock_status",
+    ]
+    if procurement_forecast.empty:
+        return pd.DataFrame(columns=columns)
+
+    inventory = procurement_forecast.copy()
+    for column in [
+        "stock_on_hand",
+        "available_stock_qty",
+        "forecast_qty",
+        "avg_revenue_per_unit",
+        "avg_margin_per_unit",
+        "stock_coverage_days",
+        "recommended_order_qty",
+    ]:
+        inventory[column] = get_numeric_column(inventory, column)
+
+    inventory["avg_unit_cost"] = inventory["avg_revenue_per_unit"] - inventory["avg_margin_per_unit"]
+    inventory["avg_unit_cost"] = inventory["avg_unit_cost"].where(inventory["avg_unit_cost"] > 0)
+    inventory["stock_value"] = inventory["stock_on_hand"].fillna(0.0) * inventory["avg_unit_cost"]
+    inventory["available_stock_value"] = inventory["available_stock_qty"].fillna(0.0) * inventory["avg_unit_cost"]
+    inventory["monthly_cogs_forecast"] = inventory["forecast_qty"].fillna(0.0) * inventory["avg_unit_cost"]
+    inventory = inventory.replace([float("inf"), -float("inf")], pd.NA)
+
+    for column in columns:
+        if column not in inventory.columns:
+            inventory[column] = "" if column in {"product", "category", "supplier", "priority", "stock_status"} else float("nan")
+
+    return (
+        inventory[columns]
+        .sort_values(["stock_value", "available_stock_value"], ascending=[False, False], na_position="last")
+        .reset_index(drop=True)
+    )
+
+
+def build_financial_alerts(
+    overview: dict[str, float],
+    category_summary: pd.DataFrame,
+    product_summary: pd.DataFrame,
+    returns_overview: dict[str, float],
+    inventory_frame: pd.DataFrame,
+    procurement_overview: dict[str, float],
+    plan_fact_summary: pd.DataFrame,
+) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+
+    margin_pct = overview.get("margin_pct", float("nan"))
+    if not is_missing(margin_pct):
+        if float(margin_pct) < 15:
+            alerts.append(
+                {
+                    "title": "Маржа ниже безопасного уровня",
+                    "body": f"Текущая маржинальность {format_percent(margin_pct)}. Нужна проверка цен, скидок и себестоимости.",
+                    "tone": "danger",
+                }
+            )
+        elif float(margin_pct) < 25:
+            alerts.append(
+                {
+                    "title": "Маржа в зоне внимания",
+                    "body": f"Маржинальность {format_percent(margin_pct)}. Стоит отдельно посмотреть низкомаржинальные SKU.",
+                    "tone": "warning",
+                }
+            )
+
+    if not product_summary.empty and "margin" in product_summary.columns:
+        negative_margin_count = int((pd.to_numeric(product_summary["margin"], errors="coerce").fillna(0.0) < 0).sum())
+        low_margin_count = int((pd.to_numeric(product_summary["margin_pct"], errors="coerce").fillna(9999) < 20).sum())
+        if negative_margin_count:
+            alerts.append(
+                {
+                    "title": "Есть продажи в минус",
+                    "body": f"SKU с отрицательной маржей: {format_number(negative_margin_count)}. Это первый список для ревизии.",
+                    "tone": "danger",
+                }
+            )
+        elif low_margin_count:
+            alerts.append(
+                {
+                    "title": "Низкомаржинальные позиции",
+                    "body": f"SKU ниже 20% маржи: {format_number(low_margin_count)}. Проверьте скидки, закупку и переоценку.",
+                    "tone": "warning",
+                }
+            )
+
+    returns_share = returns_overview.get("return_share_pct", float("nan"))
+    if not is_missing(returns_share) and float(returns_share) >= 2:
+        alerts.append(
+            {
+                "title": "Возвраты влияют на результат",
+                "body": f"Доля возвратов {format_percent(returns_share)} от валовой выручки. Нужна причина по товарам и салонам.",
+                "tone": "warning",
+            }
+        )
+
+    if not category_summary.empty and overview.get("total_revenue", 0):
+        top_category = category_summary.iloc[0]
+        top_share = safe_pct(float(top_category.get("revenue", 0.0) or 0.0), float(overview.get("total_revenue", 0.0) or 0.0))
+        if not is_missing(top_share) and float(top_share) >= 65:
+            alerts.append(
+                {
+                    "title": "Высокая зависимость от категории",
+                    "body": f"{top_category.get('group_name', 'Категория')} даёт {format_percent(top_share)} выручки. Нужен контроль ассортимента-ядра.",
+                    "tone": "info",
+                }
+            )
+
+    stock_value = (
+        pd.to_numeric(inventory_frame.get("stock_value", pd.Series(dtype="float64")), errors="coerce").sum(min_count=1)
+        if not inventory_frame.empty
+        else float("nan")
+    )
+    if pd.notna(stock_value) and float(stock_value) > 0:
+        alerts.append(
+            {
+                "title": "Деньги в остатках",
+                "body": f"Оценка замороженных денег: {format_money(float(stock_value))}. Смотрите товары с большим остатком и низким спросом.",
+                "tone": "info",
+            }
+        )
+
+    critical_stock_count = int(procurement_overview.get("critical_stock_count", 0) or 0)
+    if critical_stock_count:
+        alerts.append(
+            {
+                "title": "Риск потери продаж",
+                "body": f"Критичных позиций по остаткам: {format_number(critical_stock_count)}. Их лучше разобрать до следующей закупки.",
+                "tone": "danger",
+            }
+        )
+
+    if not plan_fact_summary.empty:
+        latest_plan_row = plan_fact_summary.iloc[-1]
+        execution_pct = latest_plan_row.get("revenue_execution_pct")
+        if execution_pct is not None and not is_missing(execution_pct) and float(execution_pct) < 90:
+            alerts.append(
+                {
+                    "title": "План продаж проседает",
+                    "body": f"Выполнение плана выручки за {latest_plan_row.get('month_label', 'последний месяц')}: {format_percent(execution_pct)}.",
+                    "tone": "warning",
+                }
+            )
+
+    if not alerts:
+        alerts.append(
+            {
+                "title": "Критичных финансовых сигналов нет",
+                "body": "По текущему срезу маржа, возвраты и остатки выглядят без явных красных флагов.",
+                "tone": "success",
+            }
+        )
+
+    return alerts[:6]
+
+
+def render_financial_alerts(alerts: list[dict[str, str]]) -> None:
+    items_html = []
+    for alert in alerts[:6]:
+        items_html.append(
+            dedent(
+                f"""
+                <div class="insight-compact-item {escape(alert.get("tone", "info"))}">
+                    <div class="insight-compact-title">{escape(alert["title"])}</div>
+                    <div class="insight-compact-body">{escape(alert["body"])}</div>
+                </div>
+                """
+            ).strip()
+        )
+
+    render_html_block(f'<div class="insight-compact-list">{"".join(items_html)}</div>')
+
+
+def safe_display_text(value: object, fallback: str = "Не указан") -> str:
+    if is_missing(value):
+        return fallback
+    text = str(value).strip()
+    if not text or text.casefold() in {"nan", "none", "nat"}:
+        return fallback
+    return text
+
+
+def first_display_text(*values: object, fallback: str = "Не указан") -> str:
+    for value in values:
+        text = safe_display_text(value, "")
+        if text:
+            return text
+    return fallback
+
+
+def safe_row_float(row: pd.Series, column: str, default: float = float("nan")) -> float:
+    if row.empty or column not in row.index:
+        return default
+    value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) else default
+
+
+def format_optional_date(value: object) -> str:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return "н/д"
+    return parsed.strftime("%d.%m.%Y")
+
+
+def most_common_text(frame: pd.DataFrame, column: str, fallback: str = "Не указан") -> str:
+    if frame.empty or column not in frame.columns:
+        return fallback
+    series = frame[column].dropna().astype(str).str.strip()
+    series = series[(series != "") & (~series.str.casefold().isin({"nan", "none", "nat"}))]
+    if series.empty:
+        return fallback
+    return safe_display_text(series.value_counts().idxmax(), fallback)
+
+
+def build_product_detail_options(product_summary: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "option_id",
+        "option_label",
+        "group_key",
+        "group_name",
+        "product_name",
+        "item_code",
+        "revenue",
+        "cost",
+        "margin",
+        "margin_pct",
+        "quantity",
+        "sales_lines",
+    ]
+    if product_summary.empty:
+        return pd.DataFrame(columns=columns)
+
+    options = product_summary.copy().reset_index(drop=True)
+    if "group_name" not in options.columns:
+        options["group_name"] = "Не указан"
+    if "group_key" not in options.columns:
+        options["group_key"] = options["group_name"].astype(str)
+    if "product_name" not in options.columns:
+        options["product_name"] = options["group_name"]
+    if "item_code" not in options.columns:
+        options["item_code"] = ""
+
+    for numeric_column in ["revenue", "cost", "margin", "margin_pct", "quantity", "sales_lines"]:
+        if numeric_column not in options.columns:
+            options[numeric_column] = float("nan")
+        options[numeric_column] = pd.to_numeric(options[numeric_column], errors="coerce")
+
+    options["option_id"] = options.index.astype(str)
+
+    def _label(row: pd.Series) -> str:
+        code = safe_display_text(row.get("item_code"), "")
+        name = first_display_text(row.get("product_name"), row.get("group_name"))
+        prefix = f"{code} · " if code else ""
+        revenue = row.get("revenue")
+        revenue_hint = format_money(float(revenue)) if pd.notna(revenue) else "выручка н/д"
+        return f"{prefix}{name} · {revenue_hint}"
+
+    options["option_label"] = options.apply(_label, axis=1)
+    return options[columns].sort_values("revenue", ascending=False, na_position="last").reset_index(drop=True)
+
+
+def filter_product_detail_frame(
+    frame: pd.DataFrame,
+    selected_product: pd.Series,
+    product_analysis_column: str,
+) -> pd.DataFrame:
+    if frame.empty or selected_product.empty:
+        return frame.iloc[0:0].copy()
+
+    if product_analysis_column in frame.columns and "group_key" in selected_product.index:
+        selected_key = safe_display_text(selected_product.get("group_key"), "")
+        if selected_key:
+            mask = frame[product_analysis_column].astype(str) == selected_key
+            matched = frame.loc[mask].copy()
+            if not matched.empty:
+                return matched
+
+    candidate_names = [
+        selected_product.get("product_name"),
+        selected_product.get("group_name"),
+    ]
+    if "product" in frame.columns:
+        product_names = frame["product"].astype(str).str.strip().str.casefold()
+        for candidate in candidate_names:
+            candidate_text = safe_display_text(candidate, "")
+            if not candidate_text:
+                continue
+            matched = frame.loc[product_names == candidate_text.casefold()].copy()
+            if not matched.empty:
+                return matched
+
+    return frame.iloc[0:0].copy()
+
+
+def find_procurement_row_for_product(
+    procurement_forecast: pd.DataFrame,
+    product_frame: pd.DataFrame,
+    selected_product: pd.Series,
+) -> pd.Series:
+    if procurement_forecast.empty or "product" not in procurement_forecast.columns:
+        return pd.Series(dtype="object")
+
+    candidates: list[str] = []
+    if not product_frame.empty and "product" in product_frame.columns:
+        candidates.extend(
+            product_frame["product"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .loc[lambda values: values != ""]
+            .value_counts()
+            .index
+            .tolist()
+        )
+    candidates.extend(
+        [
+            safe_display_text(selected_product.get("product_name"), ""),
+            safe_display_text(selected_product.get("group_name"), ""),
+        ]
+    )
+
+    seen: set[str] = set()
+    procurement_names = procurement_forecast["product"].astype(str).str.strip().str.casefold()
+    for candidate in candidates:
+        normalized = candidate.casefold().strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        match = procurement_forecast.loc[procurement_names == normalized]
+        if not match.empty:
+            return match.iloc[0]
+
+    return pd.Series(dtype="object")
+
+
+def find_product_abc_row(abc_frame: pd.DataFrame, selected_product: pd.Series) -> pd.Series:
+    if abc_frame.empty or selected_product.empty:
+        return pd.Series(dtype="object")
+
+    for column, selected_column in [("group_key", "group_key"), ("group_name", "group_name")]:
+        if column not in abc_frame.columns or selected_column not in selected_product.index:
+            continue
+        selected_value = safe_display_text(selected_product.get(selected_column), "")
+        if not selected_value:
+            continue
+        match = abc_frame.loc[abc_frame[column].astype(str) == selected_value]
+        if not match.empty:
+            return match.iloc[0]
+
+    return pd.Series(dtype="object")
+
+
+def build_product_action_cards(
+    selected_product: pd.Series,
+    product_frame: pd.DataFrame,
+    procurement_row: pd.Series,
+    product_returns: pd.DataFrame,
+    *,
+    allow_margin: bool,
+) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+    margin_pct = safe_row_float(selected_product, "margin_pct")
+    revenue = safe_row_float(selected_product, "revenue", 0.0)
+    quantity = safe_row_float(selected_product, "quantity", 0.0)
+    return_revenue = float(pd.to_numeric(product_returns.get("revenue", pd.Series(dtype="float64")), errors="coerce").abs().sum())
+    recommended_order_qty = safe_row_float(procurement_row, "recommended_order_qty", 0.0)
+    stock_on_hand = safe_row_float(procurement_row, "stock_on_hand")
+    coverage_days = safe_row_float(procurement_row, "stock_coverage_days")
+    priority = safe_display_text(procurement_row.get("priority"), "") if not procurement_row.empty else ""
+    stock_status = safe_display_text(procurement_row.get("stock_status"), "") if not procurement_row.empty else ""
+
+    if allow_margin and not is_missing(margin_pct):
+        if margin_pct < 0:
+            actions.append(
+                {
+                    "title": "Маржа отрицательная",
+                    "body": "Проверьте себестоимость, скидки и корректность загрузки. Этот SKU продаётся в минус.",
+                    "tone": "danger",
+                }
+            )
+        elif margin_pct < 20:
+            actions.append(
+                {
+                    "title": "Низкая маржа",
+                    "body": f"Маржинальность {format_percent(margin_pct)}. Стоит проверить цену, закупку и условия скидок.",
+                    "tone": "warning",
+                }
+            )
+        elif margin_pct >= 35 and revenue > 0:
+            actions.append(
+                {
+                    "title": "Хороший маржинальный SKU",
+                    "body": f"Маржинальность {format_percent(margin_pct)}. Можно держать товар в фокусе продаж и наличия.",
+                    "tone": "success",
+                }
+            )
+
+    if recommended_order_qty > 0:
+        coverage_text = f", покрытие {coverage_days:.0f} дней" if not is_missing(coverage_days) else ""
+        actions.append(
+            {
+                "title": f"К закупке: {format_number(recommended_order_qty)}",
+                "body": f"Прогноз показывает потребность к заказу{coverage_text}. Приоритет: {priority or 'не указан'}.",
+                "tone": "danger" if "крит" in stock_status.casefold() else "warning",
+            }
+        )
+    elif not is_missing(stock_on_hand) and stock_on_hand > 0 and not is_missing(coverage_days) and coverage_days > 90:
+        actions.append(
+            {
+                "title": "Риск излишка",
+                "body": f"Остаток {format_number(stock_on_hand)}, покрытие около {coverage_days:.0f} дней. Лучше не дозакупать без причины.",
+                "tone": "warning",
+            }
+        )
+
+    if not product_returns.empty:
+        actions.append(
+            {
+                "title": "Есть возвраты",
+                "body": f"Возвратных строк: {format_number(len(product_returns))}, сумма возвратов {format_money(return_revenue)}. Проверьте причины.",
+                "tone": "warning",
+            }
+        )
+
+    if quantity <= 0 and revenue <= 0:
+        actions.append(
+            {
+                "title": "Нет положительных продаж",
+                "body": "По текущему срезу товар не даёт положительной выручки. Возможно, это возврат или спящая позиция.",
+                "tone": "info",
+            }
+        )
+
+    if not actions:
+        actions.append(
+            {
+                "title": "SKU без явных красных флагов",
+                "body": "По текущему срезу продажи, возвраты и остатки не требуют срочного вмешательства.",
+                "tone": "success",
+            }
+        )
+
+    return actions[:6]
+
+
 def build_movement_chart(comparison: pd.DataFrame, left_month: str, right_month: str) -> go.Figure:
     movement = comparison.copy()
     movement["abs_revenue_delta"] = movement["revenue_delta"].abs()
@@ -3972,6 +4679,7 @@ if work_mode in upload_modes:
                     with m1:
                         col_date = select_column("Дата (обязательно)", columns, guesses.get("date"), key="map_date")
                         col_product = select_column("Товар (обязательно)", columns, guesses.get("product"), key="map_product")
+                        col_item_code = select_column("Код / артикул товара", columns, guesses.get("item_code"), key="map_item_code")
                         col_cat = select_column("Категория", columns, guesses.get("category"), key="map_cat")
                         col_manager = select_column("Менеджер", columns, guesses.get("manager"), key="map_man")
                     with m2:
@@ -3984,7 +4692,7 @@ if work_mode in upload_modes:
                         "date": col_date, "product": col_product, "revenue": col_rev,
                         "cost": col_cost, "margin": None, "quantity": col_qty,
                         "unit_price": col_price, "unit_cost": None, "category": col_cat,
-                        "manager": col_manager
+                        "manager": col_manager, "item_code": col_item_code
                     }
 
             st.divider()
@@ -4142,9 +4850,14 @@ if data.empty:
     st.stop()
 
 margin_visible = can_view_margin(current_user)
+has_item_codes = (
+    "item_code" in data.columns
+    and data["item_code"].fillna("").astype(str).str.strip().ne("").any()
+)
+product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
 
 overview = build_overview_metrics(data)
-product_summary = build_product_summary(data)
+product_summary = build_product_summary(data, product_analysis_column)
 category_summary = build_product_summary(data, "category")
 manager_summary = build_product_summary(data, "manager")
 salon_summary = build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
@@ -4218,11 +4931,13 @@ with main_col:
     overview_cards.append({"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""})
     render_metric_cards(overview_cards)
 
-screen_options = ["Обзор", "ABC-анализ", "Аналитика", "План / факт", "Данные"]
+screen_options = ["Обзор", "ABC-анализ", "Карточка SKU"]
+if margin_visible:
+    screen_options.append("Финансы")
+screen_options.extend(["Аналитика", "Закупки", "План / факт", "Данные"])
 if can_manage_access(current_user):
     screen_options.append("Управление")
 
-screen_options.insert(4, "Закупки")
 active_screen = screen_options[0]
 active_analytics_screen = ""
 active_advanced_screen = ""
@@ -4421,6 +5136,883 @@ procurement_forecast = build_procurement_forecast(
 )
 procurement_overview = build_procurement_overview(procurement_forecast)
 procurement_supplier_summary = build_procurement_supplier_summary(procurement_forecast)
+
+if active_screen == "Карточка SKU":
+    with main_col:
+        render_section_intro(
+            "Карточка SKU",
+            "Быстрый drill-down по товару: паспорт, продажи, возвраты, остатки и рекомендация к закупке в одном месте.",
+        )
+
+    product_detail_options = build_product_detail_options(product_summary)
+    if product_detail_options.empty:
+        with main_col:
+            st.info("Загрузите продажи, чтобы появилась карточка товара.")
+    else:
+        product_labels = product_detail_options.set_index("option_id")["option_label"].to_dict()
+
+        with main_col:
+            selector_col, selector_meta_col = st.columns([1.55, 0.45], gap="medium")
+            with selector_col:
+                selected_product_id = st.selectbox(
+                    "Товар / SKU",
+                    options=product_detail_options["option_id"].tolist(),
+                    format_func=lambda option_id: product_labels.get(option_id, option_id),
+                    key="product_detail_selector",
+                )
+            selected_product = product_detail_options.loc[
+                product_detail_options["option_id"] == selected_product_id
+            ].iloc[0]
+            product_frame = filter_product_detail_frame(data, selected_product, product_analysis_column)
+            product_returns = extract_return_rows(product_frame)
+            product_monthly = build_monthly_summary(product_frame)
+            product_abc_row = find_product_abc_row(build_abc_analysis(product_summary, "revenue"), selected_product)
+            procurement_row = find_procurement_row_for_product(
+                procurement_forecast,
+                product_frame,
+                selected_product,
+            )
+
+            product_name = first_display_text(selected_product.get("product_name"), selected_product.get("group_name"))
+            product_code = safe_display_text(selected_product.get("item_code"), "")
+            product_title = f"{product_code} · {product_name}" if product_code else product_name
+            selected_revenue = safe_row_float(selected_product, "revenue", 0.0)
+            selected_cost = safe_row_float(selected_product, "cost")
+            selected_margin = safe_row_float(selected_product, "margin")
+            selected_margin_pct = safe_row_float(selected_product, "margin_pct")
+            selected_quantity = safe_row_float(selected_product, "quantity", 0.0)
+            selected_lines = safe_row_float(selected_product, "sales_lines", float(len(product_frame)))
+            return_revenue = float(
+                pd.to_numeric(product_returns.get("revenue", pd.Series(dtype="float64")), errors="coerce")
+                .abs()
+                .sum()
+            )
+            stock_on_hand = safe_row_float(procurement_row, "stock_on_hand")
+            recommended_order_qty = safe_row_float(procurement_row, "recommended_order_qty", 0.0)
+            stock_coverage_days = safe_row_float(procurement_row, "stock_coverage_days")
+
+            with selector_meta_col:
+                st.caption("В списке товары отсортированы по выручке.")
+                st.caption(f"Всего SKU в текущем срезе: {format_number(len(product_detail_options))}.")
+
+            st.markdown(f"### {product_title}")
+            metric_cards = [
+                {
+                    "label": "Выручка SKU",
+                    "value": format_money(selected_revenue),
+                    "delta": f"{format_number(selected_lines)} строк продаж",
+                    "tone": "info",
+                },
+                {
+                    "label": "Количество",
+                    "value": format_number(selected_quantity),
+                    "delta": "продано в выбранном срезе",
+                    "tone": "info",
+                },
+                {
+                    "label": "Возвраты",
+                    "value": format_money(return_revenue),
+                    "delta": f"{format_number(len(product_returns))} строк",
+                    "tone": "warning" if return_revenue > 0 else "success",
+                },
+                {
+                    "label": "Остаток",
+                    "value": "н/д" if is_missing(stock_on_hand) else format_number(stock_on_hand),
+                    "delta": "из файла остатков",
+                    "tone": "info",
+                },
+                {
+                    "label": "К заказу",
+                    "value": format_number(recommended_order_qty),
+                    "delta": "по прогнозу потребности",
+                    "tone": "danger" if recommended_order_qty > 0 else "success",
+                },
+            ]
+            if margin_visible:
+                metric_cards.insert(
+                    1,
+                    {
+                        "label": "Маржа SKU",
+                        "value": "н/д" if is_missing(selected_margin) else format_money(selected_margin),
+                        "delta": "н/д" if is_missing(selected_margin_pct) else format_percent(selected_margin_pct),
+                        "tone": "success" if not is_missing(selected_margin_pct) and selected_margin_pct >= 25 else "warning",
+                    },
+                )
+            render_metric_cards(metric_cards)
+
+            latest_sale_value = (
+                procurement_row.get("last_sale_date")
+                if not procurement_row.empty and not is_missing(procurement_row.get("last_sale_date"))
+                else product_frame["date"].max()
+                if not product_frame.empty and "date" in product_frame.columns
+                else None
+            )
+            abc_class = safe_display_text(
+                product_abc_row.get("abc_class") if not product_abc_row.empty else procurement_row.get("abc_class"),
+                "н/д",
+            )
+            xyz_class = safe_display_text(procurement_row.get("xyz_class") if not procurement_row.empty else None, "н/д")
+            render_snapshot_strip(
+                [
+                    {
+                        "label": "Код товара",
+                        "value": product_code or "н/д",
+                        "delta": "стабильный ключ анализа",
+                        "tone": "info",
+                    },
+                    {
+                        "label": "Категория",
+                        "value": most_common_text(product_frame, "category"),
+                        "delta": "по строкам продаж",
+                        "tone": "info",
+                    },
+                    {
+                        "label": "Поставщик",
+                        "value": most_common_text(product_frame, "supplier"),
+                        "delta": "из продаж/остатков",
+                        "tone": "info",
+                    },
+                    {
+                        "label": "ABC / XYZ",
+                        "value": f"{abc_class} / {xyz_class}",
+                        "delta": "ценность и стабильность спроса",
+                        "tone": "success" if abc_class == "A" else "info",
+                    },
+                    {
+                        "label": "Статус остатка",
+                        "value": safe_display_text(procurement_row.get("stock_status") if not procurement_row.empty else None, "н/д"),
+                        "delta": "по прогнозу закупки",
+                        "tone": "warning" if recommended_order_qty > 0 else "info",
+                    },
+                    {
+                        "label": "Последняя продажа",
+                        "value": format_optional_date(latest_sale_value),
+                        "delta": "по выбранному срезу",
+                        "tone": "info",
+                    },
+                ]
+            )
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Что делать с этим SKU",
+                    "Система собирает сигналы по марже, возвратам, остаткам и прогнозу закупки.",
+                )
+                render_financial_alerts(
+                    build_product_action_cards(
+                        selected_product,
+                        product_frame,
+                        procurement_row,
+                        product_returns,
+                        allow_margin=margin_visible,
+                    )
+                )
+
+            detail_chart_col, procurement_col = st.columns([1.25, 0.75], gap="medium")
+            with detail_chart_col:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Динамика SKU",
+                        "Месячная выручка по выбранному товару. Для руководителя дополнительно показывается маржа.",
+                    )
+                    if product_monthly.empty or product_monthly["revenue"].abs().sum() == 0:
+                        st.info("По этому SKU недостаточно месячной динамики для графика.")
+                    else:
+                        sku_trend_chart = go.Figure()
+                        sku_trend_chart.add_trace(
+                            go.Bar(
+                                x=product_monthly["month_label"],
+                                y=product_monthly["revenue"],
+                                name="Выручка",
+                                marker_color=PRIMARY_COLOR,
+                            )
+                        )
+                        if margin_visible:
+                            sku_trend_chart.add_trace(
+                                go.Scatter(
+                                    x=product_monthly["month_label"],
+                                    y=product_monthly["margin"],
+                                    name="Маржа",
+                                    mode="lines+markers",
+                                    line=dict(color=SECONDARY_COLOR, width=3),
+                                )
+                            )
+                        sku_trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
+                        polish_figure(sku_trend_chart, height=330)
+                        st.plotly_chart(sku_trend_chart, use_container_width=True)
+
+            with procurement_col:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Остатки и закупка",
+                        "Короткий статус наличия и рекомендуемого заказа.",
+                    )
+                    if procurement_row.empty:
+                        st.info("Для этого товара пока нет строки в прогнозе закупки. Загрузите остатки или проверьте совпадение названия.")
+                    else:
+                        procurement_detail = pd.DataFrame([procurement_row.to_dict()])
+                        st.dataframe(
+                            format_display_frame(
+                                procurement_detail,
+                                {
+                                    "stock_on_hand": "Остаток, шт",
+                                    "available_stock_qty": "Доступно, шт",
+                                    "stock_coverage_days": "Покрытие, дней",
+                                    "forecast_qty": "Прогноз спроса",
+                                    "recommended_order_qty": "К заказу, шт",
+                                    "priority": "Приоритет",
+                                    "stock_status": "Статус",
+                                    "notes": "Комментарий",
+                                },
+                                columns=[
+                                    "stock_on_hand",
+                                    "available_stock_qty",
+                                    "stock_coverage_days",
+                                    "forecast_qty",
+                                    "recommended_order_qty",
+                                    "priority",
+                                    "stock_status",
+                                    "notes",
+                                ],
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=225,
+                        )
+                        if not is_missing(stock_coverage_days):
+                            st.caption(f"Покрытие запаса: примерно {stock_coverage_days:.0f} дней.")
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Последние строки продаж",
+                    "Фактические операции по выбранному SKU. Салоны не видят себестоимость и маржу.",
+                )
+                if product_frame.empty:
+                    st.info("Не нашёл строки продаж по выбранному товару.")
+                    product_sales_view = product_frame.copy()
+                else:
+                    product_sales_view = product_frame.copy()
+                    if "date" in product_sales_view.columns:
+                        product_sales_view["_sort_date"] = pd.to_datetime(product_sales_view["date"], errors="coerce")
+                        product_sales_view = product_sales_view.sort_values("_sort_date", ascending=False)
+                    sales_columns = [
+                        "date",
+                        "item_code",
+                        "product",
+                        "category",
+                        "supplier",
+                        "manager",
+                        "salon",
+                        "quantity",
+                        "revenue",
+                        "cost",
+                        "margin",
+                        "margin_pct",
+                    ]
+                    st.dataframe(
+                        format_display_frame_for_role(
+                            product_sales_view.head(80).drop(columns=["_sort_date"], errors="ignore"),
+                            current_user,
+                            {
+                                "date": "Дата",
+                                "item_code": "Код",
+                                "product": "Товар",
+                                "category": "Категория",
+                                "supplier": "Поставщик",
+                                "manager": "Менеджер",
+                                "salon": "Салон",
+                                "quantity": "Количество",
+                                "revenue": "Выручка",
+                                "cost": "Себестоимость",
+                                "margin": "Маржа",
+                                "margin_pct": "Маржа, %",
+                            },
+                            columns=sales_columns,
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=380,
+                    )
+
+            if not product_returns.empty:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Возвраты по SKU",
+                        "Отдельно вынесены строки с отрицательной выручкой или количеством.",
+                    )
+                    st.dataframe(
+                        format_display_frame_for_role(
+                            product_returns.sort_values("date", ascending=False) if "date" in product_returns.columns else product_returns,
+                            current_user,
+                            {
+                                "date": "Дата",
+                                "item_code": "Код",
+                                "product": "Товар",
+                                "category": "Категория",
+                                "manager": "Менеджер",
+                                "salon": "Салон",
+                                "quantity": "Количество",
+                                "revenue": "Сумма возврата",
+                                "margin": "Маржа возврата",
+                            },
+                            columns=[
+                                "date",
+                                "item_code",
+                                "product",
+                                "category",
+                                "manager",
+                                "salon",
+                                "quantity",
+                                "revenue",
+                                "margin",
+                            ],
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=260,
+                    )
+
+            passport_rows = [
+                {"Показатель": "Товар", "Значение": product_name},
+                {"Показатель": "Код", "Значение": product_code or "н/д"},
+                {"Показатель": "Категория", "Значение": most_common_text(product_frame, "category")},
+                {"Показатель": "Поставщик", "Значение": most_common_text(product_frame, "supplier")},
+                {"Показатель": "ABC / XYZ", "Значение": f"{abc_class} / {xyz_class}"},
+                {"Показатель": "Выручка", "Значение": selected_revenue},
+                {"Показатель": "Количество", "Значение": selected_quantity},
+                {"Показатель": "Возвраты", "Значение": return_revenue},
+                {"Показатель": "Остаток", "Значение": stock_on_hand},
+                {"Показатель": "К заказу", "Значение": recommended_order_qty},
+                {"Показатель": "Покрытие, дней", "Значение": stock_coverage_days},
+            ]
+            if margin_visible:
+                passport_rows[6:6] = [
+                    {"Показатель": "Себестоимость", "Значение": selected_cost},
+                    {"Показатель": "Маржа", "Значение": selected_margin},
+                    {"Показатель": "Маржа, %", "Значение": selected_margin_pct},
+                ]
+            passport_export = pd.DataFrame(passport_rows)
+            procurement_export = pd.DataFrame([procurement_row.to_dict()]) if not procurement_row.empty else pd.DataFrame()
+            sku_export_sheets = {
+                "Паспорт SKU": prepare_excel_report_frame(passport_export, current_user),
+                "Месячная динамика": prepare_excel_report_frame(
+                    product_monthly,
+                    current_user,
+                    {
+                        "month_label": "Месяц",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "quantity": "Количество",
+                        "product_count": "SKU",
+                        "revenue_change_pct": "Изм. выручки, %",
+                        "margin_change_pct": "Изм. маржи, %",
+                    },
+                    columns=[
+                        "month_label",
+                        "revenue",
+                        "cost",
+                        "margin",
+                        "quantity",
+                        "product_count",
+                        "revenue_change_pct",
+                        "margin_change_pct",
+                    ],
+                ),
+                "Продажи": prepare_excel_report_frame(
+                    product_sales_view.drop(columns=["_sort_date"], errors="ignore"),
+                    current_user,
+                    {
+                        "date": "Дата",
+                        "item_code": "Код",
+                        "product": "Товар",
+                        "category": "Категория",
+                        "supplier": "Поставщик",
+                        "manager": "Менеджер",
+                        "salon": "Салон",
+                        "quantity": "Количество",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "margin_pct": "Маржа, %",
+                    },
+                    columns=[
+                        "date",
+                        "item_code",
+                        "product",
+                        "category",
+                        "supplier",
+                        "manager",
+                        "salon",
+                        "quantity",
+                        "revenue",
+                        "cost",
+                        "margin",
+                        "margin_pct",
+                    ],
+                ),
+                "Закупка": prepare_excel_report_frame(
+                    procurement_export,
+                    current_user,
+                    {
+                        "stock_on_hand": "Остаток, шт",
+                        "available_stock_qty": "Доступно, шт",
+                        "stock_coverage_days": "Покрытие, дней",
+                        "forecast_qty": "Прогноз спроса",
+                        "recommended_order_qty": "К заказу, шт",
+                        "priority": "Приоритет",
+                        "stock_status": "Статус",
+                        "notes": "Комментарий",
+                    },
+                    columns=[
+                        "stock_on_hand",
+                        "available_stock_qty",
+                        "stock_coverage_days",
+                        "forecast_qty",
+                        "recommended_order_qty",
+                        "priority",
+                        "stock_status",
+                        "notes",
+                    ],
+                ),
+            }
+            if not product_returns.empty:
+                sku_export_sheets["Возвраты"] = prepare_excel_report_frame(product_returns, current_user)
+
+            safe_file_token = "".join(
+                char if char.isalnum() or char in {"-", "_"} else "_"
+                for char in (product_code or product_name)
+            ).strip("_")[:60] or "sku"
+            st.download_button(
+                "Скачать карточку SKU Excel",
+                data=to_excel_report_bytes(sku_export_sheets, report_title=f"Карточка SKU: {product_title}"),
+                file_name=f"sku_card_{safe_file_token}.xlsx",
+                mime=EXCEL_MIME,
+                use_container_width=True,
+            )
+
+if active_screen == "Финансы":
+    with main_col:
+        render_section_intro(
+            "Финансовый контроль",
+            "Управленческий P&L, вклад в валовую прибыль, деньги в остатках и сигналы, которые помогают быстро понять финансовое здоровье текущего среза.",
+        )
+
+    if not margin_visible:
+        with main_col:
+            st.warning("Финансовый экран доступен только администратору и руководителю.")
+    else:
+        financial_pnl = build_financial_pnl_frame(data, returns_overview)
+        financial_inventory = build_financial_inventory_frame(procurement_forecast)
+        financial_alerts = build_financial_alerts(
+            overview,
+            category_summary,
+            product_summary,
+            returns_overview,
+            financial_inventory,
+            procurement_overview,
+            plan_fact_summary,
+        )
+
+        pnl_amounts = financial_pnl.set_index("metric")["amount"].to_dict()
+        gross_revenue = float(pnl_amounts.get("Валовая выручка", 0.0) or 0.0)
+        return_revenue = abs(float(pnl_amounts.get("Возвраты", 0.0) or 0.0))
+        net_revenue = float(pnl_amounts.get("Чистая выручка", 0.0) or 0.0)
+        total_cost = abs(float(pnl_amounts.get("Себестоимость", 0.0) or 0.0)) if not is_missing(pnl_amounts.get("Себестоимость")) else float("nan")
+        total_margin = float(pnl_amounts.get("Валовая маржа", float("nan")) or 0.0)
+
+        stock_value_total_raw = (
+            pd.to_numeric(financial_inventory["stock_value"], errors="coerce").sum(min_count=1)
+            if not financial_inventory.empty
+            else float("nan")
+        )
+        stock_value_total = float(stock_value_total_raw) if pd.notna(stock_value_total_raw) else float("nan")
+        monthly_cogs_forecast_raw = (
+            pd.to_numeric(financial_inventory["monthly_cogs_forecast"], errors="coerce").sum(min_count=1)
+            if not financial_inventory.empty
+            else float("nan")
+        )
+        monthly_cogs_forecast = float(monthly_cogs_forecast_raw) if pd.notna(monthly_cogs_forecast_raw) else float("nan")
+        inventory_turnover = (
+            monthly_cogs_forecast / stock_value_total
+            if not is_missing(monthly_cogs_forecast)
+            and not is_missing(stock_value_total)
+            and stock_value_total > 0
+            else float("nan")
+        )
+        inventory_coverage_days = (
+            stock_value_total / (monthly_cogs_forecast / 30.4)
+            if not is_missing(monthly_cogs_forecast)
+            and not is_missing(stock_value_total)
+            and monthly_cogs_forecast > 0
+            else float("nan")
+        )
+
+        with main_col:
+            render_metric_cards(
+                [
+                    {
+                        "label": "Чистая выручка",
+                        "value": format_money(net_revenue),
+                        "delta": f"возвраты: {format_money(return_revenue)}",
+                        "tone": "info",
+                    },
+                    {
+                        "label": "Валовая маржа",
+                        "value": format_money(total_margin),
+                        "delta": format_percent(safe_pct(total_margin, net_revenue)),
+                        "tone": "success" if safe_pct(total_margin, net_revenue) >= 25 else "warning",
+                    },
+                    {
+                        "label": "Себестоимость",
+                        "value": format_money(total_cost),
+                        "delta": format_percent(safe_pct(total_cost, net_revenue)),
+                        "tone": "info",
+                    },
+                    {
+                        "label": "Деньги в остатках",
+                        "value": format_money(stock_value_total),
+                        "delta": "оценка по средней себестоимости",
+                        "tone": "warning" if not is_missing(stock_value_total) and stock_value_total > total_margin else "info",
+                    },
+                    {
+                        "label": "Оборачиваемость",
+                        "value": "н/д" if is_missing(inventory_turnover) else f"{inventory_turnover:.1f}x/мес",
+                        "delta": "прогноз COGS / остаток",
+                        "tone": "success" if not is_missing(inventory_turnover) and inventory_turnover >= 1 else "warning",
+                    },
+                    {
+                        "label": "Покрытие запасов",
+                        "value": "н/д" if is_missing(inventory_coverage_days) else f"{inventory_coverage_days:.0f} дней",
+                        "delta": "по текущему прогнозу спроса",
+                        "tone": "warning" if not is_missing(inventory_coverage_days) and inventory_coverage_days > 90 else "info",
+                    },
+                ]
+            )
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Финансовые сигналы",
+                    "Короткий список того, что требует внимания в текущем срезе.",
+                )
+                render_financial_alerts(financial_alerts)
+
+            pnl_left, pnl_right = st.columns([1, 1.15], gap="medium")
+            with pnl_left:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Управленческий P&L",
+                        "От валовой выручки до валовой маржи. Это не бухгалтерская форма, а быстрый управленческий разбор.",
+                    )
+                    st.dataframe(
+                        format_display_frame(
+                            financial_pnl,
+                            {
+                                "metric": "Показатель",
+                                "amount": "Сумма",
+                                "share_pct": "Доля, %",
+                                "comment": "Комментарий",
+                            },
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=270,
+                    )
+
+            with pnl_right:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Водопад прибыли",
+                        "Как продажи, возвраты и себестоимость приводят к валовой марже.",
+                    )
+                    waterfall_y = [
+                        gross_revenue,
+                        -return_revenue,
+                        0,
+                        -total_cost if not is_missing(total_cost) else 0,
+                        0,
+                    ]
+                    waterfall_chart = go.Figure(
+                        go.Waterfall(
+                            measure=["relative", "relative", "total", "relative", "total"],
+                            x=["Валовая выручка", "Возвраты", "Чистая выручка", "Себестоимость", "Валовая маржа"],
+                            y=waterfall_y,
+                            text=[
+                                format_money(gross_revenue),
+                                f"-{format_money(return_revenue)}",
+                                format_money(net_revenue),
+                                f"-{format_money(total_cost)}",
+                                format_money(total_margin),
+                            ],
+                            textposition="outside",
+                            connector={"line": {"color": "rgba(100,116,139,0.45)"}},
+                            increasing={"marker": {"color": PRIMARY_COLOR}},
+                            decreasing={"marker": {"color": "#dc2626"}},
+                            totals={"marker": {"color": SECONDARY_COLOR}},
+                        )
+                    )
+                    waterfall_chart.update_layout(yaxis_title="Сумма", xaxis_title="", showlegend=False)
+                    polish_figure(waterfall_chart, height=330)
+                    st.plotly_chart(waterfall_chart, use_container_width=True)
+
+            finance_left, finance_right = st.columns(2, gap="medium")
+            with finance_left:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Вклад категорий в прибыль",
+                        "Где зарабатываем валовую маржу и где прибыльность проседает.",
+                    )
+                    category_finance = category_summary.copy()
+                    if not category_finance.empty:
+                        category_finance["revenue_share_pct"] = category_finance["revenue"].map(
+                            lambda value: safe_pct(float(value or 0.0), net_revenue)
+                        )
+                        category_finance["margin_share_pct"] = category_finance["margin"].map(
+                            lambda value: safe_pct(float(value or 0.0), total_margin)
+                        )
+                        category_chart_data = category_finance.head(12).sort_values("margin", ascending=True)
+                        category_finance_chart = px.bar(
+                            category_chart_data,
+                            x="margin",
+                            y="group_name",
+                            orientation="h",
+                            color="margin_pct",
+                            color_continuous_scale=["#fee2e2", "#facc15", SECONDARY_COLOR],
+                            labels={"group_name": "Категория", "margin": "Маржа", "margin_pct": "Маржа, %"},
+                        )
+                        category_finance_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+                        polish_figure(category_finance_chart, height=340)
+                        st.plotly_chart(category_finance_chart, use_container_width=True)
+                    else:
+                        st.info("Категории не найдены в текущем наборе данных.")
+
+            with finance_right:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Деньги в остатках",
+                        "Оценка товарного запаса по средней себестоимости из продаж и прогноза закупок.",
+                    )
+                    stock_value_frame = financial_inventory.dropna(subset=["stock_value"]).head(12).sort_values("stock_value", ascending=True)
+                    if stock_value_frame.empty:
+                        st.info("Чтобы увидеть деньги в остатках, загрузите остатки и убедитесь, что в продажах есть себестоимость/маржа.")
+                    else:
+                        stock_value_chart = px.bar(
+                            stock_value_frame,
+                            x="stock_value",
+                            y="product",
+                            orientation="h",
+                            color="stock_coverage_days",
+                            color_continuous_scale=["#dcfce7", "#fef3c7", "#fecaca"],
+                            labels={"product": "Товар", "stock_value": "Стоимость остатка", "stock_coverage_days": "Покрытие, дней"},
+                        )
+                        stock_value_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+                        polish_figure(stock_value_chart, height=340)
+                        st.plotly_chart(stock_value_chart, use_container_width=True)
+
+            detail_left, detail_right = st.columns(2, gap="medium")
+            with detail_left:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Категории: финансовая таблица",
+                        "Выручка, себестоимость, маржа и доли по категориям.",
+                    )
+                    category_table_columns = [
+                        "group_name",
+                        "revenue",
+                        "cost",
+                        "margin",
+                        "margin_pct",
+                        "revenue_share_pct",
+                        "margin_share_pct",
+                        "quantity",
+                        "sales_lines",
+                    ]
+                    if "category_finance" in locals() and not category_finance.empty:
+                        st.dataframe(
+                            format_display_frame(
+                                category_finance,
+                                {
+                                    "group_name": "Категория",
+                                    "revenue": "Выручка",
+                                    "cost": "Себестоимость",
+                                    "margin": "Маржа",
+                                    "margin_pct": "Маржа, %",
+                                    "revenue_share_pct": "Доля выручки, %",
+                                    "margin_share_pct": "Доля маржи, %",
+                                    "quantity": "Количество",
+                                    "sales_lines": "Строк продаж",
+                                },
+                                columns=category_table_columns,
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=360,
+                        )
+                    else:
+                        st.info("Нет данных по категориям.")
+
+            with detail_right:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Салоны: вклад в результат",
+                        "Сравнение точек по выручке, себестоимости и валовой марже.",
+                    )
+                    if not salon_summary.empty and len(salon_summary) > 1:
+                        salon_finance = salon_summary.copy()
+                        salon_finance["revenue_share_pct"] = salon_finance["revenue"].map(
+                            lambda value: safe_pct(float(value or 0.0), net_revenue)
+                        )
+                        salon_finance["margin_share_pct"] = salon_finance["margin"].map(
+                            lambda value: safe_pct(float(value or 0.0), total_margin)
+                        )
+                        st.dataframe(
+                            format_display_frame(
+                                salon_finance,
+                                {
+                                    "group_name": "Салон",
+                                    "revenue": "Выручка",
+                                    "cost": "Себестоимость",
+                                    "margin": "Маржа",
+                                    "margin_pct": "Маржа, %",
+                                    "revenue_share_pct": "Доля выручки, %",
+                                    "margin_share_pct": "Доля маржи, %",
+                                    "quantity": "Количество",
+                                    "sales_lines": "Строк продаж",
+                                },
+                                columns=[
+                                    "group_name",
+                                    "revenue",
+                                    "cost",
+                                    "margin",
+                                    "margin_pct",
+                                    "revenue_share_pct",
+                                    "margin_share_pct",
+                                    "quantity",
+                                    "sales_lines",
+                                ],
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=360,
+                        )
+                    else:
+                        st.info("Для сравнения салонов нужно выбрать сеть с несколькими салонами.")
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Товары с замороженными деньгами",
+                    "Позиции, где остаток в деньгах самый большой. Здесь удобно искать неликвиды, излишки и риск закупки сверх спроса.",
+                )
+                if financial_inventory.empty:
+                    st.info("Нет данных по остаткам. Загрузите файл остатков в разделе `Закупки`.")
+                else:
+                    st.dataframe(
+                        format_display_frame(
+                            financial_inventory.head(40),
+                            {
+                                "product": "Товар",
+                                "category": "Категория",
+                                "supplier": "Поставщик",
+                                "stock_on_hand": "Остаток, шт",
+                                "available_stock_qty": "Доступно, шт",
+                                "avg_unit_cost": "Средняя себестоимость",
+                                "stock_value": "Стоимость остатка",
+                                "available_stock_value": "Стоимость доступного остатка",
+                                "monthly_cogs_forecast": "Прогноз себестоимости/мес.",
+                                "stock_coverage_days": "Покрытие, дней",
+                                "recommended_order_qty": "К заказу, шт",
+                                "priority": "Приоритет",
+                                "stock_status": "Статус остатка",
+                            },
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=430,
+                    )
+
+            finance_export_sheets = {
+                "P&L": prepare_excel_report_frame(
+                    financial_pnl,
+                    current_user,
+                    {
+                        "metric": "Показатель",
+                        "amount": "Сумма",
+                        "share_pct": "Доля, %",
+                        "comment": "Комментарий",
+                    },
+                ),
+                "Категории": prepare_excel_report_frame(
+                    category_finance if "category_finance" in locals() else category_summary,
+                    current_user,
+                    {
+                        "group_name": "Категория",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "margin_pct": "Маржа, %",
+                        "revenue_share_pct": "Доля выручки, %",
+                        "margin_share_pct": "Доля маржи, %",
+                        "quantity": "Количество",
+                        "sales_lines": "Строк продаж",
+                    },
+                ),
+                "Товары": prepare_excel_report_frame(
+                    product_summary,
+                    current_user,
+                    {
+                        "group_name": "Товар",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "margin_pct": "Маржа, %",
+                        "quantity": "Количество",
+                        "sales_lines": "Строк продаж",
+                    },
+                ),
+                "Остатки в деньгах": prepare_excel_report_frame(
+                    financial_inventory,
+                    current_user,
+                    {
+                        "product": "Товар",
+                        "category": "Категория",
+                        "supplier": "Поставщик",
+                        "stock_on_hand": "Остаток, шт",
+                        "available_stock_qty": "Доступно, шт",
+                        "avg_unit_cost": "Средняя себестоимость",
+                        "stock_value": "Стоимость остатка",
+                        "available_stock_value": "Стоимость доступного остатка",
+                        "monthly_cogs_forecast": "Прогноз себестоимости/мес.",
+                        "stock_coverage_days": "Покрытие, дней",
+                        "recommended_order_qty": "К заказу, шт",
+                        "priority": "Приоритет",
+                        "stock_status": "Статус остатка",
+                    },
+                ),
+            }
+            if not salon_summary.empty and len(salon_summary) > 1 and "salon_finance" in locals():
+                finance_export_sheets["Салоны"] = prepare_excel_report_frame(
+                    salon_finance,
+                    current_user,
+                    {
+                        "group_name": "Салон",
+                        "revenue": "Выручка",
+                        "cost": "Себестоимость",
+                        "margin": "Маржа",
+                        "margin_pct": "Маржа, %",
+                        "revenue_share_pct": "Доля выручки, %",
+                        "margin_share_pct": "Доля маржи, %",
+                        "quantity": "Количество",
+                        "sales_lines": "Строк продаж",
+                    },
+                )
+
+            st.download_button(
+                "Скачать финансовый отчёт Excel",
+                data=to_excel_report_bytes(finance_export_sheets, report_title="Финансовый контроль"),
+                file_name="financial_control_report.xlsx",
+                mime=EXCEL_MIME,
+                use_container_width=True,
+            )
 
 if active_screen == "Обзор":
     abc_data = build_abc_analysis(product_summary, "revenue")
@@ -4832,9 +6424,28 @@ if active_screen == "ABC-анализ":
             )
             st.download_button(
                 "Скачать ABC-анализ",
-                data=to_csv_bytes(margin_safe_frame(abc_tab_data, current_user)),
-                file_name=f"abc_analysis_{abc_metric}.csv",
-                mime="text/csv",
+                data=to_excel_report_bytes(
+                    {
+                        "ABC-анализ": prepare_excel_report_frame(
+                            abc_tab_data,
+                            current_user,
+                            {
+                                "group_name": "Товар",
+                                "abc_basis": abc_metric_options[abc_metric],
+                                "share_pct": "Доля, %",
+                                "cum_share_pct": "Накопительная доля, %",
+                                "abc_class": "Класс ABC",
+                                "revenue": "Выручка",
+                                "margin": "Маржа",
+                                "quantity": "Количество",
+                                "margin_pct": "Маржа, %",
+                            },
+                        )
+                    },
+                    report_title="ABC-анализ",
+                ),
+                file_name=f"abc_analysis_{abc_metric}.xlsx",
+                mime=EXCEL_MIME,
             )
 
 if active_screen == "Аналитика" and active_analytics_screen == "Маржинальность" and margin_visible:
@@ -4991,9 +6602,26 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                 )
                 st.download_button(
                     "Скачать маржинальность по товарам",
-                    data=to_csv_bytes(margin_sorted),
-                    file_name="margin_by_product.csv",
-                    mime="text/csv",
+                    data=to_excel_report_bytes(
+                        {
+                            "Маржинальность": prepare_excel_report_frame(
+                                margin_sorted,
+                                current_user,
+                                {
+                                    "group_name": "Товар",
+                                    "revenue": "Выручка",
+                                    "cost": "Себестоимость",
+                                    "margin": "Маржа",
+                                    "quantity": "Количество",
+                                    "sales_lines": "Строк продаж",
+                                    "margin_pct": "Маржа, %",
+                                },
+                            )
+                        },
+                        report_title="Маржинальность по товарам",
+                    ),
+                    file_name="margin_by_product.xlsx",
+                    mime=EXCEL_MIME,
                     key="dl_margin_csv"
                 )
 
@@ -5035,7 +6663,12 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                     index=default_right_index,
                 )
 
-        month_comparison = build_month_comparison(data, selected_left_month, selected_right_month)
+        month_comparison = build_month_comparison(
+            data,
+            selected_left_month,
+            selected_right_month,
+            group_column=product_analysis_column,
+        )
 
         if month_comparison.empty:
             with main_col:
@@ -5163,9 +6796,18 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                     )
                     st.download_button(
                         "Скачать сравнение месяцев",
-                        data=to_csv_bytes(margin_safe_frame(month_comparison.rename(columns=rename_map), current_user)),
-                        file_name=f"month_comparison_{selected_left_month}_vs_{selected_right_month}.csv",
-                        mime="text/csv",
+                        data=to_excel_report_bytes(
+                            {
+                                "Сравнение": prepare_excel_report_frame(
+                                    month_comparison,
+                                    current_user,
+                                    rename_map,
+                                )
+                            },
+                            report_title=f"Сравнение месяцев {selected_left_month} vs {selected_right_month}",
+                        ),
+                        file_name=f"month_comparison_{selected_left_month}_vs_{selected_right_month}.xlsx",
+                        mime=EXCEL_MIME,
                         key="dl_month_comp_csv"
                     )
 
@@ -5901,15 +7543,19 @@ if active_screen == "Закупки":
                 ]
                 st.download_button(
                     "Скачать отчёт по остаткам и рискам",
-                    data=to_csv_bytes(
-                        margin_safe_frame(
-                            stock_risk_report[stock_risk_export_columns]
-                            .rename(columns=stock_risk_rename_map),
-                            current_user,
-                        )
+                    data=to_excel_report_bytes(
+                        {
+                            "Остатки и риски": prepare_excel_report_frame(
+                                stock_risk_report,
+                                current_user,
+                                stock_risk_rename_map,
+                                columns=stock_risk_export_columns,
+                            )
+                        },
+                        report_title="Остатки и риски",
                     ),
-                    file_name="stock_risks_report.csv",
-                    mime="text/csv",
+                    file_name="stock_risks_report.xlsx",
+                    mime=EXCEL_MIME,
                     key="dl_stock_risks_report",
                 )
 
@@ -6133,9 +7779,18 @@ if active_screen == "Закупки":
                 )
                 st.download_button(
                     "Скачать сводку по поставщикам",
-                    data=to_csv_bytes(supplier_reorder_summary.rename(columns=supplier_summary_rename_map)),
-                    file_name="procurement_suppliers.csv",
-                    mime="text/csv",
+                    data=to_excel_report_bytes(
+                        {
+                            "Поставщики": prepare_excel_report_frame(
+                                supplier_reorder_summary,
+                                current_user,
+                                supplier_summary_rename_map,
+                            )
+                        },
+                        report_title="Сводка по поставщикам",
+                    ),
+                    file_name="procurement_suppliers.xlsx",
+                    mime=EXCEL_MIME,
                 )
 
         if can_manage_procurement(current_user):
@@ -6592,9 +8247,18 @@ if active_screen == "Закупки":
             )
             st.download_button(
                 "Скачать прогноз закупки",
-                data=to_csv_bytes(margin_safe_frame(procurement_table.rename(columns=procurement_rename_map), current_user)),
-                file_name="procurement_forecast.csv",
-                mime="text/csv",
+                data=to_excel_report_bytes(
+                    {
+                        "Прогноз закупки": prepare_excel_report_frame(
+                            procurement_table,
+                            current_user,
+                            procurement_rename_map,
+                        )
+                    },
+                    report_title="Прогноз закупки",
+                ),
+                file_name="procurement_forecast.xlsx",
+                mime=EXCEL_MIME,
             )
 
 if active_screen == "План / факт":
@@ -6898,9 +8562,32 @@ if active_screen == "План / факт":
             )
             st.download_button(
                 "Скачать план / факт",
-                data=to_csv_bytes(margin_safe_frame(plan_table.rename(columns={"month_label": "month"}), current_user)),
-                file_name="plan_fact_summary.csv",
-                mime="text/csv",
+                data=to_excel_report_bytes(
+                    {
+                        "План факт": prepare_excel_report_frame(
+                            plan_table,
+                            current_user,
+                            {
+                                "month_label": "Месяц",
+                                "revenue_plan": "План выручки",
+                                "revenue": "Факт выручки",
+                                "revenue_gap": "Отклонение выручки",
+                                "revenue_execution_pct": "Выполнение выручки, %",
+                                "margin_plan": "План маржи",
+                                "margin": "Факт маржи",
+                                "margin_gap": "Отклонение маржи",
+                                "margin_execution_pct": "Выполнение маржи, %",
+                                "quantity_plan": "План количества",
+                                "quantity": "Факт количества",
+                                "quantity_gap": "Отклонение количества",
+                                "quantity_execution_pct": "Выполнение количества, %",
+                            },
+                        )
+                    },
+                    report_title="План / факт",
+                ),
+                file_name="plan_fact_summary.xlsx",
+                mime=EXCEL_MIME,
             )
 
         if is_network_role(current_user["role"]) and len(plan_scope_salons) > 1 and plan_month_options:
@@ -7172,7 +8859,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                     st.dataframe(forecast_table, use_container_width=True, hide_index=True)
 
     if active_advanced_screen == "Возвраты":
-        return_product_summary = build_return_groups(data, "product")
+        return_product_summary = build_return_groups(data, product_analysis_column)
         return_monthly_summary = build_return_monthly_summary(data)
         return_salon_summary = build_return_groups(data, "salon") if "salon" in data.columns else pd.DataFrame()
 
@@ -7296,9 +8983,26 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         )
                         st.download_button(
                             "Скачать возвраты по товарам",
-                            data=to_csv_bytes(margin_safe_frame(return_product_summary, current_user)),
-                            file_name="returns_by_product.csv",
-                            mime="text/csv",
+                            data=to_excel_report_bytes(
+                                {
+                                    "Возвраты": prepare_excel_report_frame(
+                                        return_product_summary,
+                                        current_user,
+                                        {
+                                            "group_name": "Товар",
+                                            "return_revenue": "Сумма возвратов",
+                                            "return_margin": "Возврат по марже",
+                                            "return_quantity": "Возврат по количеству",
+                                            "return_lines": "Строк возврата",
+                                            "return_share_pct": "Доля возвратов, %",
+                                            "last_return_date": "Последний возврат",
+                                        },
+                                    )
+                                },
+                                report_title="Возвраты по товарам",
+                            ),
+                            file_name="returns_by_product.xlsx",
+                            mime=EXCEL_MIME,
                             key="dl_returns_csv"
                         )
 
@@ -7483,9 +9187,38 @@ if active_screen == "Данные":
             )
             st.download_button(
                 "Скачать сводку по месяцам",
-                data=to_csv_bytes(margin_safe_frame(monthly_summary, current_user)),
-                file_name="monthly_summary.csv",
-                mime="text/csv",
+                data=to_excel_report_bytes(
+                    {
+                        "Сводка по месяцам": prepare_excel_report_frame(
+                            monthly_summary,
+                            current_user,
+                            {
+                                "month": "Месяц",
+                                "month_label": "Код месяца",
+                                "revenue": "Выручка",
+                                "cost": "Себестоимость",
+                                "margin": "Маржа",
+                                "quantity": "Количество",
+                                "product_count": "Товаров",
+                                "revenue_change_pct": "Изменение выручки, %",
+                                "margin_change_pct": "Изменение маржи, %",
+                            },
+                            columns=[
+                                "month",
+                                "revenue",
+                                "cost",
+                                "margin",
+                                "quantity",
+                                "product_count",
+                                "revenue_change_pct",
+                                "margin_change_pct",
+                            ],
+                        )
+                    },
+                    report_title="Сводка по месяцам",
+                ),
+                file_name="monthly_summary.xlsx",
+                mime=EXCEL_MIME,
                 use_container_width=True,
             )
 

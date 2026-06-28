@@ -20,6 +20,18 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "sale date",
         "date",
     ),
+    "item_code": (
+        "код товара",
+        "код номенклатуры",
+        "артикул",
+        "артикул товара",
+        "sku",
+        "sku code",
+        "item code",
+        "product code",
+        "barcode",
+        "штрихкод",
+    ),
     "product": (
         "номенклатура",
         "номенклатура товара",
@@ -30,7 +42,6 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "продукт",
         "product",
         "item",
-        "sku",
     ),
     "category": (
         "категория",
@@ -96,6 +107,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 
 DISPLAY_NAMES: dict[str, str] = {
     "date": "Дата",
+    "item_code": "Код товара / артикул",
     "product": "Товар",
     "category": "Категория",
     "manager": "Менеджер",
@@ -470,6 +482,28 @@ def coerce_numeric(series: pd.Series | None, fill_value: float | None = None) ->
     return numeric
 
 
+def clean_identifier_series(series: pd.Series | None, index: pd.Index) -> pd.Series:
+    if series is None:
+        return pd.Series("", index=index, dtype="object")
+
+    def clean_value(value: object) -> str:
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text or text.casefold() in {"nan", "none", "nat"}:
+            return ""
+        if re.fullmatch(r"\d+\.0", text):
+            return text[:-2]
+        return text
+
+    return series.map(clean_value).fillna("").astype(str).str.strip()
+
+
 def _series_from_mapping(frame: pd.DataFrame, mapping: dict[str, str | None], key: str) -> pd.Series | None:
     column_name = mapping.get(key)
     if not column_name:
@@ -510,9 +544,13 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
 
     raw_date = _series_from_mapping(prepared, resolved_mapping, "date")
     raw_product = _series_from_mapping(prepared, resolved_mapping, "product")
+    raw_item_code = _series_from_mapping(prepared, resolved_mapping, "item_code")
 
     prepared["date"] = parse_dates(raw_date)
     prepared["product"] = raw_product.astype(str).str.strip()
+    prepared["item_code"] = clean_identifier_series(raw_item_code, prepared.index)
+    prepared["product_key"] = prepared["item_code"].where(prepared["item_code"] != "", prepared["product"])
+    prepared["product_key"] = prepared["product_key"].astype(str).str.strip()
 
     if category := resolved_mapping.get("category"):
         prepared["category"] = prepared[category].astype(str).str.strip()
@@ -578,6 +616,7 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
     initial_rows = len(prepared)
     prepared = prepared.dropna(subset=["date", "product", "revenue"])
     prepared = prepared[prepared["product"] != ""]
+    prepared = prepared[prepared["product_key"] != ""]
 
     dropped_rows = initial_rows - len(prepared)
     if dropped_rows:
@@ -594,6 +633,8 @@ def build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
     total_cost = frame["cost"].sum(min_count=1)
     total_margin = frame["margin"].sum(min_count=1)
 
+    product_identity_column = "product_key" if "product_key" in frame.columns else "product"
+
     return {
         "total_revenue": float(total_revenue),
         "total_cost": float(total_cost) if pd.notna(total_cost) else float("nan"),
@@ -601,8 +642,59 @@ def build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
         "margin_pct": float((total_margin / total_revenue) * 100) if total_revenue and pd.notna(total_margin) else float("nan"),
         "total_quantity": float(frame["quantity"].sum()),
         "line_count": float(len(frame)),
-        "product_count": float(frame["product"].nunique()),
+        "product_count": float(frame[product_identity_column].nunique()),
     }
+
+
+def _first_non_empty(series: pd.Series) -> str:
+    for value in series.dropna().astype(str):
+        text = value.strip()
+        if text:
+            return text
+    return ""
+
+
+def _format_product_group_label(product_name: object, item_code: object, fallback: object) -> str:
+    product_text = str(product_name or "").strip()
+    code_text = str(item_code or "").strip()
+    fallback_text = str(fallback or "").strip()
+    if code_text and product_text and code_text.casefold() != product_text.casefold():
+        return f"{code_text} · {product_text}"
+    if product_text:
+        return product_text
+    if code_text:
+        return code_text
+    return fallback_text
+
+
+def _decorate_product_key_summary(summary: pd.DataFrame, source_frame: pd.DataFrame, group_column: str) -> pd.DataFrame:
+    if summary.empty or group_column != "product_key" or "product_key" not in source_frame.columns:
+        return summary
+
+    identity_columns = {"product_key": "group_key"}
+    agg_spec = {"product_name": ("product", _first_non_empty)}
+    if "item_code" in source_frame.columns:
+        agg_spec["item_code"] = ("item_code", _first_non_empty)
+
+    identity = (
+        source_frame.groupby("product_key", dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+        .rename(columns=identity_columns)
+    )
+    if "item_code" not in identity.columns:
+        identity["item_code"] = ""
+
+    decorated = summary.rename(columns={"group_name": "group_key"}).merge(identity, on="group_key", how="left")
+    decorated["group_name"] = decorated.apply(
+        lambda row: _format_product_group_label(row.get("product_name"), row.get("item_code"), row.get("group_key")),
+        axis=1,
+    )
+
+    preferred_order = ["group_key", "item_code", "group_name", "product_name"]
+    ordered_columns = [column for column in preferred_order if column in decorated.columns]
+    ordered_columns.extend(column for column in decorated.columns if column not in ordered_columns)
+    return decorated[ordered_columns]
 
 
 def build_product_summary(frame: pd.DataFrame, group_column: str = "product") -> pd.DataFrame:
@@ -620,6 +712,7 @@ def build_product_summary(frame: pd.DataFrame, group_column: str = "product") ->
     )
 
     summary["margin_pct"] = (summary["margin"] / summary["revenue"]).where(summary["revenue"] != 0) * 100
+    summary = _decorate_product_key_summary(summary, frame, group_column)
     summary = summary.sort_values("revenue", ascending=False, ignore_index=True)
     return summary
 
@@ -693,8 +786,9 @@ def build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
         if metric_column not in monthly_frame.columns:
             monthly_frame[metric_column] = 0.0
         monthly_frame[metric_column] = pd.to_numeric(monthly_frame[metric_column], errors="coerce").fillna(0.0)
-    if "product" not in monthly_frame.columns:
-        monthly_frame["product"] = ""
+    product_identity_column = "product_key" if "product_key" in monthly_frame.columns else "product"
+    if product_identity_column not in monthly_frame.columns:
+        monthly_frame[product_identity_column] = ""
 
     monthly = (
         monthly_frame.groupby(["month", "month_label"], as_index=False)
@@ -703,7 +797,7 @@ def build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
             cost=("cost", "sum"),
             margin=("margin", "sum"),
             quantity=("quantity", "sum"),
-            product_count=("product", "nunique"),
+            product_count=(product_identity_column, "nunique"),
         )
         .sort_values("month")
         .reset_index(drop=True)
@@ -728,13 +822,14 @@ def build_returns_overview(frame: pd.DataFrame) -> dict[str, float]:
     return_revenue = returns["revenue"].abs().sum()
     return_margin = returns["margin"].abs().sum(min_count=1)
     return_quantity = returns["quantity"].abs().sum()
+    product_identity_column = "product_key" if "product_key" in returns.columns else "product"
 
     return {
         "return_lines": float(len(returns)),
         "return_revenue": float(return_revenue),
         "return_margin": float(return_margin) if pd.notna(return_margin) else float("nan"),
         "return_quantity": float(return_quantity),
-        "return_product_count": float(returns["product"].nunique()) if not returns.empty else 0.0,
+        "return_product_count": float(returns[product_identity_column].nunique()) if not returns.empty else 0.0,
         "return_month_count": float(returns["month_label"].nunique()) if not returns.empty else 0.0,
         "return_share_pct": float(return_revenue / positive_revenue * 100) if positive_revenue else float("nan"),
     }
@@ -777,6 +872,7 @@ def build_return_groups(frame: pd.DataFrame, group_column: str = "product") -> p
     summary["return_share_pct"] = (
         summary["return_revenue"] / total_return_revenue * 100 if total_return_revenue else 0.0
     )
+    summary = _decorate_product_key_summary(summary, grouped, group_column)
     return summary.sort_values(["return_revenue", "return_lines"], ascending=[False, False], ignore_index=True)
 
 
@@ -934,6 +1030,7 @@ def build_month_comparison(
         )
 
     result = result.sort_values("revenue_delta", ascending=False, ignore_index=True)
+    result = _decorate_product_key_summary(result, frame, group_column)
     return result
 
 

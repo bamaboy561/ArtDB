@@ -6,7 +6,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from sales_analytics import coerce_numeric, parse_dates
+from sales_analytics import clean_identifier_series, coerce_numeric, parse_dates
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ def _add_problem_rows(
 
     columns = [
         column
-        for column in ["date", "product", "category", "manager", "quantity", "revenue", "cost", "margin", "margin_pct"]
+        for column in ["date", "item_code", "product", "category", "manager", "quantity", "revenue", "cost", "margin", "margin_pct"]
         if column in frame.columns
     ]
     problem_frame = frame.loc[mask, columns].head(limit).copy()
@@ -132,6 +132,7 @@ def analyze_sales_quality(
     raw_index = raw_frame.index
     raw_dates = parse_dates(_mapped_series(raw_frame, mapping, "date")) if mapping.get("date") else pd.Series(pd.NaT, index=raw_index)
     raw_products = _clean_product_series(_mapped_series(raw_frame, mapping, "product"), raw_index)
+    raw_item_codes = clean_identifier_series(_mapped_series(raw_frame, mapping, "item_code"), raw_index)
     raw_revenue = _numeric_series(_mapped_series(raw_frame, mapping, "revenue"), raw_index)
 
     missing_date_count = int(raw_dates.isna().sum())
@@ -157,6 +158,29 @@ def analyze_sales_quality(
                 "Такие строки не дают точного ABC, закупок и остатков.",
             )
         )
+
+    if not mapping.get("item_code"):
+        issues.append(
+            DataQualityIssue(
+                "info",
+                "Нет кода товара / артикула",
+                "Файл можно анализировать, но товары будут склеиваться по названию. При переименованиях ABC, маржа и прогноз закупок будут менее точными.",
+                raw_rows,
+                "Добавьте в выгрузку колонку `Код товара`, `Артикул` или `Штрихкод` и сопоставьте её при загрузке.",
+            )
+        )
+    else:
+        missing_code_count = int(raw_item_codes.eq("").sum())
+        if missing_code_count:
+            issues.append(
+                DataQualityIssue(
+                    "info",
+                    "Не у всех строк есть код товара",
+                    f"Код товара / артикул пустой в {missing_code_count} строках.",
+                    missing_code_count,
+                    "Для строк без кода программа будет использовать название товара.",
+                )
+            )
 
     if mapping.get("revenue"):
         missing_revenue_count = int(raw_revenue.isna().sum())
@@ -321,7 +345,8 @@ def analyze_sales_quality(
                 )
                 _add_problem_rows(problem_rows, frame, extreme_margin_mask, "Аномальная маржа")
 
-    duplicate_columns = [column for column in ["date", "product", "manager", "quantity", "revenue"] if column in frame.columns]
+    duplicate_product_column = "product_key" if "product_key" in frame.columns else "product"
+    duplicate_columns = [column for column in ["date", duplicate_product_column, "manager", "quantity", "revenue"] if column in frame.columns]
     if duplicate_columns:
         duplicate_mask = frame.duplicated(subset=duplicate_columns, keep=False)
         duplicate_count = int(duplicate_mask.sum())
