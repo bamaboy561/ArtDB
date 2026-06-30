@@ -2256,6 +2256,68 @@ def cached_load_archive_data(selected_salons: tuple[str, ...]):
     return load_archive_data(salons=list(selected_salons))
 
 
+@st.cache_data(show_spinner=False, max_entries=24)
+def cached_build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
+    return build_overview_metrics(frame)
+
+
+@st.cache_data(show_spinner=False, max_entries=48)
+def cached_build_product_summary(frame: pd.DataFrame, group_column: str = "product") -> pd.DataFrame:
+    return build_product_summary(frame, group_column)
+
+
+@st.cache_data(show_spinner=False, max_entries=48)
+def cached_build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    return build_monthly_summary(frame)
+
+
+@st.cache_data(show_spinner=False, max_entries=48)
+def cached_build_returns_overview(frame: pd.DataFrame) -> dict[str, float]:
+    return build_returns_overview(frame)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def cached_build_plan_fact_summary(
+    monthly_summary: pd.DataFrame,
+    plan_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    return build_plan_fact_summary(monthly_summary, plan_summary)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def cached_build_procurement_forecast(
+    frame: pd.DataFrame,
+    *,
+    history_months: int,
+    coverage_days: int,
+    lead_time_days: int,
+    safety_days: int,
+    min_active_months: int,
+    procurement_items: pd.DataFrame,
+    inbound_orders: pd.DataFrame,
+) -> pd.DataFrame:
+    return build_procurement_forecast(
+        frame,
+        history_months=history_months,
+        coverage_days=coverage_days,
+        lead_time_days=lead_time_days,
+        safety_days=safety_days,
+        min_active_months=min_active_months,
+        procurement_items=procurement_items,
+        inbound_orders=inbound_orders,
+    )
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def cached_build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, float]:
+    return build_procurement_overview(procurement_frame)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def cached_build_procurement_supplier_summary(procurement_frame: pd.DataFrame) -> pd.DataFrame:
+    return build_procurement_supplier_summary(procurement_frame)
+
+
 def select_column(
     label: str,
     columns: list[str],
@@ -4856,14 +4918,14 @@ has_item_codes = (
 )
 product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
 
-overview = build_overview_metrics(data)
-product_summary = build_product_summary(data, product_analysis_column)
-category_summary = build_product_summary(data, "category")
-manager_summary = build_product_summary(data, "manager")
-salon_summary = build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
-monthly_summary = build_monthly_summary(data)
-returns_overview = build_returns_overview(data)
-plan_monthly_summary = build_monthly_summary(plan_fact_source_data)
+overview = cached_build_overview_metrics(data)
+product_summary = cached_build_product_summary(data, product_analysis_column)
+category_summary = cached_build_product_summary(data, "category")
+manager_summary = cached_build_product_summary(data, "manager")
+salon_summary = cached_build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
+monthly_summary = cached_build_monthly_summary(data)
+returns_overview = cached_build_returns_overview(data)
+plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
 monthly_plans = load_monthly_plans()
 procurement_items = load_procurement_items()
 procurement_orders = load_procurement_orders()
@@ -4885,7 +4947,7 @@ scope_plan_summary = build_scope_plan_summary(
     plan_scope_salons,
     allow_network_fallback=allow_network_plan_fallback,
 )
-plan_fact_summary = build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
+plan_fact_summary = cached_build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
 plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 
 with main_col:
@@ -5124,18 +5186,23 @@ with st.sidebar:
                 except Exception as error:
                     st.error(f"Не удалось отправить отчёт: {error}")
 
-procurement_forecast = build_procurement_forecast(
-    procurement_source_data,
-    history_months=procurement_history_months,
-    coverage_days=procurement_coverage_days,
-    lead_time_days=procurement_lead_time_days,
-    safety_days=procurement_safety_days,
-    min_active_months=procurement_min_active_months,
-    procurement_items=procurement_items,
-    inbound_orders=open_procurement_orders,
-)
-procurement_overview = build_procurement_overview(procurement_forecast)
-procurement_supplier_summary = build_procurement_supplier_summary(procurement_forecast)
+procurement_forecast = pd.DataFrame()
+procurement_overview = cached_build_procurement_overview(procurement_forecast)
+procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
+needs_procurement_analysis = active_screen in {"Обзор", "Карточка SKU", "Финансы", "Закупки"}
+if needs_procurement_analysis:
+    procurement_forecast = cached_build_procurement_forecast(
+        procurement_source_data,
+        history_months=procurement_history_months,
+        coverage_days=procurement_coverage_days,
+        lead_time_days=procurement_lead_time_days,
+        safety_days=procurement_safety_days,
+        min_active_months=procurement_min_active_months,
+        procurement_items=procurement_items,
+        inbound_orders=open_procurement_orders,
+    )
+    procurement_overview = cached_build_procurement_overview(procurement_forecast)
+    procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
 
 if active_screen == "Карточка SKU":
     with main_col:
