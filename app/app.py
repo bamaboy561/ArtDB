@@ -103,10 +103,12 @@ TEXT_PRIMARY = "#0f172a"
 TEXT_SECONDARY = "#475569"
 TEXT_MUTED = "#64748b"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+APP_DIR = Path(__file__).resolve().parent
+APP_FAVICON_PATH = APP_DIR / "assets" / "favicon.svg"
 
 st.set_page_config(
     page_title="Аналитика продаж 1С",
-    page_icon="📊",
+    page_icon=APP_FAVICON_PATH if APP_FAVICON_PATH.exists() else "📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -5070,13 +5072,17 @@ with st.sidebar:
     if active_screen == "Закупки":
         procurement_month_cap = max(3, min(12, int(data["date"].dt.to_period("M").nunique()) if not data.empty else 6))
         with st.expander("Параметры закупки", expanded=False):
-            procurement_history_months = st.slider(
-                "История для прогноза, мес.",
-                min_value=3,
-                max_value=procurement_month_cap,
-                value=min(procurement_history_months, procurement_month_cap),
-                key="procurement_history_months",
-            )
+            if procurement_month_cap <= 3:
+                procurement_history_months = 3
+                st.caption("История для прогноза: 3 мес. Чтобы менять период, нужны данные за 4+ месяца.")
+            else:
+                procurement_history_months = st.slider(
+                    "История для прогноза, мес.",
+                    min_value=3,
+                    max_value=procurement_month_cap,
+                    value=min(procurement_history_months, procurement_month_cap),
+                    key="procurement_history_months",
+                )
             procurement_coverage_days = st.slider(
                 "Период покрытия, дней",
                 min_value=7,
