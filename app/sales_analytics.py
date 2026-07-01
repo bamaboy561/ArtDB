@@ -279,6 +279,153 @@ def _resolve_sheet_name(sheet_names: list[str], sheet_name: str | int | None) ->
     return sheet_name
 
 
+def _is_warehouse_detail_row(name: str) -> bool:
+    normalized = normalize_column_name(name)
+    return normalized == "склад" or normalized.endswith(" склад") or normalized.startswith("склад ")
+
+
+def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
+    try:
+        import xlrd
+    except ImportError:
+        return None
+
+    try:
+        workbook = xlrd.open_workbook(file_contents=file_bytes, formatting_info=True)
+    except Exception:
+        return None
+
+    sheet_names = workbook.sheet_names()
+    if not sheet_names:
+        return None
+
+    try:
+        resolved_sheet_name = _resolve_sheet_name(sheet_names, sheet_name)
+    except (IndexError, KeyError, TypeError):
+        return None
+
+    if resolved_sheet_name not in sheet_names:
+        return None
+
+    worksheet = workbook.sheet_by_name(resolved_sheet_name)
+    rows = [tuple(worksheet.cell_value(row_number, column_number) for column_number in range(worksheet.ncols)) for row_number in range(worksheet.nrows)]
+    if not rows:
+        return None
+
+    header_row_number: int | None = None
+    header_values: tuple[object, ...] | None = None
+
+    for row_number, row_values in enumerate(rows, start=1):
+        normalized_row = [normalize_column_name(value) if value not in {None, ""} else "" for value in row_values]
+        if not any(normalized_row):
+            continue
+
+        has_product = any(value == "номенклатура" for value in normalized_row)
+        has_quantity = any("колич" in value for value in normalized_row if value)
+        has_revenue = any(("доход" in value) or ("выруч" in value) for value in normalized_row if value)
+        has_cost = any("себестоим" in value for value in normalized_row if value)
+
+        if has_product and has_quantity and has_revenue and has_cost:
+            header_row_number = row_number
+            header_values = row_values
+            break
+
+    if header_row_number is None or header_values is None:
+        return None
+
+    product_index = _find_header_index(header_values, ("номенклатура", "товар", "наименование"))
+    quantity_index = _find_header_index(header_values, ("количество", "кол-во", "qty"))
+    revenue_index = _find_header_index(header_values, ("доход", "выручка"))
+    cost_index = _find_header_index(header_values, ("себестоимость",))
+
+    if product_index is None or quantity_index is None or revenue_index is None or cost_index is None:
+        return None
+
+    margin_index = _find_header_index(header_values, ("прибыль", "маржа"))
+    discount_index = _find_header_index(header_values, ("скидка",))
+    vat_index = _find_header_index(header_values, ("сумма ндс", "ндс"))
+    sales_tax_index = _find_header_index(header_values, ("сумма нсп", "нсп"))
+    total_index = _find_header_index(header_values, ("всего",))
+
+    report_date = _extract_report_date_from_rows(rows[:header_row_number])
+    if report_date is None:
+        return None
+
+    records: list[dict[str, object]] = []
+    group_stack: dict[int, str] = {}
+    saw_hierarchy = False
+    skip_group_names = {"товары", "итого", "всего", "склад"}
+
+    for zero_based_row_number in range(header_row_number, worksheet.nrows):
+        raw_name = worksheet.cell_value(zero_based_row_number, product_index)
+        name = str(raw_name).strip() if raw_name not in {None, ""} else ""
+
+        if not name:
+            continue
+
+        quantity = _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, quantity_index))
+        row_info = worksheet.rowinfo_map.get(zero_based_row_number)
+        outline_level = getattr(row_info, "outline_level", 0) if row_info else 0
+        xf_index = worksheet.cell_xf_index(zero_based_row_number, product_index)
+        indent = getattr(workbook.xf_list[xf_index].alignment, "indent_level", 0)
+        level = max(int(indent // 2), int(outline_level or 0), 0)
+        normalized_name = normalize_column_name(name)
+
+        if quantity is None:
+            if level > 0:
+                saw_hierarchy = True
+
+            if normalized_name in skip_group_names:
+                if level <= 0:
+                    group_stack.clear()
+                continue
+
+            group_stack = {depth: label for depth, label in group_stack.items() if depth < level}
+            group_stack[level] = name
+            continue
+
+        if _is_warehouse_detail_row(name):
+            continue
+
+        category_path_parts = [label for depth, label in sorted(group_stack.items()) if depth < max(level, 1)]
+        category = category_path_parts[0] if category_path_parts else "Без категории"
+        group_name = category_path_parts[-1] if category_path_parts else "Без категории"
+        category_path = " > ".join(category_path_parts) if category_path_parts else "Без категории"
+
+        records.append(
+            {
+                "Дата": report_date,
+                "Номенклатура": name,
+                "Категория": category,
+                "Группа": group_name,
+                "Путь категории": category_path,
+                "Количество": quantity,
+                "Доход": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, revenue_index)),
+                "Себестоимость": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, cost_index)),
+                "Прибыль": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, margin_index))
+                if margin_index is not None
+                else None,
+                "Скидка": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, discount_index))
+                if discount_index is not None
+                else None,
+                "Сумма НДС": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, vat_index))
+                if vat_index is not None
+                else None,
+                "Сумма НСП": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, sales_tax_index))
+                if sales_tax_index is not None
+                else None,
+                "Всего": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, total_index))
+                if total_index is not None
+                else None,
+            }
+        )
+
+    if not records or not saw_hierarchy:
+        return None
+
+    return pd.DataFrame.from_records(records)
+
+
 def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
     try:
         from openpyxl import load_workbook
@@ -288,7 +435,7 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
     try:
         workbook = load_workbook(BytesIO(file_bytes), data_only=True)
     except Exception:
-        return None
+        return _parse_1c_grouped_sales_report_xls(file_bytes, sheet_name=sheet_name)
 
     if not workbook.sheetnames:
         return None
@@ -375,6 +522,9 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
 
             group_stack = {depth: label for depth, label in group_stack.items() if depth < level}
             group_stack[level] = name
+            continue
+
+        if _is_warehouse_detail_row(name):
             continue
 
         category_path_parts = [label for depth, label in sorted(group_stack.items()) if depth < max(level, 1)]
