@@ -50,6 +50,13 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "category",
         "group",
     ),
+    "supplier": (
+        "поставщик",
+        "контрагент",
+        "поставщик товара",
+        "supplier",
+        "vendor",
+    ),
     "manager": (
         "менеджер",
         "ответственный",
@@ -110,6 +117,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "item_code": "Код товара / артикул",
     "product": "Товар",
     "category": "Категория",
+    "supplier": "Поставщик",
     "manager": "Менеджер",
     "revenue": "Выручка",
     "cost": "Себестоимость",
@@ -706,6 +714,11 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
         prepared["category"] = prepared[category].astype(str).str.strip()
     else:
         prepared["category"] = "Без категории"
+
+    if supplier := resolved_mapping.get("supplier"):
+        prepared["supplier"] = prepared[supplier].fillna("").astype(str).str.strip()
+    else:
+        prepared["supplier"] = ""
 
     if manager := resolved_mapping.get("manager"):
         prepared["manager"] = prepared[manager].astype(str).str.strip()

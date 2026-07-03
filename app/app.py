@@ -2258,6 +2258,48 @@ def cached_load_archive_data(selected_salons: tuple[str, ...]):
     return load_archive_data(salons=list(selected_salons))
 
 
+def enrich_sales_with_supplier(data: pd.DataFrame, procurement_items: pd.DataFrame) -> pd.DataFrame:
+    if data.empty:
+        return data
+
+    enriched = data.copy()
+    if "supplier" not in enriched.columns:
+        enriched["supplier"] = ""
+
+    supplier_text = enriched["supplier"].fillna("").astype(str).str.strip()
+    missing_supplier = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
+    enriched["supplier"] = supplier_text
+
+    if not procurement_items.empty and {"product", "supplier"}.issubset(procurement_items.columns):
+        supplier_lookup_source = procurement_items.copy()
+        supplier_lookup_source["product_lookup_key"] = (
+            supplier_lookup_source["product"].fillna("").astype(str).str.strip().str.casefold()
+        )
+        supplier_lookup_source["supplier"] = supplier_lookup_source["supplier"].fillna("").astype(str).str.strip()
+        supplier_lookup_source = supplier_lookup_source[
+            supplier_lookup_source["product_lookup_key"].ne("") & supplier_lookup_source["supplier"].ne("")
+        ]
+
+        if not supplier_lookup_source.empty:
+            supplier_lookup = (
+                supplier_lookup_source.drop_duplicates("product_lookup_key", keep="last")
+                .set_index("product_lookup_key")["supplier"]
+                .to_dict()
+            )
+            product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+            mapped_supplier = product_lookup.map(supplier_lookup)
+
+            if "product_key" in enriched.columns:
+                product_key_lookup = enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+                mapped_supplier = mapped_supplier.fillna(product_key_lookup.map(supplier_lookup))
+
+            fill_mask = missing_supplier & mapped_supplier.fillna("").astype(str).str.strip().ne("")
+            enriched.loc[fill_mask, "supplier"] = mapped_supplier.loc[fill_mask].astype(str).str.strip()
+
+    enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+    return enriched
+
+
 @st.cache_data(show_spinner=False, max_entries=24)
 def cached_build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
     return build_overview_metrics(frame)
@@ -4745,6 +4787,7 @@ if work_mode in upload_modes:
                         col_product = select_column("Товар (обязательно)", columns, guesses.get("product"), key="map_product")
                         col_item_code = select_column("Код / артикул товара", columns, guesses.get("item_code"), key="map_item_code")
                         col_cat = select_column("Категория", columns, guesses.get("category"), key="map_cat")
+                        col_supplier = select_column("Поставщик", columns, guesses.get("supplier"), key="map_supplier")
                         col_manager = select_column("Менеджер", columns, guesses.get("manager"), key="map_man")
                     with m2:
                         col_rev = select_column("Выручка", columns, guesses.get("revenue"), key="map_rev")
@@ -4756,7 +4799,7 @@ if work_mode in upload_modes:
                         "date": col_date, "product": col_product, "revenue": col_rev,
                         "cost": col_cost, "margin": None, "quantity": col_qty,
                         "unit_price": col_price, "unit_cost": None, "category": col_cat,
-                        "manager": col_manager, "item_code": col_item_code
+                        "supplier": col_supplier, "manager": col_manager, "item_code": col_item_code
                     }
 
             st.divider()
@@ -4913,6 +4956,9 @@ if data.empty:
     st.warning("После применения фильтров не осталось данных.")
     st.stop()
 
+procurement_items = load_procurement_items()
+data = enrich_sales_with_supplier(data, procurement_items)
+
 margin_visible = can_view_margin(current_user)
 has_item_codes = (
     "item_code" in data.columns
@@ -4925,11 +4971,11 @@ product_summary = cached_build_product_summary(data, product_analysis_column)
 category_summary = cached_build_product_summary(data, "category")
 manager_summary = cached_build_product_summary(data, "manager")
 salon_summary = cached_build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
+supplier_sales_summary = cached_build_product_summary(data, "supplier") if "supplier" in data.columns else pd.DataFrame()
 monthly_summary = cached_build_monthly_summary(data)
 returns_overview = cached_build_returns_overview(data)
 plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
 monthly_plans = load_monthly_plans()
-procurement_items = load_procurement_items()
 procurement_orders = load_procurement_orders()
 procurement_order_items = load_procurement_order_items()
 open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
@@ -5012,6 +5058,7 @@ procurement_lead_time_days = 14
 procurement_safety_days = 7
 procurement_min_active_months = 2
 selected_categories = []
+selected_suppliers = []
 selected_managers = []
 selected_salons_filter = []
 analytics_screen_options = []
@@ -5153,6 +5200,16 @@ with st.sidebar:
             )
             data = data[data["category"].isin(selected_categories)]
 
+        if "supplier" in data.columns and data["supplier"].nunique() > 1:
+            all_suppliers = sorted(data["supplier"].dropna().astype(str).unique().tolist())
+            selected_suppliers = st.multiselect(
+                "Поставщики",
+                all_suppliers,
+                default=all_suppliers,
+                key="main_selected_suppliers",
+            )
+            data = data[data["supplier"].isin(selected_suppliers)]
+
         procurement_source_data = data.copy()
         procurement_uses_manager_unfiltered_scope = False
 
@@ -5192,6 +5249,57 @@ with st.sidebar:
                 except Exception as error:
                     st.error(f"Не удалось отправить отчёт: {error}")
 
+if data.empty:
+    st.warning("После применения фильтров не осталось данных.")
+    st.stop()
+
+has_item_codes = (
+    "item_code" in data.columns
+    and data["item_code"].fillna("").astype(str).str.strip().ne("").any()
+)
+product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
+overview = cached_build_overview_metrics(data)
+product_summary = cached_build_product_summary(data, product_analysis_column)
+category_summary = cached_build_product_summary(data, "category")
+manager_summary = cached_build_product_summary(data, "manager")
+salon_summary = cached_build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
+supplier_sales_summary = cached_build_product_summary(data, "supplier") if "supplier" in data.columns else pd.DataFrame()
+monthly_summary = cached_build_monthly_summary(data)
+returns_overview = cached_build_returns_overview(data)
+plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
+plan_scope_salons = (
+    sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
+    if "salon" in plan_fact_source_data.columns
+    else ([current_user.get("salon", "")] if current_user.get("salon") else [])
+)
+allow_network_plan_fallback = bool(
+    is_network_role(current_user["role"])
+    and registered_salons
+    and sorted({str(salon).strip() for salon in plan_scope_salons if str(salon).strip()}) == sorted({str(salon).strip() for salon in registered_salons})
+)
+scope_plan_summary = build_scope_plan_summary(
+    monthly_plans,
+    plan_scope_salons,
+    allow_network_fallback=allow_network_plan_fallback,
+)
+plan_fact_summary = cached_build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
+plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
+latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
+latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
+procurement_items_for_forecast = procurement_items
+if selected_suppliers and "supplier" in procurement_items.columns:
+    procurement_items_for_forecast = procurement_items.copy()
+    procurement_supplier_text = (
+        procurement_items_for_forecast["supplier"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", "Не назначен")
+    )
+    procurement_items_for_forecast = procurement_items_for_forecast[
+        procurement_supplier_text.isin(set(selected_suppliers))
+    ].copy()
+
 procurement_forecast = pd.DataFrame()
 procurement_overview = cached_build_procurement_overview(procurement_forecast)
 procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
@@ -5204,7 +5312,7 @@ if needs_procurement_analysis:
         lead_time_days=procurement_lead_time_days,
         safety_days=procurement_safety_days,
         min_active_months=procurement_min_active_months,
-        procurement_items=procurement_items,
+        procurement_items=procurement_items_for_forecast,
         inbound_orders=open_procurement_orders,
     )
     procurement_overview = cached_build_procurement_overview(procurement_forecast)
@@ -6206,6 +6314,80 @@ if active_screen == "Обзор":
                 salon_chart.update_layout(xaxis_tickangle=-20)
                 polish_figure(salon_chart, height=360)
                 st.plotly_chart(salon_chart, use_container_width=True)
+
+    if not supplier_sales_summary.empty and len(supplier_sales_summary) > 1:
+        with main_col:
+            supplier_chart_data = supplier_sales_summary.head(12).sort_values("revenue", ascending=True)
+            supplier_table = supplier_sales_summary.copy()
+            if overview["total_revenue"]:
+                supplier_table["revenue_share_pct"] = supplier_table["revenue"] / overview["total_revenue"] * 100
+            else:
+                supplier_table["revenue_share_pct"] = 0.0
+            with st.container(border=True):
+                render_panel_header(
+                    "Поставщики",
+                    "Продажи, маржа и доля выручки по поставщикам в текущем срезе.",
+                )
+                supplier_chart_col, supplier_table_col = st.columns([1.05, 0.95], gap="medium")
+                with supplier_chart_col:
+                    if margin_visible:
+                        supplier_sales_chart = px.bar(
+                            supplier_chart_data,
+                            x="revenue",
+                            y="group_name",
+                            orientation="h",
+                            color="margin_pct",
+                            color_continuous_scale=["#FEE2E2", "#FDE68A", SECONDARY_COLOR],
+                            labels={
+                                "group_name": "Поставщик",
+                                "revenue": "Выручка",
+                                "margin_pct": "Маржа, %",
+                            },
+                        )
+                        supplier_sales_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
+                    else:
+                        supplier_sales_chart = px.bar(
+                            supplier_chart_data,
+                            x="revenue",
+                            y="group_name",
+                            orientation="h",
+                            color_discrete_sequence=[PRIMARY_COLOR],
+                            labels={"group_name": "Поставщик", "revenue": "Выручка"},
+                        )
+                        supplier_sales_chart.update_layout(yaxis_title="")
+                    supplier_sales_chart.update_yaxes(automargin=True)
+                    polish_figure(supplier_sales_chart, height=compact_bar_chart_height(max(len(supplier_chart_data), 3)))
+                    st.plotly_chart(supplier_sales_chart, use_container_width=True)
+                with supplier_table_col:
+                    st.dataframe(
+                        format_display_frame_for_role(
+                            supplier_table,
+                            current_user,
+                            {
+                                "group_name": "Поставщик",
+                                "revenue": "Выручка",
+                                "cost": "Себестоимость",
+                                "margin": "Маржа",
+                                "margin_pct": "Маржа, %",
+                                "revenue_share_pct": "Доля выручки, %",
+                                "quantity": "Количество",
+                                "sales_lines": "Строк продаж",
+                            },
+                            columns=[
+                                "group_name",
+                                "revenue",
+                                "cost",
+                                "margin",
+                                "margin_pct",
+                                "revenue_share_pct",
+                                "quantity",
+                                "sales_lines",
+                            ],
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=max(260, min(420, 86 + len(supplier_table) * 34)),
+                    )
 
     with main_col:
         second_left, second_right = st.columns(2, gap="medium")
