@@ -78,6 +78,7 @@ from sales_analytics import (
     detect_anomalies,
     extract_return_rows,
     guess_column_mapping,
+    infer_supplier_from_text,
     list_excel_sheets,
     load_input_file,
     prepare_sales_data,
@@ -2295,6 +2296,25 @@ def enrich_sales_with_supplier(data: pd.DataFrame, procurement_items: pd.DataFra
 
             fill_mask = missing_supplier & mapped_supplier.fillna("").astype(str).str.strip().ne("")
             enriched.loc[fill_mask, "supplier"] = mapped_supplier.loc[fill_mask].astype(str).str.strip()
+
+    supplier_text = enriched["supplier"].fillna("").astype(str).str.strip()
+    missing_supplier = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
+    supplier_text_columns = [
+        column for column in ("product", "product_key", "item_code", "category") if column in enriched.columns
+    ]
+    if supplier_text_columns and missing_supplier.any():
+        combined_supplier_text = (
+            enriched.loc[missing_supplier, supplier_text_columns]
+            .fillna("")
+            .astype(str)
+            .agg(" ".join, axis=1)
+        )
+        inferred_supplier = combined_supplier_text.map(infer_supplier_from_text)
+        inferred_mask = inferred_supplier.fillna("").astype(str).str.strip().ne("")
+        if inferred_mask.any():
+            enriched.loc[inferred_supplier.index[inferred_mask], "supplier"] = (
+                inferred_supplier.loc[inferred_mask].astype(str).str.strip()
+            )
 
     enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
     return enriched

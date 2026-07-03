@@ -154,6 +154,22 @@ RUSSIAN_MONTHS = {
     "декабря": 12,
 }
 
+SUPPLIER_KEYWORD_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Slotex", ("slotex", "слотекс")),
+    ("Экстраверт", ("экстраверт", "ekstravert", "extrawert", "extrovert", "extra vert")),
+    ("Hettich", ("hettich", "хеттих", "хетич")),
+    ("Nuomi", ("nuomi", "нуоми")),
+    ("Krono", ("krono", "кроно", "kronospan", "кроношпан", "swiss krono")),
+    ("Egger", ("egger", "эггер")),
+    ("AGT", ("agt", "агт")),
+    ("Blum", ("blum", "блюм")),
+    ("Boyard", ("boyard", "боярд")),
+    ("Hafele", ("hafele", "haefele", "h fele", "хефеле")),
+    ("Samet", ("samet", "самет")),
+    ("GTV", ("gtv", "гтв")),
+    ("Rehau", ("rehau", "рехау")),
+)
+
 
 @dataclass
 class PreparedSalesData:
@@ -165,6 +181,27 @@ def normalize_column_name(name: str) -> str:
     normalized = re.sub(r"[_\-/]+", " ", str(name).strip().casefold())
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+def normalize_supplier_lookup_text(value: object) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    text = re.sub(r"[^0-9a-zа-я]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def infer_supplier_from_text(value: object) -> str:
+    lookup_text = normalize_supplier_lookup_text(value)
+    if not lookup_text:
+        return ""
+
+    haystack = f" {lookup_text} "
+    for supplier, patterns in SUPPLIER_KEYWORD_PATTERNS:
+        for pattern in patterns:
+            needle = normalize_supplier_lookup_text(pattern)
+            if needle and f" {needle} " in haystack:
+                return supplier
+
+    return ""
 
 
 def guess_column_mapping(columns: Iterable[str]) -> dict[str, str | None]:
@@ -709,6 +746,7 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
     prepared["item_code"] = clean_identifier_series(raw_item_code, prepared.index)
     prepared["product_key"] = prepared["item_code"].where(prepared["item_code"] != "", prepared["product"])
     prepared["product_key"] = prepared["product_key"].astype(str).str.strip()
+    supplier_from_product = raw_product.map(infer_supplier_from_text).fillna("").astype(str).str.strip()
 
     if category := resolved_mapping.get("category"):
         prepared["category"] = prepared[category].astype(str).str.strip()
@@ -717,8 +755,10 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
 
     if supplier := resolved_mapping.get("supplier"):
         prepared["supplier"] = prepared[supplier].fillna("").astype(str).str.strip()
+        missing_supplier = prepared["supplier"].eq("") | prepared["supplier"].str.casefold().eq("не назначен")
+        prepared.loc[missing_supplier, "supplier"] = supplier_from_product.loc[missing_supplier]
     else:
-        prepared["supplier"] = ""
+        prepared["supplier"] = supplier_from_product
 
     if manager := resolved_mapping.get("manager"):
         prepared["manager"] = prepared[manager].astype(str).str.strip()
@@ -761,6 +801,15 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
 
     prepared["quantity"] = quantity.fillna(0)
     prepared["revenue"] = revenue
+
+    supplier_group_hint = supplier_from_product.where(prepared["date"].isna() & supplier_from_product.ne(""))
+    supplier_group_hint = supplier_group_hint.replace("", pd.NA).ffill().fillna("")
+    missing_supplier = prepared["supplier"].fillna("").astype(str).str.strip()
+    missing_supplier = missing_supplier.eq("") | missing_supplier.str.casefold().eq("не назначен")
+    has_supplier_group_hint = supplier_group_hint.fillna("").astype(str).str.strip().ne("")
+    prepared.loc[missing_supplier & has_supplier_group_hint, "supplier"] = (
+        supplier_group_hint.loc[missing_supplier & has_supplier_group_hint].astype(str).str.strip()
+    )
 
     if cost is not None:
         prepared["cost"] = cost
