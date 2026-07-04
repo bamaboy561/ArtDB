@@ -189,13 +189,40 @@ def normalize_supplier_lookup_text(value: object) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def infer_supplier_from_text(value: object) -> str:
+def iter_supplier_patterns(
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> Iterable[tuple[str, tuple[str, ...]]]:
+    if supplier_rules is not None:
+        for rule in supplier_rules:
+            if isinstance(rule, dict):
+                supplier = str(rule.get("supplier", "")).strip()
+                keyword = str(rule.get("keyword", "")).strip()
+                is_active = bool(rule.get("is_active", True))
+            else:
+                try:
+                    supplier, keyword = rule
+                except (TypeError, ValueError):
+                    continue
+                supplier = str(supplier).strip()
+                keyword = str(keyword).strip()
+                is_active = True
+
+            if supplier and keyword and is_active:
+                yield supplier, (keyword,)
+
+    yield from SUPPLIER_KEYWORD_PATTERNS
+
+
+def infer_supplier_from_text(
+    value: object,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> str:
     lookup_text = normalize_supplier_lookup_text(value)
     if not lookup_text:
         return ""
 
     haystack = f" {lookup_text} "
-    for supplier, patterns in SUPPLIER_KEYWORD_PATTERNS:
+    for supplier, patterns in iter_supplier_patterns(supplier_rules):
         for pattern in patterns:
             needle = normalize_supplier_lookup_text(pattern)
             if needle and f" {needle} " in haystack:
@@ -723,7 +750,11 @@ def parse_dates(series: pd.Series) -> pd.Series:
     return parsed
 
 
-def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> PreparedSalesData:
+def prepare_sales_data(
+    frame: pd.DataFrame,
+    mapping: dict[str, str | None],
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> PreparedSalesData:
     resolved_mapping = dict(mapping)
     guessed_mapping = guess_column_mapping(frame.columns.astype(str).tolist())
 
@@ -746,7 +777,7 @@ def prepare_sales_data(frame: pd.DataFrame, mapping: dict[str, str | None]) -> P
     prepared["item_code"] = clean_identifier_series(raw_item_code, prepared.index)
     prepared["product_key"] = prepared["item_code"].where(prepared["item_code"] != "", prepared["product"])
     prepared["product_key"] = prepared["product_key"].astype(str).str.strip()
-    supplier_from_product = raw_product.map(infer_supplier_from_text).fillna("").astype(str).str.strip()
+    supplier_from_product = raw_product.map(lambda value: infer_supplier_from_text(value, supplier_rules)).fillna("").astype(str).str.strip()
 
     if category := resolved_mapping.get("category"):
         prepared["category"] = prepared[category].astype(str).str.strip()

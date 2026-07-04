@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterable
 import uuid
 
 import pandas as pd
@@ -346,6 +346,7 @@ def register_upload(
 def load_archive_data(
     *,
     salons: list[str] | None = None,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
 ) -> ArchiveLoadResult:
     manifest = load_manifest()
     warnings: list[str] = []
@@ -373,7 +374,7 @@ def load_archive_data(
                 sheet_name=_parse_sheet_name(row["sheet_name"]),
             )
             mapping = json.loads(str(row["mapping_json"]))
-            prepared = prepare_sales_data(raw_data, mapping)
+            prepared = prepare_sales_data(raw_data, mapping, supplier_rules=supplier_rules)
             frame = prepared.data.copy()
             frame["salon"] = str(row["salon"])
             frame["report_date"] = pd.to_datetime(str(row["report_date"]), errors="coerce")

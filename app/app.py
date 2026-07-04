@@ -61,6 +61,7 @@ from procurement_order_store import (
 from procurement_store import load_procurement_items, merge_procurement_upload, upsert_procurement_items
 from sales_analytics import (
     DISPLAY_NAMES,
+    SUPPLIER_KEYWORD_PATTERNS,
     build_abc_analysis,
     build_forecast,
     build_plan_fact_by_salon,
@@ -91,6 +92,14 @@ from salon_data_store import (
     load_salons,
     register_upload,
     save_salon,
+)
+from supplier_rules_store import (
+    KEYWORD_RULE_COLUMNS,
+    PRODUCT_ASSIGNMENT_COLUMNS,
+    load_supplier_keyword_rules,
+    load_supplier_product_assignments,
+    replace_supplier_keyword_rules,
+    upsert_supplier_product_assignments,
 )
 from telegram_reports import build_supplier_order_file, send_telegram_report_pack, telegram_is_configured
 
@@ -2223,9 +2232,10 @@ def cached_load_input_file(
 def cached_prepare_sales_data(
     frame: pd.DataFrame,
     mapping_items: tuple[tuple[str, str | None], ...],
+    supplier_rule_items: tuple[tuple[str, str], ...] = (),
 ):
     mapping = dict(mapping_items)
-    return prepare_sales_data(frame, mapping)
+    return prepare_sales_data(frame, mapping, supplier_rules=supplier_rule_items)
 
 
 @st.cache_data(show_spinner=False)
@@ -2255,11 +2265,50 @@ def cached_load_inventory_input_file(
 
 
 @st.cache_data(show_spinner=False)
-def cached_load_archive_data(selected_salons: tuple[str, ...]):
-    return load_archive_data(salons=list(selected_salons))
+def cached_load_archive_data(
+    selected_salons: tuple[str, ...],
+    supplier_rule_items: tuple[tuple[str, str], ...] = (),
+):
+    return load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
 
 
-def enrich_sales_with_supplier(data: pd.DataFrame, procurement_items: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def cached_load_supplier_keyword_rules(include_inactive: bool = False) -> pd.DataFrame:
+    return load_supplier_keyword_rules(include_inactive=include_inactive)
+
+
+@st.cache_data(show_spinner=False)
+def cached_load_supplier_product_assignments() -> pd.DataFrame:
+    return load_supplier_product_assignments()
+
+
+def supplier_rule_items_from_frame(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
+    if frame.empty or not {"supplier", "keyword"}.issubset(frame.columns):
+        return ()
+
+    if "is_active" in frame.columns:
+        active_frame = frame[frame["is_active"].fillna(True).astype(bool)].copy()
+    else:
+        active_frame = frame.copy()
+
+    items = []
+    seen_keywords: set[str] = set()
+    for row in active_frame.to_dict(orient="records"):
+        supplier = str(row.get("supplier", "")).strip()
+        keyword = str(row.get("keyword", "")).strip()
+        keyword_key = keyword.casefold()
+        if supplier and keyword and keyword_key not in seen_keywords:
+            seen_keywords.add(keyword_key)
+            items.append((supplier, keyword))
+    return tuple(items)
+
+
+def enrich_sales_with_supplier(
+    data: pd.DataFrame,
+    procurement_items: pd.DataFrame,
+    supplier_rule_items: tuple[tuple[str, str], ...] = (),
+    supplier_product_assignments: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if data.empty:
         return data
 
@@ -2309,15 +2358,87 @@ def enrich_sales_with_supplier(data: pd.DataFrame, procurement_items: pd.DataFra
             .astype(str)
             .agg(" ".join, axis=1)
         )
-        inferred_supplier = combined_supplier_text.map(infer_supplier_from_text)
+        inferred_supplier = combined_supplier_text.map(lambda value: infer_supplier_from_text(value, supplier_rule_items))
         inferred_mask = inferred_supplier.fillna("").astype(str).str.strip().ne("")
         if inferred_mask.any():
             enriched.loc[inferred_supplier.index[inferred_mask], "supplier"] = (
                 inferred_supplier.loc[inferred_mask].astype(str).str.strip()
             )
 
+    if (
+        supplier_product_assignments is not None
+        and not supplier_product_assignments.empty
+        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
+    ):
+        assignment_source = supplier_product_assignments.copy()
+        assignment_source["assignment_key"] = (
+            assignment_source["product_key"].fillna("").astype(str).str.strip().str.casefold()
+        )
+        assignment_source["supplier"] = assignment_source["supplier"].fillna("").astype(str).str.strip()
+        assignment_source = assignment_source[
+            assignment_source["assignment_key"].ne("") & assignment_source["supplier"].ne("")
+        ]
+        if not assignment_source.empty:
+            assignment_lookup = (
+                assignment_source.drop_duplicates("assignment_key", keep="last")
+                .set_index("assignment_key")["supplier"]
+                .to_dict()
+            )
+            if "product_key" in enriched.columns:
+                product_key_lookup = enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+            else:
+                product_key_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+            assigned_supplier = product_key_lookup.map(assignment_lookup)
+
+            product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+            assigned_supplier = assigned_supplier.fillna(product_lookup.map(assignment_lookup))
+            assigned_mask = assigned_supplier.fillna("").astype(str).str.strip().ne("")
+            if assigned_mask.any():
+                enriched.loc[assigned_mask, "supplier"] = assigned_supplier.loc[assigned_mask].astype(str).str.strip()
+
     enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
     return enriched
+
+
+def build_missing_supplier_assignment_candidates(data: pd.DataFrame) -> pd.DataFrame:
+    columns = ["product_key", "product", "category", "revenue", "quantity", "line_count", "supplier"]
+    if data.empty or "supplier" not in data.columns:
+        return pd.DataFrame(columns=columns)
+
+    supplier_text = data["supplier"].fillna("").astype(str).str.strip()
+    missing_mask = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
+    missing_data = data.loc[missing_mask].copy()
+    if missing_data.empty:
+        return pd.DataFrame(columns=columns)
+
+    if "product_key" not in missing_data.columns:
+        missing_data["product_key"] = missing_data["product"].fillna("").astype(str).str.strip()
+    if "category" not in missing_data.columns:
+        missing_data["category"] = ""
+
+    summary = (
+        missing_data.groupby("product_key", dropna=False)
+        .agg(
+            product=("product", lambda series: next((str(value).strip() for value in series if str(value).strip()), "")),
+            category=("category", lambda series: next((str(value).strip() for value in series if str(value).strip()), "")),
+            revenue=("revenue", "sum"),
+            quantity=("quantity", "sum"),
+            line_count=("product", "size"),
+        )
+        .reset_index()
+    )
+    summary["supplier"] = ""
+    summary = summary.sort_values("revenue", ascending=False).reset_index(drop=True)
+    return summary[columns]
+
+
+def default_supplier_rules_frame() -> pd.DataFrame:
+    rows = [
+        {"supplier": supplier, "keyword": keyword}
+        for supplier, keywords in SUPPLIER_KEYWORD_PATTERNS
+        for keyword in keywords
+    ]
+    return pd.DataFrame(rows, columns=["supplier", "keyword"])
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
@@ -4634,6 +4755,12 @@ data = pd.DataFrame()
 plan_fact_source_data = pd.DataFrame()
 procurement_source_data = pd.DataFrame()
 procurement_uses_manager_unfiltered_scope = False
+supplier_keyword_rules = cached_load_supplier_keyword_rules(include_inactive=True)
+active_supplier_keyword_rules = supplier_keyword_rules[
+    supplier_keyword_rules["is_active"].fillna(True).astype(bool)
+].copy() if not supplier_keyword_rules.empty else pd.DataFrame()
+supplier_rule_items = supplier_rule_items_from_frame(active_supplier_keyword_rules)
+supplier_product_assignments = cached_load_supplier_product_assignments()
 
 if current_user["role"] == "salon":
     if not current_user.get("salon"):
@@ -4826,7 +4953,7 @@ if work_mode in upload_modes:
             st.markdown('<div class="panel-title">Шаг 4: Проверка и сохранение</div>', unsafe_allow_html=True)
             mapping_items = tuple(sorted(selected_mapping.items()))
             try:
-                prepared_result = cached_prepare_sales_data(raw_data, mapping_items)
+                prepared_result = cached_prepare_sales_data(raw_data, mapping_items, supplier_rule_items)
             except Exception as error:
                 st.error(str(error))
                 st.stop()
@@ -4929,7 +5056,7 @@ if work_mode in upload_modes:
         else:
             selected_archive_salons = selected_salons_for_archive if selected_salons_for_archive else registered_salons
 
-        archive_result = cached_load_archive_data(tuple(selected_archive_salons))
+        archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
         manifest_view = archive_result.manifest.copy()
         data = archive_result.data.copy()
 
@@ -4956,7 +5083,7 @@ if work_mode not in upload_modes:
     else:
         selected_archive_salons = selected_salons_for_archive if selected_salons_for_archive else registered_salons
 
-    archive_result = cached_load_archive_data(tuple(selected_archive_salons))
+    archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
     manifest_view = archive_result.manifest.copy()
     data = archive_result.data.copy()
 
@@ -4977,7 +5104,12 @@ if data.empty:
     st.stop()
 
 procurement_items = load_procurement_items()
-data = enrich_sales_with_supplier(data, procurement_items)
+data = enrich_sales_with_supplier(
+    data,
+    procurement_items,
+    supplier_rule_items=supplier_rule_items,
+    supplier_product_assignments=supplier_product_assignments,
+)
 
 margin_visible = can_view_margin(current_user)
 has_item_codes = (
@@ -5064,7 +5196,10 @@ with main_col:
 screen_options = ["Обзор", "ABC-анализ", "Карточка SKU"]
 if margin_visible:
     screen_options.append("Финансы")
-screen_options.extend(["Аналитика", "Закупки", "План / факт", "Данные"])
+screen_options.append("Аналитика")
+if is_network_role(current_user["role"]):
+    screen_options.append("Поставщики")
+screen_options.extend(["Закупки", "План / факт", "Данные"])
 if can_manage_access(current_user):
     screen_options.append("Управление")
 
@@ -7115,6 +7250,202 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
             yoy_fig.update_xaxes(tickmode="array", tickvals=list(range(1, 13)), ticktext=["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"])
             polish_figure(yoy_fig, height=420)
             st.plotly_chart(yoy_fig, use_container_width=True)
+
+if active_screen == "Поставщики":
+    render_section_intro(
+        "Поставщики",
+        "Справочник правил и ручных назначений помогает распределить старые продажи по поставщикам без повторной загрузки отчетов.",
+    )
+
+    can_edit_suppliers = can_manage_procurement(current_user)
+    missing_supplier_candidates = build_missing_supplier_assignment_candidates(data)
+    default_rules = default_supplier_rules_frame()
+    active_custom_rule_count = len(active_supplier_keyword_rules) if not active_supplier_keyword_rules.empty else 0
+    assignment_count = len(supplier_product_assignments) if not supplier_product_assignments.empty else 0
+
+    render_snapshot_strip(
+        [
+            {
+                "label": "Авто-правил",
+                "value": format_number(float(len(default_rules) + active_custom_rule_count)),
+                "hint": f"встроенных: {format_number(float(len(default_rules)))}, ваших: {format_number(float(active_custom_rule_count))}",
+                "tone": "info",
+            },
+            {
+                "label": "Ручных назначений",
+                "value": format_number(float(assignment_count)),
+                "hint": "товары, где поставщик закреплен вручную",
+                "tone": "success" if assignment_count else "info",
+            },
+            {
+                "label": "Без поставщика",
+                "value": format_number(float(len(missing_supplier_candidates))),
+                "hint": "SKU в текущем срезе, которые еще нужно разобрать",
+                "tone": "success" if missing_supplier_candidates.empty else "warning",
+            },
+        ]
+    )
+
+    if not can_edit_suppliers:
+        st.info("Редактировать справочник поставщиков может только администратор. Руководитель видит текущие правила и проблемные позиции.")
+
+    with st.container(border=True):
+        render_panel_header(
+            "Правила авто-распознавания",
+            "Если поставщик встречается в названии товара или отдельной строкой-группой в старом Excel, правило назначит поставщика автоматически.",
+        )
+        rules_left, rules_right = st.columns([1.15, 0.85], gap="medium")
+        with rules_left:
+            keyword_rules_editor_source = supplier_keyword_rules.copy()
+            if keyword_rules_editor_source.empty:
+                keyword_rules_editor_source = pd.DataFrame(columns=KEYWORD_RULE_COLUMNS)
+            visible_rule_columns = ["supplier", "keyword", "is_active", "updated_by", "updated_at"]
+            for column in visible_rule_columns:
+                if column not in keyword_rules_editor_source.columns:
+                    keyword_rules_editor_source[column] = "" if column != "is_active" else True
+
+            edited_keyword_rules = st.data_editor(
+                keyword_rules_editor_source[visible_rule_columns],
+                use_container_width=True,
+                hide_index=True,
+                height=320,
+                num_rows="dynamic" if can_edit_suppliers else "fixed",
+                disabled=[] if can_edit_suppliers else visible_rule_columns,
+                key="supplier_keyword_rules_editor",
+                column_config={
+                    "supplier": st.column_config.TextColumn("Поставщик", required=True),
+                    "keyword": st.column_config.TextColumn("Ключевое слово", required=True),
+                    "is_active": st.column_config.CheckboxColumn("Активно", default=True),
+                    "updated_by": st.column_config.TextColumn("Кто обновил", disabled=True),
+                    "updated_at": st.column_config.TextColumn("Когда", disabled=True),
+                },
+            )
+            if can_edit_suppliers and st.button(
+                "Сохранить правила поставщиков",
+                key="supplier_keyword_rules_save_button",
+                use_container_width=True,
+                type="primary",
+            ):
+                saved_count = replace_supplier_keyword_rules(
+                    edited_keyword_rules,
+                    updated_by=current_user["username"],
+                )
+                st.cache_data.clear()
+                audit_event(
+                    action="supplier.keyword_rules_replace",
+                    user_id=current_user["username"],
+                    details={"saved_count": int(saved_count)},
+                )
+                st.session_state["supplier_flash_message"] = f"Правила поставщиков сохранены: {saved_count}."
+                st.rerun()
+
+        with rules_right:
+            st.markdown("**Встроенные правила**")
+            st.caption("Эти правила работают всегда. Ваши правила из таблицы слева имеют приоритет выше встроенных.")
+            st.dataframe(
+                default_rules.rename(columns={"supplier": "Поставщик", "keyword": "Ключевое слово"}),
+                use_container_width=True,
+                hide_index=True,
+                height=320,
+            )
+
+    supplier_flash_message = st.session_state.pop("supplier_flash_message", "")
+    if supplier_flash_message:
+        st.success(supplier_flash_message)
+
+    with st.container(border=True):
+        render_panel_header(
+            "Ручное назначение товаров",
+            "Для спорных позиций можно один раз закрепить поставщика вручную. Это назначение будет применяться ко всем старым и новым отчетам.",
+        )
+
+        if missing_supplier_candidates.empty:
+            st.success("В текущем срезе нет товаров без поставщика. Если сменить период или салон, здесь появятся только новые неразобранные позиции.")
+        else:
+            st.caption("Заполните поставщика в нужных строках. Лучше начинать сверху: таблица отсортирована по выручке.")
+            edited_missing_suppliers = st.data_editor(
+                missing_supplier_candidates,
+                use_container_width=True,
+                hide_index=True,
+                height=min(520, max(260, 96 + len(missing_supplier_candidates) * 34)),
+                disabled=["product_key", "product", "category", "revenue", "quantity", "line_count"] if can_edit_suppliers else list(missing_supplier_candidates.columns),
+                key="supplier_missing_assignment_editor",
+                column_config={
+                    "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
+                    "product": st.column_config.TextColumn("Товар", width="large"),
+                    "category": st.column_config.TextColumn("Категория", width="medium"),
+                    "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
+                    "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
+                    "line_count": st.column_config.NumberColumn("Строк", format="%d"),
+                    "supplier": st.column_config.TextColumn("Поставщик"),
+                },
+            )
+            if can_edit_suppliers and st.button(
+                "Сохранить ручные назначения",
+                key="supplier_missing_assignment_save_button",
+                use_container_width=True,
+                type="primary",
+            ):
+                assignment_rows = edited_missing_suppliers[
+                    edited_missing_suppliers["supplier"].fillna("").astype(str).str.strip().ne("")
+                ][["product_key", "product", "supplier"]]
+                saved_count = upsert_supplier_product_assignments(
+                    assignment_rows,
+                    updated_by=current_user["username"],
+                )
+                st.cache_data.clear()
+                audit_event(
+                    action="supplier.product_assignments_upsert",
+                    user_id=current_user["username"],
+                    details={"saved_count": int(saved_count), "source": "missing_supplier_candidates"},
+                )
+                st.session_state["supplier_flash_message"] = f"Ручные назначения сохранены: {saved_count}."
+                st.rerun()
+
+    with st.expander("Существующие ручные назначения", expanded=False):
+        existing_assignments = supplier_product_assignments.copy()
+        if existing_assignments.empty:
+            existing_assignments = pd.DataFrame(columns=PRODUCT_ASSIGNMENT_COLUMNS)
+        visible_assignment_columns = ["product_key", "product", "supplier", "updated_by", "updated_at"]
+        for column in visible_assignment_columns:
+            if column not in existing_assignments.columns:
+                existing_assignments[column] = ""
+        edited_assignments = st.data_editor(
+            existing_assignments[visible_assignment_columns],
+            use_container_width=True,
+            hide_index=True,
+            height=320,
+            num_rows="dynamic" if can_edit_suppliers else "fixed",
+            disabled=["updated_by", "updated_at"] if can_edit_suppliers else visible_assignment_columns,
+            key="supplier_existing_assignments_editor",
+            column_config={
+                "product_key": st.column_config.TextColumn("Ключ товара", required=True),
+                "product": st.column_config.TextColumn("Товар"),
+                "supplier": st.column_config.TextColumn("Поставщик", required=True),
+                "updated_by": st.column_config.TextColumn("Кто обновил", disabled=True),
+                "updated_at": st.column_config.TextColumn("Когда", disabled=True),
+            },
+        )
+        if can_edit_suppliers and st.button(
+            "Сохранить таблицу назначений",
+            key="supplier_existing_assignments_save_button",
+            use_container_width=True,
+        ):
+            assignment_rows = edited_assignments[
+                edited_assignments["supplier"].fillna("").astype(str).str.strip().ne("")
+            ][["product_key", "product", "supplier"]]
+            saved_count = upsert_supplier_product_assignments(
+                assignment_rows,
+                updated_by=current_user["username"],
+            )
+            st.cache_data.clear()
+            audit_event(
+                action="supplier.product_assignments_upsert",
+                user_id=current_user["username"],
+                details={"saved_count": int(saved_count), "source": "existing_assignments_editor"},
+            )
+            st.session_state["supplier_flash_message"] = f"Таблица назначений сохранена: {saved_count}."
+            st.rerun()
 
 if active_screen == "Закупки":
     render_section_intro(

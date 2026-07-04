@@ -124,6 +124,34 @@ CREATE TABLE IF NOT EXISTS procurement_items (
 CREATE INDEX IF NOT EXISTS procurement_items_supplier_idx
     ON procurement_items (supplier);
 
+CREATE TABLE IF NOT EXISTS supplier_keyword_rules (
+    rule_id BIGSERIAL PRIMARY KEY,
+    supplier TEXT NOT NULL DEFAULT '',
+    keyword TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS supplier_keyword_rules_keyword_unique
+    ON supplier_keyword_rules (LOWER(keyword))
+    WHERE keyword <> '';
+
+CREATE INDEX IF NOT EXISTS supplier_keyword_rules_active_idx
+    ON supplier_keyword_rules (is_active, LOWER(supplier));
+
+CREATE TABLE IF NOT EXISTS supplier_product_assignments (
+    product_key TEXT PRIMARY KEY,
+    product TEXT NOT NULL DEFAULT '',
+    supplier TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS supplier_product_assignments_supplier_idx
+    ON supplier_product_assignments (LOWER(supplier));
+
 CREATE TABLE IF NOT EXISTS procurement_orders (
     order_id TEXT PRIMARY KEY,
     supplier TEXT NOT NULL DEFAULT '',
