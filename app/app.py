@@ -948,6 +948,12 @@ def inject_chart_motion() -> None:
         """
         <script>
         (() => {
+          const ua = navigator.userAgent || '';
+          const isSafari = /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(ua);
+          if (isSafari) {
+            return;
+          }
+
           if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
             return;
           }
@@ -1118,6 +1124,12 @@ def render_sticky_rail_marker() -> None:
         """
         <script>
         (() => {
+          const ua = navigator.userAgent || '';
+          const isSafari = /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(ua);
+          if (isSafari) {
+            return;
+          }
+
           const host = window.frameElement;
           const parentWindow = window.parent;
           if (!host || !parentWindow || parentWindow.innerWidth < 1100) return;
@@ -1146,6 +1158,12 @@ def render_sticky_header_marker() -> None:
         """
         <script>
         (() => {
+          const ua = navigator.userAgent || '';
+          const isSafari = /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(ua);
+          if (isSafari) {
+            return;
+          }
+
           const host = window.frameElement;
           if (!host) return;
 

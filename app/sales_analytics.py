@@ -66,6 +66,10 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "revenue": (
         "выручка",
+        "всего",
+        "итого",
+        "общая сумма",
+        "сумма всего",
         "доход",
         "сумма продажи",
         "сумма продаж",
@@ -170,6 +174,15 @@ SUPPLIER_KEYWORD_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Rehau", ("rehau", "рехау")),
 )
 
+REVENUE_TOTAL_COLUMN_ALIASES: tuple[str, ...] = (
+    "всего",
+    "итого",
+    "общая сумма",
+    "сумма всего",
+    "total",
+    "grand total",
+)
+
 
 @dataclass
 class PreparedSalesData:
@@ -181,6 +194,23 @@ def normalize_column_name(name: str) -> str:
     normalized = re.sub(r"[_\-/]+", " ", str(name).strip().casefold())
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
+
+
+def find_total_revenue_column(columns: Iterable[object]) -> object | None:
+    preferred_aliases = {normalize_column_name(alias) for alias in REVENUE_TOTAL_COLUMN_ALIASES}
+
+    for column in columns:
+        if normalize_column_name(str(column)) in preferred_aliases:
+            return column
+
+    return None
+
+
+def prefer_total_revenue_column(frame: pd.DataFrame, mapping: dict[str, object | None]) -> None:
+    total_revenue_column = find_total_revenue_column(frame.columns)
+
+    if total_revenue_column is not None:
+        mapping["revenue"] = total_revenue_column
 
 
 def normalize_supplier_lookup_text(value: object) -> str:
@@ -232,10 +262,17 @@ def infer_supplier_from_text(
 
 
 def guess_column_mapping(columns: Iterable[str]) -> dict[str, str | None]:
+    columns = list(columns)
     normalized_columns = {column: normalize_column_name(column) for column in columns}
     guesses: dict[str, str | None] = {}
 
     for field, aliases in COLUMN_ALIASES.items():
+        if field == "revenue":
+            total_revenue_column = find_total_revenue_column(columns)
+            if isinstance(total_revenue_column, str):
+                guesses[field] = total_revenue_column
+                continue
+
         best_column: str | None = None
         best_score = -1
         normalized_aliases = [normalize_column_name(alias) for alias in aliases]
@@ -418,6 +455,7 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
     vat_index = _find_header_index(header_values, ("сумма ндс", "ндс"))
     sales_tax_index = _find_header_index(header_values, ("сумма нсп", "нсп"))
     total_index = _find_header_index(header_values, ("всего",))
+    sales_total_index = total_index if total_index is not None else revenue_index
 
     report_date = _extract_report_date_from_rows(rows[:header_row_number])
     if report_date is None:
@@ -472,7 +510,7 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
                 "Группа": group_name,
                 "Путь категории": category_path,
                 "Количество": quantity,
-                "Доход": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, revenue_index)),
+                "Доход": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, sales_total_index)),
                 "Себестоимость": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, cost_index)),
                 "Прибыль": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, margin_index))
                 if margin_index is not None
@@ -559,6 +597,7 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
     vat_index = _find_header_index(header_values, ("сумма ндс", "ндс"))
     sales_tax_index = _find_header_index(header_values, ("сумма нсп", "нсп"))
     total_index = _find_header_index(header_values, ("всего",))
+    sales_total_index = total_index if total_index is not None else revenue_index
 
     report_date = _extract_report_date_from_rows(rows[:header_row_number])
     if report_date is None:
@@ -612,7 +651,7 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
                 "Группа": group_name,
                 "Путь категории": category_path,
                 "Количество": quantity,
-                "Доход": _coerce_single_numeric(worksheet.cell(row=row_number, column=revenue_index + 1).value),
+                "Доход": _coerce_single_numeric(worksheet.cell(row=row_number, column=sales_total_index + 1).value),
                 "Себестоимость": _coerce_single_numeric(worksheet.cell(row=row_number, column=cost_index + 1).value),
                 "Прибыль": _coerce_single_numeric(worksheet.cell(row=row_number, column=margin_index + 1).value)
                 if margin_index is not None
@@ -761,6 +800,8 @@ def prepare_sales_data(
     for field, guessed_column in guessed_mapping.items():
         if not resolved_mapping.get(field) and guessed_column in frame.columns:
             resolved_mapping[field] = guessed_column
+
+    prefer_total_revenue_column(frame, resolved_mapping)
 
     if not resolved_mapping.get("date") or not resolved_mapping.get("product"):
         raise ValueError("Нужно указать хотя бы колонки с датой и названием товара.")
