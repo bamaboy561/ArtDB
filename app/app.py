@@ -2450,6 +2450,126 @@ def build_missing_supplier_assignment_candidates(data: pd.DataFrame) -> pd.DataF
     return summary[columns]
 
 
+def _first_non_empty_text(series: pd.Series) -> str:
+    for value in series:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _most_common_non_empty_text(series: pd.Series, default: str = "Не назначен") -> str:
+    values = series.fillna("").astype(str).str.strip()
+    values = values[values.ne("")]
+    if values.empty:
+        return default
+    return str(values.value_counts().index[0]).strip() or default
+
+
+def build_supplier_assignment_catalog(
+    data: pd.DataFrame,
+    supplier_product_assignments: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "assign",
+        "product_key",
+        "product",
+        "category",
+        "current_supplier",
+        "manual_supplier",
+        "new_supplier",
+        "revenue",
+        "quantity",
+        "line_count",
+        "assignment_status",
+    ]
+    if data.empty or "product" not in data.columns:
+        return pd.DataFrame(columns=columns)
+
+    working = data.copy()
+    if "product_key" not in working.columns:
+        working["product_key"] = working["product"].fillna("").astype(str).str.strip()
+    if "category" not in working.columns:
+        working["category"] = ""
+    if "supplier" not in working.columns:
+        working["supplier"] = "Не назначен"
+    if "revenue" not in working.columns:
+        working["revenue"] = 0.0
+    if "quantity" not in working.columns:
+        working["quantity"] = 0.0
+
+    working["product_key"] = working["product_key"].fillna("").astype(str).str.strip()
+    working = working[working["product_key"].ne("")]
+    if working.empty:
+        return pd.DataFrame(columns=columns)
+
+    summary = (
+        working.groupby("product_key", dropna=False)
+        .agg(
+            product=("product", _first_non_empty_text),
+            category=("category", _first_non_empty_text),
+            current_supplier=("supplier", _most_common_non_empty_text),
+            revenue=("revenue", "sum"),
+            quantity=("quantity", "sum"),
+            line_count=("product", "size"),
+        )
+        .reset_index()
+    )
+
+    summary["manual_supplier"] = ""
+    if (
+        supplier_product_assignments is not None
+        and not supplier_product_assignments.empty
+        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
+    ):
+        assignment_source = supplier_product_assignments.copy()
+        assignment_source["assignment_key"] = (
+            assignment_source["product_key"].fillna("").astype(str).str.strip().str.casefold()
+        )
+        assignment_source["supplier"] = assignment_source["supplier"].fillna("").astype(str).str.strip()
+        assignment_source = assignment_source[
+            assignment_source["assignment_key"].ne("") & assignment_source["supplier"].ne("")
+        ]
+        if not assignment_source.empty:
+            assignment_lookup = (
+                assignment_source.drop_duplicates("assignment_key", keep="last")
+                .set_index("assignment_key")["supplier"]
+                .to_dict()
+            )
+            summary["manual_supplier"] = (
+                summary["product_key"].fillna("").astype(str).str.strip().str.casefold().map(assignment_lookup)
+            ).fillna("")
+
+    current_supplier = summary["current_supplier"].fillna("").astype(str).str.strip()
+    manual_supplier = summary["manual_supplier"].fillna("").astype(str).str.strip()
+    missing_supplier = current_supplier.eq("") | current_supplier.str.casefold().eq("не назначен")
+    summary["assignment_status"] = "Есть поставщик"
+    summary.loc[missing_supplier, "assignment_status"] = "Без поставщика"
+    summary.loc[manual_supplier.ne(""), "assignment_status"] = "Назначен вручную"
+    summary["assign"] = False
+    summary["new_supplier"] = ""
+    summary = summary.sort_values(
+        by=["assignment_status", "revenue"],
+        ascending=[True, False],
+        key=lambda series: series.map({"Без поставщика": 0, "Есть поставщик": 1, "Назначен вручную": 2}).fillna(series)
+        if series.name == "assignment_status"
+        else series,
+    ).reset_index(drop=True)
+    return summary[columns]
+
+
+def build_supplier_name_options(*frames: pd.DataFrame) -> list[str]:
+    supplier_names: set[str] = set()
+    for frame in frames:
+        if frame is None or frame.empty or "supplier" not in frame.columns:
+            continue
+        for value in frame["supplier"].dropna().astype(str):
+            supplier = value.strip()
+            if supplier and supplier.casefold() != "не назначен":
+                supplier_names.add(supplier)
+    return sorted(supplier_names, key=str.casefold)
+
+
 def default_supplier_rules_frame() -> pd.DataFrame:
     rows = [
         {"supplier": supplier, "keyword": keyword}
@@ -7278,6 +7398,14 @@ if active_screen == "Поставщики":
     can_edit_suppliers = can_manage_procurement(current_user)
     missing_supplier_candidates = build_missing_supplier_assignment_candidates(data)
     default_rules = default_supplier_rules_frame()
+    supplier_assignment_catalog = build_supplier_assignment_catalog(data, supplier_product_assignments)
+    supplier_name_options = build_supplier_name_options(
+        data,
+        supplier_product_assignments,
+        supplier_keyword_rules,
+        default_rules,
+        procurement_items,
+    )
     active_custom_rule_count = len(active_supplier_keyword_rules) if not active_supplier_keyword_rules.empty else 0
     assignment_count = len(supplier_product_assignments) if not supplier_product_assignments.empty else 0
 
@@ -7373,8 +7501,222 @@ if active_screen == "Поставщики":
 
     with st.container(border=True):
         render_panel_header(
-            "Ручное назначение товаров",
-            "Для спорных позиций можно один раз закрепить поставщика вручную. Это назначение будет применяться ко всем старым и новым отчетам.",
+            "Справочник номенклатуры",
+            "Выберите товар из текущего среза и закрепите поставщика один раз. Это назначение будет применяться к старым и новым продажам.",
+        )
+
+        if supplier_assignment_catalog.empty:
+            st.info("Загрузите или выберите продажи, чтобы появился список номенклатуры для привязки поставщиков.")
+        else:
+            quick_col_product, quick_col_supplier, quick_col_action = st.columns([1.35, 0.85, 0.45], gap="medium")
+            product_label_lookup = {
+                row["product_key"]: (
+                    f"{row['product']} · сейчас: {row['current_supplier']} · выручка: {format_money(row['revenue'])}"
+                )
+                for row in supplier_assignment_catalog.to_dict(orient="records")
+            }
+            product_key_options = supplier_assignment_catalog["product_key"].astype(str).tolist()
+
+            with quick_col_product:
+                selected_supplier_product_key = st.selectbox(
+                    "Номенклатура",
+                    options=product_key_options,
+                    format_func=lambda key: product_label_lookup.get(key, key),
+                    key="supplier_quick_product_key",
+                    disabled=not can_edit_suppliers,
+                )
+
+            selected_supplier_product_row = supplier_assignment_catalog[
+                supplier_assignment_catalog["product_key"].astype(str).eq(str(selected_supplier_product_key))
+            ].iloc[0]
+
+            custom_supplier_option = "Ввести нового поставщика"
+            supplier_select_options = [custom_supplier_option, *supplier_name_options]
+            current_supplier_hint = str(
+                selected_supplier_product_row.get("manual_supplier")
+                or selected_supplier_product_row.get("current_supplier")
+                or ""
+            ).strip()
+            supplier_option_index = (
+                supplier_select_options.index(current_supplier_hint)
+                if current_supplier_hint in supplier_select_options
+                else 0
+            )
+
+            with quick_col_supplier:
+                selected_supplier_choice = st.selectbox(
+                    "Поставщик",
+                    options=supplier_select_options,
+                    index=supplier_option_index,
+                    key="supplier_quick_supplier_choice",
+                    disabled=not can_edit_suppliers,
+                )
+                if selected_supplier_choice == custom_supplier_option:
+                    quick_supplier_value = st.text_input(
+                        "Название поставщика",
+                        key="supplier_quick_supplier_text",
+                        placeholder="Например: Slotex",
+                        disabled=not can_edit_suppliers,
+                    ).strip()
+                else:
+                    quick_supplier_value = selected_supplier_choice.strip()
+
+            with quick_col_action:
+                st.write("")
+                st.write("")
+                if st.button(
+                    "Назначить",
+                    key="supplier_quick_assignment_save_button",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=not can_edit_suppliers,
+                ):
+                    if not quick_supplier_value:
+                        st.warning("Укажите поставщика перед сохранением.")
+                    else:
+                        assignment_row = pd.DataFrame(
+                            [
+                                {
+                                    "product_key": selected_supplier_product_row["product_key"],
+                                    "product": selected_supplier_product_row["product"],
+                                    "supplier": quick_supplier_value,
+                                }
+                            ]
+                        )
+                        saved_count = upsert_supplier_product_assignments(
+                            assignment_row,
+                            updated_by=current_user["username"],
+                        )
+                        st.cache_data.clear()
+                        audit_event(
+                            action="supplier.product_assignments_upsert",
+                            user_id=current_user["username"],
+                            details={
+                                "saved_count": int(saved_count),
+                                "source": "quick_product_assignment",
+                                "product_key": str(selected_supplier_product_row["product_key"]),
+                                "supplier": quick_supplier_value,
+                            },
+                        )
+                        st.session_state["supplier_flash_message"] = f"Поставщик назначен: {quick_supplier_value}."
+                        st.rerun()
+
+            with st.expander("Массовая разборка текущего среза", expanded=not missing_supplier_candidates.empty):
+                filter_col, search_col = st.columns([0.45, 1.0], gap="medium")
+                with filter_col:
+                    supplier_catalog_filter = st.selectbox(
+                        "Показать",
+                        [
+                            "Без поставщика",
+                            "Все товары",
+                            "С ручным назначением",
+                            "Без ручного назначения",
+                        ],
+                        key="supplier_catalog_status_filter",
+                    )
+                with search_col:
+                    supplier_catalog_search = st.text_input(
+                        "Поиск по товару, ключу или категории",
+                        key="supplier_catalog_search",
+                        placeholder="Например: кромка, Hettich, ЛДСП",
+                    ).strip()
+
+                supplier_catalog_view = supplier_assignment_catalog.copy()
+                if supplier_catalog_filter == "Без поставщика":
+                    supplier_catalog_view = supplier_catalog_view[
+                        supplier_catalog_view["assignment_status"].eq("Без поставщика")
+                    ]
+                elif supplier_catalog_filter == "С ручным назначением":
+                    supplier_catalog_view = supplier_catalog_view[
+                        supplier_catalog_view["manual_supplier"].fillna("").astype(str).str.strip().ne("")
+                    ]
+                elif supplier_catalog_filter == "Без ручного назначения":
+                    supplier_catalog_view = supplier_catalog_view[
+                        supplier_catalog_view["manual_supplier"].fillna("").astype(str).str.strip().eq("")
+                    ]
+
+                if supplier_catalog_search:
+                    search_text = supplier_catalog_search.casefold()
+                    search_source = (
+                        supplier_catalog_view[["product_key", "product", "category", "current_supplier", "manual_supplier"]]
+                        .fillna("")
+                        .astype(str)
+                        .agg(" ".join, axis=1)
+                        .str.casefold()
+                    )
+                    supplier_catalog_view = supplier_catalog_view[search_source.str.contains(search_text, na=False)]
+
+                visible_supplier_catalog = supplier_catalog_view.head(300).copy()
+                st.caption(
+                    f"Показано {format_number(float(len(visible_supplier_catalog)))} из "
+                    f"{format_number(float(len(supplier_catalog_view)))} позиций. "
+                    "Отметьте строки и впишите нового поставщика."
+                )
+                if len(supplier_catalog_view) > len(visible_supplier_catalog):
+                    st.info("Список ограничен первыми 300 позициями. Используйте поиск, чтобы сузить выборку.")
+
+                edited_supplier_catalog = st.data_editor(
+                    visible_supplier_catalog,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(560, max(260, 92 + len(visible_supplier_catalog) * 34)),
+                    disabled=[
+                        column
+                        for column in visible_supplier_catalog.columns
+                        if column not in {"assign", "new_supplier"}
+                    ]
+                    if can_edit_suppliers
+                    else list(visible_supplier_catalog.columns),
+                    key="supplier_catalog_assignment_editor",
+                    column_config={
+                        "assign": st.column_config.CheckboxColumn("Назначить", default=False, width="small"),
+                        "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
+                        "product": st.column_config.TextColumn("Товар", width="large"),
+                        "category": st.column_config.TextColumn("Категория", width="medium"),
+                        "current_supplier": st.column_config.TextColumn("Поставщик сейчас", width="medium"),
+                        "manual_supplier": st.column_config.TextColumn("Ручное назначение", width="medium"),
+                        "new_supplier": st.column_config.TextColumn("Новый поставщик", width="medium"),
+                        "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
+                        "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
+                        "line_count": st.column_config.NumberColumn("Строк", format="%d"),
+                        "assignment_status": st.column_config.TextColumn("Статус", width="medium"),
+                    },
+                )
+
+                if can_edit_suppliers and st.button(
+                    "Сохранить отмеченные назначения",
+                    key="supplier_catalog_assignment_save_button",
+                    use_container_width=True,
+                    type="primary",
+                ):
+                    selected_assignment_rows = edited_supplier_catalog[
+                        edited_supplier_catalog["assign"].fillna(False).astype(bool)
+                        & edited_supplier_catalog["new_supplier"].fillna("").astype(str).str.strip().ne("")
+                    ].copy()
+                    if selected_assignment_rows.empty:
+                        st.warning("Отметьте строки и заполните колонку `Новый поставщик`.")
+                    else:
+                        selected_assignment_rows["supplier"] = (
+                            selected_assignment_rows["new_supplier"].fillna("").astype(str).str.strip()
+                        )
+                        assignment_rows = selected_assignment_rows[["product_key", "product", "supplier"]]
+                        saved_count = upsert_supplier_product_assignments(
+                            assignment_rows,
+                            updated_by=current_user["username"],
+                        )
+                        st.cache_data.clear()
+                        audit_event(
+                            action="supplier.product_assignments_upsert",
+                            user_id=current_user["username"],
+                            details={"saved_count": int(saved_count), "source": "supplier_catalog_bulk_assignment"},
+                        )
+                        st.session_state["supplier_flash_message"] = f"Массовые назначения сохранены: {saved_count}."
+                        st.rerun()
+
+    with st.container(border=True):
+        render_panel_header(
+            "Неразобранные позиции",
+            "Товары, где поставщик пока не найден автоматически. Можно заполнить поставщика прямо в таблице.",
         )
 
         if missing_supplier_candidates.empty:
