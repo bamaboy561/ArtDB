@@ -7655,50 +7655,86 @@ if active_screen == "Поставщики":
                 if len(supplier_catalog_view) > len(visible_supplier_catalog):
                     st.info("Список ограничен первыми 300 позициями. Используйте поиск, чтобы сузить выборку.")
 
-                edited_supplier_catalog = st.data_editor(
-                    visible_supplier_catalog,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(560, max(260, 92 + len(visible_supplier_catalog) * 34)),
-                    disabled=[
-                        column
-                        for column in visible_supplier_catalog.columns
-                        if column not in {"assign", "new_supplier"}
-                    ]
-                    if can_edit_suppliers
-                    else list(visible_supplier_catalog.columns),
-                    key="supplier_catalog_assignment_editor",
-                    column_config={
-                        "assign": st.column_config.CheckboxColumn("Назначить", default=False, width="small"),
-                        "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
-                        "product": st.column_config.TextColumn("Товар", width="large"),
-                        "category": st.column_config.TextColumn("Категория", width="medium"),
-                        "current_supplier": st.column_config.TextColumn("Поставщик сейчас", width="medium"),
-                        "manual_supplier": st.column_config.TextColumn("Ручное назначение", width="medium"),
-                        "new_supplier": st.column_config.TextColumn("Новый поставщик", width="medium"),
-                        "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
-                        "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
-                        "line_count": st.column_config.NumberColumn("Строк", format="%d"),
-                        "assignment_status": st.column_config.TextColumn("Статус", width="medium"),
-                    },
+                assign_all_visible = st.checkbox(
+                    "Отметить все показанные строки",
+                    key="supplier_catalog_assign_all_visible",
+                    disabled=not can_edit_suppliers or visible_supplier_catalog.empty,
                 )
+                visible_supplier_catalog["assign"] = bool(assign_all_visible)
+                supplier_catalog_editor_source = visible_supplier_catalog.drop(columns=["new_supplier"], errors="ignore")
 
-                if can_edit_suppliers and st.button(
-                    "Сохранить отмеченные назначения",
-                    key="supplier_catalog_assignment_save_button",
-                    use_container_width=True,
-                    type="primary",
-                ):
+                with st.form("supplier_catalog_assignment_form", clear_on_submit=False):
+                    supplier_form_col, helper_form_col = st.columns([0.55, 1.0], gap="medium")
+                    with supplier_form_col:
+                        bulk_supplier_options = [*supplier_name_options, custom_supplier_option]
+                        default_bulk_supplier_index = 0 if supplier_name_options else len(bulk_supplier_options) - 1
+                        bulk_supplier_choice = st.selectbox(
+                            "Поставщик для отмеченных строк",
+                            options=bulk_supplier_options,
+                            index=default_bulk_supplier_index,
+                            key="supplier_catalog_bulk_supplier_choice",
+                            disabled=not can_edit_suppliers,
+                        )
+                        bulk_supplier_text = st.text_input(
+                            "Новый поставщик",
+                            key="supplier_catalog_bulk_supplier_text",
+                            placeholder="Заполните, если поставщика нет в списке",
+                            disabled=not can_edit_suppliers,
+                        ).strip()
+                    with helper_form_col:
+                        st.caption(
+                            "Галочки внутри этой формы не запускают пересчёт страницы. "
+                            "Отметьте товары, выберите поставщика и нажмите кнопку сохранения."
+                        )
+
+                    edited_supplier_catalog = st.data_editor(
+                        supplier_catalog_editor_source,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(560, max(260, 92 + len(supplier_catalog_editor_source) * 34)),
+                        disabled=[
+                            column
+                            for column in supplier_catalog_editor_source.columns
+                            if column != "assign"
+                        ]
+                        if can_edit_suppliers
+                        else list(supplier_catalog_editor_source.columns),
+                        key="supplier_catalog_assignment_editor",
+                        column_config={
+                            "assign": st.column_config.CheckboxColumn("Назначить", default=False, width="small"),
+                            "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
+                            "product": st.column_config.TextColumn("Товар", width="large"),
+                            "category": st.column_config.TextColumn("Категория", width="medium"),
+                            "current_supplier": st.column_config.TextColumn("Поставщик сейчас", width="medium"),
+                            "manual_supplier": st.column_config.TextColumn("Ручное назначение", width="medium"),
+                            "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
+                            "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
+                            "line_count": st.column_config.NumberColumn("Строк", format="%d"),
+                            "assignment_status": st.column_config.TextColumn("Статус", width="medium"),
+                        },
+                    )
+
+                    submitted_supplier_catalog = st.form_submit_button(
+                        "Назначить поставщика отмеченным строкам",
+                        use_container_width=True,
+                        type="primary",
+                        disabled=not can_edit_suppliers,
+                    )
+
+                if submitted_supplier_catalog:
+                    selected_supplier_value = (
+                        bulk_supplier_text
+                        or ("" if bulk_supplier_choice == custom_supplier_option else str(bulk_supplier_choice).strip())
+                    )
                     selected_assignment_rows = edited_supplier_catalog[
                         edited_supplier_catalog["assign"].fillna(False).astype(bool)
-                        & edited_supplier_catalog["new_supplier"].fillna("").astype(str).str.strip().ne("")
                     ].copy()
                     if selected_assignment_rows.empty:
-                        st.warning("Отметьте строки и заполните колонку `Новый поставщик`.")
+                        st.warning("Отметьте хотя бы одну строку перед сохранением.")
+                    elif not selected_supplier_value:
+                        st.warning("Выберите поставщика или впишите нового.")
                     else:
-                        selected_assignment_rows["supplier"] = (
-                            selected_assignment_rows["new_supplier"].fillna("").astype(str).str.strip()
-                        )
+                        selected_assignment_rows["supplier"] = selected_supplier_value
                         assignment_rows = selected_assignment_rows[["product_key", "product", "supplier"]]
                         saved_count = upsert_supplier_product_assignments(
                             assignment_rows,
@@ -7710,7 +7746,9 @@ if active_screen == "Поставщики":
                             user_id=current_user["username"],
                             details={"saved_count": int(saved_count), "source": "supplier_catalog_bulk_assignment"},
                         )
-                        st.session_state["supplier_flash_message"] = f"Массовые назначения сохранены: {saved_count}."
+                        st.session_state["supplier_flash_message"] = (
+                            f"Поставщик {selected_supplier_value} назначен позициям: {saved_count}."
+                        )
                         st.rerun()
 
     with st.container(border=True):
@@ -7723,29 +7761,32 @@ if active_screen == "Поставщики":
             st.success("В текущем срезе нет товаров без поставщика. Если сменить период или салон, здесь появятся только новые неразобранные позиции.")
         else:
             st.caption("Заполните поставщика в нужных строках. Лучше начинать сверху: таблица отсортирована по выручке.")
-            edited_missing_suppliers = st.data_editor(
-                missing_supplier_candidates,
-                use_container_width=True,
-                hide_index=True,
-                height=min(520, max(260, 96 + len(missing_supplier_candidates) * 34)),
-                disabled=["product_key", "product", "category", "revenue", "quantity", "line_count"] if can_edit_suppliers else list(missing_supplier_candidates.columns),
-                key="supplier_missing_assignment_editor",
-                column_config={
-                    "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
-                    "product": st.column_config.TextColumn("Товар", width="large"),
-                    "category": st.column_config.TextColumn("Категория", width="medium"),
-                    "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
-                    "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
-                    "line_count": st.column_config.NumberColumn("Строк", format="%d"),
-                    "supplier": st.column_config.TextColumn("Поставщик"),
-                },
-            )
-            if can_edit_suppliers and st.button(
-                "Сохранить ручные назначения",
-                key="supplier_missing_assignment_save_button",
-                use_container_width=True,
-                type="primary",
-            ):
+            with st.form("supplier_missing_assignment_form", clear_on_submit=False):
+                edited_missing_suppliers = st.data_editor(
+                    missing_supplier_candidates,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(520, max(260, 96 + len(missing_supplier_candidates) * 34)),
+                    disabled=["product_key", "product", "category", "revenue", "quantity", "line_count"] if can_edit_suppliers else list(missing_supplier_candidates.columns),
+                    key="supplier_missing_assignment_editor",
+                    column_config={
+                        "product_key": st.column_config.TextColumn("Ключ товара", width="medium"),
+                        "product": st.column_config.TextColumn("Товар", width="large"),
+                        "category": st.column_config.TextColumn("Категория", width="medium"),
+                        "revenue": st.column_config.NumberColumn("Выручка", format="%.2f"),
+                        "quantity": st.column_config.NumberColumn("Количество", format="%.2f"),
+                        "line_count": st.column_config.NumberColumn("Строк", format="%d"),
+                        "supplier": st.column_config.TextColumn("Поставщик"),
+                    },
+                )
+                submitted_missing_suppliers = st.form_submit_button(
+                    "Сохранить ручные назначения",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=not can_edit_suppliers,
+                )
+
+            if submitted_missing_suppliers:
                 assignment_rows = edited_missing_suppliers[
                     edited_missing_suppliers["supplier"].fillna("").astype(str).str.strip().ne("")
                 ][["product_key", "product", "supplier"]]
