@@ -277,3 +277,40 @@ def upsert_supplier_product_assignments(frame: pd.DataFrame, *, updated_by: str)
     merged_records = sorted(existing.values(), key=lambda item: (item["supplier"].casefold(), item["product"].casefold()))
     _write_json_records(SUPPLIER_PRODUCT_ASSIGNMENTS_PATH, merged_records)
     return len(records)
+
+
+def delete_supplier_product_assignments(product_keys: list[str]) -> int:
+    ensure_supplier_rules_store()
+    normalized_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for product_key in product_keys:
+        cleaned_key = str(product_key).strip()
+        casefold_key = cleaned_key.casefold()
+        if cleaned_key and casefold_key not in seen_keys:
+            normalized_keys.append(cleaned_key)
+            seen_keys.add(casefold_key)
+
+    if not normalized_keys:
+        return 0
+
+    if database_enabled():
+        deleted_count = 0
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                for product_key in normalized_keys:
+                    cursor.execute(
+                        "DELETE FROM supplier_product_assignments WHERE LOWER(product_key) = LOWER(%s)",
+                        (product_key,),
+                    )
+                    deleted_count += int(cursor.rowcount or 0)
+        return deleted_count
+
+    deleted_keys = {product_key.casefold() for product_key in normalized_keys}
+    existing_records = load_supplier_product_assignments().to_dict(orient="records")
+    remaining_records = [
+        record
+        for record in existing_records
+        if str(record.get("product_key", "")).strip().casefold() not in deleted_keys
+    ]
+    _write_json_records(SUPPLIER_PRODUCT_ASSIGNMENTS_PATH, remaining_records)
+    return len(existing_records) - len(remaining_records)

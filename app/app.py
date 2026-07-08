@@ -96,6 +96,7 @@ from salon_data_store import (
 from supplier_rules_store import (
     KEYWORD_RULE_COLUMNS,
     PRODUCT_ASSIGNMENT_COLUMNS,
+    delete_supplier_product_assignments,
     load_supplier_keyword_rules,
     load_supplier_product_assignments,
     replace_supplier_keyword_rules,
@@ -7802,6 +7803,176 @@ if active_screen == "Поставщики":
                 )
                 st.session_state["supplier_flash_message"] = f"Ручные назначения сохранены: {saved_count}."
                 st.rerun()
+
+    with st.container(border=True):
+        render_panel_header(
+            "Исправить назначение поставщика",
+            "Если товар закрепили не за тем поставщиком, найдите его здесь и выберите правильного. "
+            "Изменение перезапишет только ручную привязку этой номенклатуры.",
+        )
+
+        assignment_fix_source = supplier_product_assignments.copy()
+        if assignment_fix_source.empty:
+            st.info("Пока нет ручных назначений. Ошибочные привязки появятся здесь после первого сохранения поставщика.")
+        else:
+            assignment_fix_columns = ["product_key", "product", "supplier", "updated_by", "updated_at"]
+            for column in assignment_fix_columns:
+                if column not in assignment_fix_source.columns:
+                    assignment_fix_source[column] = ""
+
+            assignment_fix_search = st.text_input(
+                "Поиск по номенклатуре или поставщику",
+                key="supplier_assignment_fix_search",
+                placeholder="Например: кромка, Slotex, Hettich",
+            ).strip()
+
+            assignment_fix_view = assignment_fix_source[assignment_fix_columns].copy()
+            if assignment_fix_search:
+                assignment_fix_query = assignment_fix_search.casefold()
+                assignment_fix_mask = (
+                    assignment_fix_view[["product_key", "product", "supplier"]]
+                    .fillna("")
+                    .astype(str)
+                    .agg(" ".join, axis=1)
+                    .str.casefold()
+                    .str.contains(assignment_fix_query, na=False)
+                )
+                assignment_fix_view = assignment_fix_view[assignment_fix_mask]
+
+            if assignment_fix_view.empty:
+                st.warning("По этому поиску ручных назначений не найдено.")
+            else:
+                assignment_fix_view = assignment_fix_view.sort_values(
+                    by=["supplier", "product"],
+                    key=lambda series: series.fillna("").astype(str).str.casefold(),
+                )
+                assignment_fix_labels = {
+                    str(row["product_key"]): (
+                        f"{row['product'] or row['product_key']} · сейчас: {row['supplier']}"
+                    )
+                    for row in assignment_fix_view.to_dict(orient="records")
+                }
+                assignment_fix_options = assignment_fix_view["product_key"].astype(str).tolist()
+                selected_assignment_fix_key = st.selectbox(
+                    "Номенклатура с ручным назначением",
+                    options=assignment_fix_options,
+                    format_func=lambda key: assignment_fix_labels.get(key, key),
+                    key="supplier_assignment_fix_product_key",
+                    disabled=not can_edit_suppliers,
+                )
+                selected_assignment_fix_row = assignment_fix_view[
+                    assignment_fix_view["product_key"].astype(str).eq(str(selected_assignment_fix_key))
+                ].iloc[0]
+
+                fix_info_col, fix_supplier_col = st.columns([1.05, 0.95], gap="medium")
+                current_assignment_supplier = str(selected_assignment_fix_row.get("supplier", "")).strip()
+                current_assignment_product = str(
+                    selected_assignment_fix_row.get("product", "") or selected_assignment_fix_key
+                ).strip()
+
+                with fix_info_col:
+                    st.caption("Текущее ручное назначение")
+                    st.markdown(f"**{current_assignment_product}**")
+                    st.write(f"Поставщик сейчас: **{current_assignment_supplier or 'Не указан'}**")
+                    st.caption(
+                        "Если нажать «Снять ручное назначение», товар снова будет определяться "
+                        "по авто-правилам и данным из файла."
+                    )
+
+                with fix_supplier_col:
+                    fix_custom_supplier_option = "Ввести нового поставщика"
+                    known_fix_suppliers = [
+                        str(supplier).strip()
+                        for supplier in supplier_name_options
+                        if str(supplier).strip()
+                    ]
+                    if current_assignment_supplier:
+                        known_fix_suppliers = [current_assignment_supplier, *known_fix_suppliers]
+                    known_fix_suppliers = list(dict.fromkeys(known_fix_suppliers))
+                    fix_supplier_options = [*known_fix_suppliers, fix_custom_supplier_option]
+                    fix_supplier_index = (
+                        fix_supplier_options.index(current_assignment_supplier)
+                        if current_assignment_supplier in fix_supplier_options
+                        else len(fix_supplier_options) - 1
+                    )
+                    selected_fix_supplier_choice = st.selectbox(
+                        "Новый поставщик",
+                        options=fix_supplier_options,
+                        index=fix_supplier_index,
+                        key="supplier_assignment_fix_supplier_choice",
+                        disabled=not can_edit_suppliers,
+                    )
+                    if selected_fix_supplier_choice == fix_custom_supplier_option:
+                        fix_supplier_value = st.text_input(
+                            "Название нового поставщика",
+                            key="supplier_assignment_fix_supplier_text",
+                            placeholder="Например: Slotex",
+                            disabled=not can_edit_suppliers,
+                        ).strip()
+                    else:
+                        fix_supplier_value = selected_fix_supplier_choice.strip()
+
+                    save_fix_col, remove_fix_col = st.columns(2, gap="small")
+                    with save_fix_col:
+                        if st.button(
+                            "Изменить поставщика",
+                            key="supplier_assignment_fix_save_button",
+                            use_container_width=True,
+                            type="primary",
+                            disabled=not can_edit_suppliers,
+                        ):
+                            if not fix_supplier_value:
+                                st.warning("Выберите поставщика или впишите нового.")
+                            else:
+                                saved_count = upsert_supplier_product_assignments(
+                                    pd.DataFrame(
+                                        [
+                                            {
+                                                "product_key": selected_assignment_fix_key,
+                                                "product": current_assignment_product,
+                                                "supplier": fix_supplier_value,
+                                            }
+                                        ]
+                                    ),
+                                    updated_by=current_user["username"],
+                                )
+                                st.cache_data.clear()
+                                audit_event(
+                                    action="supplier.product_assignment_update",
+                                    user_id=current_user["username"],
+                                    details={
+                                        "saved_count": int(saved_count),
+                                        "product_key": str(selected_assignment_fix_key),
+                                        "old_supplier": current_assignment_supplier,
+                                        "new_supplier": fix_supplier_value,
+                                    },
+                                )
+                                st.session_state["supplier_flash_message"] = (
+                                    f"Поставщик изменен: {current_assignment_supplier or 'Не указан'} -> {fix_supplier_value}."
+                                )
+                                st.rerun()
+                    with remove_fix_col:
+                        if st.button(
+                            "Снять ручное назначение",
+                            key="supplier_assignment_fix_remove_button",
+                            use_container_width=True,
+                            disabled=not can_edit_suppliers,
+                        ):
+                            deleted_count = delete_supplier_product_assignments([str(selected_assignment_fix_key)])
+                            st.cache_data.clear()
+                            audit_event(
+                                action="supplier.product_assignment_delete",
+                                user_id=current_user["username"],
+                                details={
+                                    "deleted_count": int(deleted_count),
+                                    "product_key": str(selected_assignment_fix_key),
+                                    "old_supplier": current_assignment_supplier,
+                                },
+                            )
+                            st.session_state["supplier_flash_message"] = (
+                                "Ручное назначение снято. Теперь поставщик будет определяться автоматически."
+                            )
+                            st.rerun()
 
     with st.expander("Существующие ручные назначения", expanded=False):
         existing_assignments = supplier_product_assignments.copy()
