@@ -191,6 +191,27 @@ def build_procurement_forecast(
             [["product", "category"]]
         )
 
+    supplier_summary = pd.DataFrame(columns=["product", "sales_supplier"])
+    if "supplier" in history.columns:
+        supplier_history = history.assign(
+            sales_supplier=history["supplier"].fillna("").astype(str).str.strip()
+        )
+        supplier_history = supplier_history[
+            supplier_history["sales_supplier"].ne("")
+            & supplier_history["sales_supplier"].str.casefold().ne("не назначен")
+        ]
+        if not supplier_history.empty:
+            supplier_summary = (
+                supplier_history.groupby(["product", "sales_supplier"], as_index=False)
+                .agg(supplier_quantity=("quantity", "sum"), supplier_revenue=("revenue", "sum"))
+                .sort_values(
+                    ["product", "supplier_quantity", "supplier_revenue", "sales_supplier"],
+                    ascending=[True, False, False, True],
+                )
+                .drop_duplicates("product")
+                [["product", "sales_supplier"]]
+            )
+
     base_summary = (
         history.groupby("product", as_index=False)
         .agg(
@@ -263,6 +284,11 @@ def build_procurement_forecast(
     else:
         procurement["category"] = "Без категории"
     procurement["category"] = procurement["category"].fillna("").astype(str).str.strip().replace("", "Без категории")
+    if not supplier_summary.empty:
+        procurement = procurement.merge(supplier_summary, on="product", how="left")
+    else:
+        procurement["sales_supplier"] = ""
+    procurement["sales_supplier"] = procurement["sales_supplier"].fillna("").astype(str).str.strip()
 
     procurement = procurement.merge(abc_quantity, on="product", how="left")
     procurement["abc_class"] = procurement["abc_class"].fillna("C")
@@ -332,6 +358,11 @@ def build_procurement_forecast(
         how="left",
     )
     procurement["supplier"] = procurement["supplier"].fillna("").astype(str).str.strip()
+    missing_procurement_supplier = procurement["supplier"].eq("") | procurement["supplier"].str.casefold().eq("не назначен")
+    sales_supplier = procurement["sales_supplier"].fillna("").astype(str).str.strip()
+    procurement.loc[missing_procurement_supplier & sales_supplier.ne(""), "supplier"] = (
+        sales_supplier.loc[missing_procurement_supplier & sales_supplier.ne("")]
+    )
     procurement["notes"] = procurement["notes"].fillna("").astype(str).str.strip()
     for numeric_column in ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple"):
         procurement[numeric_column] = procurement[numeric_column].map(_safe_non_negative_number)
