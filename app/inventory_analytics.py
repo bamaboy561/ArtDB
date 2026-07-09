@@ -94,13 +94,46 @@ def _normalize_header_row(row: list[object]) -> list[str]:
     headers: list[str] = []
     used_headers: dict[str, int] = {}
     for index, value in enumerate(row):
-        base = str(value).strip() if value is not None else ""
+        base = _header_cell_text(value)
         if not base:
             base = f"column_{index + 1}"
         counter = used_headers.get(base, 0)
         used_headers[base] = counter + 1
         headers.append(base if counter == 0 else f"{base}_{counter + 1}")
     return headers
+
+
+def _header_cell_text(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _looks_like_inventory_header(row: list[object]) -> bool:
+    normalized_values = [normalize_column_name(value) if value is not None else "" for value in row]
+    has_product = any(value in {"номенклатура", "товар", "наименование"} for value in normalized_values)
+    has_quantity = any(
+        "колич" in value
+        or value
+        in {
+            "остаток",
+            "остаток на складе",
+            "остаток конечный",
+            "остаток текущий",
+            "stock",
+            "stock on hand",
+            "quantity",
+            "qty",
+        }
+        for value in normalized_values
+        if value
+    )
+    return has_product and has_quantity
 
 
 def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
@@ -112,21 +145,32 @@ def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None =
     if preview.empty:
         return None
 
-    header_index: int | None = None
+    headers: list[str] | None = None
+    data_start_index: int | None = None
     for row_index, row in preview.head(40).iterrows():
-        normalized_values = [normalize_column_name(value) if value is not None else "" for value in row.tolist()]
-        has_product = any(value == "номенклатура" for value in normalized_values)
-        has_quantity = any("колич" in value for value in normalized_values if value)
-        if has_product and has_quantity:
-            header_index = int(row_index)
+        if _looks_like_inventory_header(row.tolist()):
+            headers = _normalize_header_row(row.tolist())
+            data_start_index = int(row_index) + 1
             break
 
-    if header_index is None:
+    if headers is None:
+        preview_rows = min(len(preview), 40)
+        for row_index in range(max(0, preview_rows - 1)):
+            upper_row = preview.iloc[row_index].tolist()
+            lower_row = preview.iloc[row_index + 1].tolist()
+            combined_row = [
+                _header_cell_text(lower_row[column_index]) or _header_cell_text(upper_row[column_index])
+                for column_index in range(len(preview.columns))
+            ]
+            if _looks_like_inventory_header(combined_row):
+                headers = _normalize_header_row(combined_row)
+                data_start_index = row_index + 2
+                break
+
+    if headers is None or data_start_index is None:
         return None
 
-    header_row = preview.iloc[header_index].tolist()
-    headers = _normalize_header_row(header_row)
-    data = preview.iloc[header_index + 1 :].copy()
+    data = preview.iloc[data_start_index:].copy()
     data.columns = headers
     data = data.dropna(how="all").reset_index(drop=True)
     if data.empty:
