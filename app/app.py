@@ -113,6 +113,18 @@ SURFACE_COLOR = "#FFFFFF"
 TEXT_PRIMARY = "#0f172a"
 TEXT_SECONDARY = "#475569"
 TEXT_MUTED = "#64748b"
+CHART_GRID_COLOR = "#EAF0F4"
+CHART_ZERO_COLOR = "#CBD5E1"
+CHART_COLORS = [
+    PRIMARY_COLOR,
+    SECONDARY_COLOR,
+    "#2563EB",
+    "#D97706",
+    "#0F766E",
+    "#E11D48",
+    "#0891B2",
+    "#64748B",
+]
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 APP_DIR = Path(__file__).resolve().parent
 APP_FAVICON_PATH = APP_DIR / "assets" / "favicon.svg"
@@ -933,6 +945,48 @@ REFERENCE_THEME_CSS = f"""
         border-right: 1px solid {BORDER_COLOR};
     }}
 
+    /* Premium chart surface */
+    [data-testid="stPlotlyChart"] {{
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 252, 0.9));
+        border: 1px solid rgba(203, 213, 225, 0.78);
+        border-radius: 18px;
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.85) inset,
+            0 14px 34px rgba(15, 23, 42, 0.06);
+        padding: 0.45rem 0.35rem 0.15rem;
+        overflow: hidden;
+    }}
+
+    [data-testid="stPlotlyChart"] .js-plotly-plot,
+    [data-testid="stPlotlyChart"] .plot-container,
+    [data-testid="stPlotlyChart"] .svg-container {{
+        border-radius: 14px;
+    }}
+
+    [data-testid="stPlotlyChart"] .modebar {{
+        background: rgba(255, 255, 255, 0.82) !important;
+        border: 1px solid rgba(203, 213, 225, 0.72);
+        border-radius: 999px;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+        padding: 0.12rem 0.35rem;
+        right: 0.65rem !important;
+        top: 0.45rem !important;
+        opacity: 0;
+        transform: translateY(-4px);
+        transition: opacity 180ms ease, transform 180ms ease;
+    }}
+
+    [data-testid="stPlotlyChart"]:hover .modebar,
+    [data-testid="stPlotlyChart"]:focus-within .modebar {{
+        opacity: 1;
+        transform: translateY(0);
+    }}
+
+    [data-testid="stPlotlyChart"] .modebar-btn path {{
+        fill: {TEXT_MUTED} !important;
+    }}
+
     /* Input focus */
     div[data-baseweb="input"] > div:focus-within {{
         border-color: {PRIMARY_COLOR} !important;
@@ -1333,28 +1387,93 @@ def margin_safe_mapping(selected_mapping: dict[str, str | None], current_user: d
     }
 
 
+def style_chart_traces(figure: go.Figure) -> None:
+    figure.update_traces(
+        selector=dict(type="bar"),
+        opacity=0.94,
+        marker_line_width=0.6,
+        marker_line_color="rgba(255,255,255,0.55)",
+        hoverlabel=dict(bordercolor="rgba(15,23,42,0.14)"),
+    )
+    figure.update_traces(
+        selector=dict(type="scatter"),
+        line=dict(width=3),
+        marker=dict(line=dict(width=1.4, color=SURFACE_COLOR)),
+        hoverlabel=dict(bordercolor="rgba(15,23,42,0.14)"),
+    )
+    figure.update_traces(
+        selector=dict(type="waterfall"),
+        opacity=0.94,
+        connector=dict(line=dict(color=CHART_ZERO_COLOR, width=1)),
+    )
+    figure.update_traces(
+        selector=dict(type="pie"),
+        textfont=dict(size=12, color=TEXT_PRIMARY),
+        marker=dict(line=dict(color=SURFACE_COLOR, width=2)),
+        pull=0.015,
+    )
+    figure.update_traces(
+        selector=dict(type="treemap"),
+        marker=dict(line=dict(color=SURFACE_COLOR, width=2)),
+        textfont=dict(size=12),
+    )
+
+
 def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
+    trace_types = {getattr(trace, "type", "") for trace in figure.data}
+    use_unified_hover = bool(trace_types & {"bar", "scatter", "waterfall"}) and not bool(
+        trace_types & {"pie", "treemap", "heatmap"}
+    )
+    style_chart_traces(figure)
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(248,250,252,0.55)",
         font=dict(family="Inter", color=TEXT_PRIMARY, size=12),
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=22, r=18, t=48, b=26),
         legend_title_text="",
         transition=dict(duration=520, easing="cubic-in-out"),
-        colorway=[PRIMARY_COLOR, SECONDARY_COLOR, "#64748b", "#94a3b8", "#cbd5e1"],
-        hoverlabel=dict(bgcolor=SURFACE_COLOR, font_size=13, font_family="Inter"),
+        colorway=CHART_COLORS,
+        hovermode="x unified" if use_unified_hover else None,
+        hoverlabel=dict(
+            bgcolor="#0F172A",
+            bordercolor="#0F172A",
+            font_color="#FFFFFF",
+            font_size=13,
+            font_family="Inter",
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(255,255,255,0)",
+            font=dict(size=12, color=TEXT_SECONDARY),
+            itemclick="toggleothers",
+            itemdoubleclick="toggle",
+        ),
+        uniformtext=dict(minsize=10, mode="hide"),
+        bargap=0.34,
     )
     figure.update_xaxes(
-        gridcolor=BORDER_COLOR,
-        zerolinecolor=BORDER_COLOR,
+        gridcolor=CHART_GRID_COLOR,
+        zerolinecolor=CHART_ZERO_COLOR,
+        linecolor=CHART_ZERO_COLOR,
+        showline=True,
         tickfont=dict(color=TEXT_MUTED),
-        title_font=dict(color=TEXT_SECONDARY)
+        title_font=dict(color=TEXT_SECONDARY),
+        ticks="",
+        automargin=True,
     )
     figure.update_yaxes(
-        gridcolor=BORDER_COLOR,
-        zerolinecolor=BORDER_COLOR,
+        gridcolor=CHART_GRID_COLOR,
+        zerolinecolor=CHART_ZERO_COLOR,
+        linecolor=CHART_ZERO_COLOR,
+        showline=True,
         tickfont=dict(color=TEXT_MUTED),
-        title_font=dict(color=TEXT_SECONDARY)
+        title_font=dict(color=TEXT_SECONDARY),
+        ticks="",
+        automargin=True,
     )
     if height is not None:
         figure.update_layout(height=height)
