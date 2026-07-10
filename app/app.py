@@ -1291,6 +1291,8 @@ MARGIN_HIDDEN_COLUMNS = {
     "margin_gap",
     "margin_execution_pct",
     "unit_cost",
+    "avg_margin_per_unit",
+    "moving_avg_margin_3m",
 }
 MARGIN_HIDDEN_MAPPING_FIELDS = {"cost", "margin", "unit_cost"}
 
@@ -2569,6 +2571,214 @@ def build_supplier_name_options(*frames: pd.DataFrame) -> list[str]:
             if supplier and supplier.casefold() != "не назначен":
                 supplier_names.add(supplier)
     return sorted(supplier_names, key=str.casefold)
+
+
+def _catalog_text(value: object) -> str:
+    if is_missing(value):
+        return ""
+    return str(value).strip()
+
+
+def _first_catalog_text(series: pd.Series) -> str:
+    for value in series:
+        text = _catalog_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _most_common_catalog_text(series: pd.Series, default: str = "") -> str:
+    values = series.fillna("").astype(str).str.strip()
+    values = values[values.ne("")]
+    if values.empty:
+        return default
+    return str(values.value_counts().index[0]).strip() or default
+
+
+def _catalog_missing_text(value: object, *, empty_labels: set[str] | None = None) -> bool:
+    text = _catalog_text(value)
+    if not text:
+        return True
+    normalized = text.casefold()
+    labels = empty_labels or set()
+    return normalized in {label.casefold() for label in labels}
+
+
+def build_sku_cleanup_queue(
+    data: pd.DataFrame,
+    procurement_items: pd.DataFrame,
+    supplier_product_assignments: pd.DataFrame,
+    *,
+    require_item_code: bool = False,
+) -> pd.DataFrame:
+    columns = [
+        "issue_count",
+        "issues",
+        "suggested_action",
+        "product_key",
+        "product",
+        "item_code",
+        "category",
+        "effective_supplier",
+        "sales_supplier",
+        "manual_supplier",
+        "stock_supplier",
+        "revenue",
+        "quantity",
+        "line_count",
+        "stock_on_hand",
+        "stock_in_transit",
+    ]
+    if data.empty or "product" not in data.columns:
+        return pd.DataFrame(columns=columns)
+
+    working = data.copy()
+    if "product_key" not in working.columns:
+        working["product_key"] = working["product"].fillna("").astype(str).str.strip()
+    for column in ("item_code", "category", "supplier"):
+        if column not in working.columns:
+            working[column] = ""
+    for column in ("revenue", "quantity"):
+        if column not in working.columns:
+            working[column] = 0.0
+        working[column] = pd.to_numeric(working[column], errors="coerce").fillna(0.0)
+
+    working["product_key"] = working["product_key"].fillna("").astype(str).str.strip()
+    working = working[working["product_key"].ne("")]
+    if working.empty:
+        return pd.DataFrame(columns=columns)
+
+    summary = (
+        working.groupby("product_key", dropna=False)
+        .agg(
+            product=("product", _first_catalog_text),
+            item_code=("item_code", _first_catalog_text),
+            category=("category", _most_common_catalog_text),
+            sales_supplier=("supplier", _most_common_catalog_text),
+            revenue=("revenue", "sum"),
+            quantity=("quantity", "sum"),
+            line_count=("product", "size"),
+        )
+        .reset_index()
+    )
+
+    summary["manual_supplier"] = ""
+    if (
+        supplier_product_assignments is not None
+        and not supplier_product_assignments.empty
+        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
+    ):
+        assignment_source = supplier_product_assignments.copy()
+        assignment_source["supplier"] = assignment_source["supplier"].fillna("").astype(str).str.strip()
+        assignment_lookup: dict[str, str] = {}
+        for row in assignment_source.to_dict(orient="records"):
+            supplier = _catalog_text(row.get("supplier"))
+            if not supplier:
+                continue
+            for key_field in ("product_key", "product"):
+                key = _catalog_text(row.get(key_field)).casefold()
+                if key:
+                    assignment_lookup[key] = supplier
+        summary["manual_supplier"] = (
+            summary["product_key"].fillna("").astype(str).str.strip().str.casefold().map(assignment_lookup)
+        ).fillna("")
+        product_assignment_supplier = (
+            summary["product"].fillna("").astype(str).str.strip().str.casefold().map(assignment_lookup)
+        ).fillna("")
+        summary["manual_supplier"] = summary["manual_supplier"].where(
+            summary["manual_supplier"].ne(""),
+            product_assignment_supplier,
+        )
+
+    stock_columns = ["stock_supplier", "stock_on_hand", "stock_in_transit", "has_stock_record"]
+    for column in stock_columns:
+        summary[column] = "" if column == "stock_supplier" else 0.0
+
+    if procurement_items is not None and not procurement_items.empty and "product" in procurement_items.columns:
+        stock_source = procurement_items.copy()
+        stock_source["stock_product_key"] = stock_source["product"].fillna("").astype(str).str.strip().str.casefold()
+        stock_source = stock_source[stock_source["stock_product_key"].ne("")]
+        if not stock_source.empty:
+            if "supplier" not in stock_source.columns:
+                stock_source["supplier"] = ""
+            for column in ("stock_on_hand", "stock_in_transit"):
+                if column not in stock_source.columns:
+                    stock_source[column] = 0.0
+                stock_source[column] = pd.to_numeric(stock_source[column], errors="coerce").fillna(0.0)
+            stock_source["supplier"] = stock_source["supplier"].fillna("").astype(str).str.strip()
+            stock_lookup = (
+                stock_source.drop_duplicates("stock_product_key", keep="last")
+                .set_index("stock_product_key")[["supplier", "stock_on_hand", "stock_in_transit"]]
+                .rename(columns={"supplier": "stock_supplier"})
+            )
+            summary["stock_lookup_key"] = summary["product"].fillna("").astype(str).str.strip().str.casefold()
+            summary = summary.merge(
+                stock_lookup,
+                left_on="stock_lookup_key",
+                right_index=True,
+                how="left",
+                suffixes=("", "_stock"),
+            )
+            summary["has_stock_record"] = summary["stock_supplier_stock"].notna() if "stock_supplier_stock" in summary.columns else summary["stock_supplier"].notna()
+            for column in ("stock_supplier", "stock_on_hand", "stock_in_transit"):
+                stock_column = f"{column}_stock"
+                if stock_column in summary.columns:
+                    summary[column] = summary[stock_column]
+                    summary = summary.drop(columns=[stock_column])
+            summary = summary.drop(columns=["stock_lookup_key"], errors="ignore")
+
+    for column in ("sales_supplier", "manual_supplier", "stock_supplier", "category", "item_code", "product"):
+        summary[column] = summary[column].fillna("").astype(str).str.strip()
+    for column in ("stock_on_hand", "stock_in_transit"):
+        summary[column] = pd.to_numeric(summary[column], errors="coerce").fillna(0.0)
+    summary["has_stock_record"] = summary["has_stock_record"].fillna(False).astype(bool)
+
+    sales_supplier = summary["sales_supplier"].where(
+        ~summary["sales_supplier"].str.casefold().eq("не назначен"),
+        "",
+    )
+    summary["effective_supplier"] = sales_supplier
+    summary["effective_supplier"] = summary["effective_supplier"].where(
+        summary["effective_supplier"].ne(""),
+        summary["manual_supplier"],
+    )
+    summary["effective_supplier"] = summary["effective_supplier"].where(
+        summary["effective_supplier"].ne(""),
+        summary["stock_supplier"],
+    )
+
+    def _row_issues(row: pd.Series) -> tuple[str, str, int]:
+        issues: list[str] = []
+        actions: list[str] = []
+        if _catalog_missing_text(row.get("effective_supplier"), empty_labels={"Не назначен"}):
+            issues.append("Без поставщика")
+            actions.append("Назначить поставщика")
+        if _catalog_missing_text(row.get("category"), empty_labels={"Без категории", "Не указана"}):
+            issues.append("Без категории")
+            actions.append("Уточнить категорию")
+        if require_item_code and _catalog_missing_text(row.get("item_code")):
+            issues.append("Без кода товара")
+            actions.append("Добавить артикул/код")
+        if not bool(row.get("has_stock_record", False)):
+            issues.append("Нет в остатках")
+            actions.append("Загрузить или сверить остатки")
+        if float(row.get("stock_on_hand", 0.0) or 0.0) <= 0 and bool(row.get("has_stock_record", False)):
+            issues.append("Нулевой остаток")
+            actions.append("Проверить потребность закупки")
+
+        unique_actions = list(dict.fromkeys(actions))
+        return " · ".join(issues), "; ".join(unique_actions), len(issues)
+
+    issue_payload = summary.apply(_row_issues, axis=1)
+    summary["issues"] = issue_payload.map(lambda payload: payload[0])
+    summary["suggested_action"] = issue_payload.map(lambda payload: payload[1])
+    summary["issue_count"] = issue_payload.map(lambda payload: payload[2])
+    summary = summary[summary["issue_count"] > 0].copy()
+    if summary.empty:
+        return pd.DataFrame(columns=columns)
+
+    summary = summary.sort_values(["issue_count", "revenue"], ascending=[False, False]).reset_index(drop=True)
+    return summary[columns]
 
 
 def default_supplier_rules_frame() -> pd.DataFrame:
@@ -4612,6 +4822,73 @@ def most_common_text(frame: pd.DataFrame, column: str, fallback: str = "Не у�
     return safe_display_text(series.value_counts().idxmax(), fallback)
 
 
+def build_sku_monthly_detail(product_monthly: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "month",
+        "month_label",
+        "revenue",
+        "cost",
+        "margin",
+        "quantity",
+        "avg_price",
+        "avg_margin_per_unit",
+        "revenue_change_pct",
+        "quantity_change_pct",
+        "avg_price_change_pct",
+        "margin_change_pct",
+        "moving_avg_revenue_3m",
+        "moving_avg_quantity_3m",
+        "moving_avg_price_3m",
+        "moving_avg_margin_3m",
+    ]
+    if product_monthly.empty:
+        return pd.DataFrame(columns=columns)
+
+    detail = product_monthly.copy()
+    for metric_column in ("revenue", "cost", "margin", "quantity"):
+        if metric_column not in detail.columns:
+            detail[metric_column] = 0.0
+        detail[metric_column] = pd.to_numeric(detail[metric_column], errors="coerce").fillna(0.0)
+
+    quantity_non_zero = detail["quantity"].where(detail["quantity"].abs() > 1e-9)
+    detail["avg_price"] = detail["revenue"].divide(quantity_non_zero)
+    detail["avg_margin_per_unit"] = detail["margin"].divide(quantity_non_zero)
+
+    if "month" in detail.columns:
+        detail["month"] = pd.to_datetime(detail["month"], errors="coerce")
+        detail = detail.sort_values("month").reset_index(drop=True)
+    if "month_label" not in detail.columns:
+        detail["month_label"] = detail["month"].dt.strftime("%Y-%m") if "month" in detail.columns else ""
+
+    detail["revenue_change_pct"] = detail["revenue"].pct_change() * 100
+    detail["quantity_change_pct"] = detail["quantity"].pct_change() * 100
+    detail["avg_price_change_pct"] = detail["avg_price"].pct_change() * 100
+    detail["margin_change_pct"] = detail["margin"].pct_change() * 100
+
+    detail["moving_avg_revenue_3m"] = detail["revenue"].rolling(3, min_periods=1).mean()
+    detail["moving_avg_quantity_3m"] = detail["quantity"].rolling(3, min_periods=1).mean()
+    detail["moving_avg_price_3m"] = detail["avg_price"].rolling(3, min_periods=1).mean()
+    detail["moving_avg_margin_3m"] = detail["margin"].rolling(3, min_periods=1).mean()
+
+    return detail.reindex(columns=columns)
+
+
+def format_sku_trend_value(metric: str, value: float) -> str:
+    if metric in {"revenue", "margin", "avg_price"}:
+        return format_money(value)
+    return format_number(value)
+
+
+def sku_trend_tone(change_pct: float) -> str:
+    if is_missing(change_pct):
+        return "info"
+    if change_pct >= 10:
+        return "success"
+    if change_pct <= -10:
+        return "warning"
+    return "info"
+
+
 def build_product_detail_options(product_summary: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "option_id",
@@ -5641,6 +5918,7 @@ if active_screen == "Карточка SKU":
             product_frame = filter_product_detail_frame(data, selected_product, product_analysis_column)
             product_returns = extract_return_rows(product_frame)
             product_monthly = build_monthly_summary(product_frame)
+            product_monthly_detail = build_sku_monthly_detail(product_monthly)
             product_abc_row = find_product_abc_row(build_abc_analysis(product_summary, "revenue"), selected_product)
             procurement_row = find_procurement_row_for_product(
                 procurement_forecast,
@@ -5788,33 +6066,149 @@ if active_screen == "Карточка SKU":
                 with st.container(border=True):
                     render_panel_header(
                         "Динамика SKU",
-                        "Месячная выручка по выбранному товару. Для руководителя дополнительно показывается маржа.",
+                        "Помесячная динамика выбранной номенклатуры: количество, выручка, средняя цена и маржа для руководителей.",
                     )
-                    if product_monthly.empty or product_monthly["revenue"].abs().sum() == 0:
+                    if product_monthly_detail.empty or product_monthly_detail[["revenue", "quantity"]].abs().sum().sum() == 0:
                         st.info("По этому SKU недостаточно месячной динамики для графика.")
                     else:
+                        trend_metric_options = {
+                            "quantity": "Количество",
+                            "revenue": "Выручка",
+                            "avg_price": "Средняя цена",
+                        }
+                        if margin_visible:
+                            trend_metric_options["margin"] = "Маржа"
+                        selected_trend_metric = st.radio(
+                            "Что показать на графике",
+                            options=list(trend_metric_options.keys()),
+                            format_func=trend_metric_options.get,
+                            horizontal=True,
+                            key=f"sku_trend_metric_{selected_product_id}",
+                        )
+                        trend_series = pd.to_numeric(
+                            product_monthly_detail[selected_trend_metric],
+                            errors="coerce",
+                        ).fillna(0.0)
+                        trend_rolling_column = {
+                            "quantity": "moving_avg_quantity_3m",
+                            "revenue": "moving_avg_revenue_3m",
+                            "avg_price": "moving_avg_price_3m",
+                            "margin": "moving_avg_margin_3m",
+                        }.get(selected_trend_metric, "moving_avg_quantity_3m")
+                        trend_rolling = pd.to_numeric(
+                            product_monthly_detail[trend_rolling_column],
+                            errors="coerce",
+                        )
+                        latest_trend_value = float(trend_series.iloc[-1]) if len(trend_series) else float("nan")
+                        previous_trend_value = float(trend_series.iloc[-2]) if len(trend_series) >= 2 else float("nan")
+                        trend_change_pct = calculate_change_pct(latest_trend_value, previous_trend_value)
+                        recent_avg_value = float(trend_series.tail(3).mean()) if len(trend_series) else float("nan")
+                        active_month_count = int((pd.to_numeric(product_monthly_detail["quantity"], errors="coerce").fillna(0.0).abs() > 0).sum())
+
+                        render_snapshot_strip(
+                            [
+                                {
+                                    "label": f"Последний месяц: {trend_metric_options[selected_trend_metric]}",
+                                    "value": format_sku_trend_value(selected_trend_metric, latest_trend_value),
+                                    "hint": safe_display_text(product_monthly_detail["month_label"].iloc[-1], "период н/д"),
+                                    "tone": "info",
+                                },
+                                {
+                                    "label": "Изменение к прошлому месяцу",
+                                    "value": format_change_percent(trend_change_pct),
+                                    "hint": "если прошлый месяц есть в данных",
+                                    "tone": sku_trend_tone(trend_change_pct),
+                                },
+                                {
+                                    "label": "Среднее за 3 месяца",
+                                    "value": format_sku_trend_value(selected_trend_metric, recent_avg_value),
+                                    "hint": f"активных месяцев: {format_number(active_month_count)}",
+                                    "tone": "info",
+                                },
+                            ]
+                        )
                         sku_trend_chart = go.Figure()
                         sku_trend_chart.add_trace(
                             go.Bar(
-                                x=product_monthly["month_label"],
-                                y=product_monthly["revenue"],
-                                name="Выручка",
+                                x=product_monthly_detail["month_label"],
+                                y=trend_series,
+                                name=trend_metric_options[selected_trend_metric],
                                 marker_color=PRIMARY_COLOR,
                             )
                         )
-                        if margin_visible:
+                        sku_trend_chart.add_trace(
+                            go.Scatter(
+                                x=product_monthly_detail["month_label"],
+                                y=trend_rolling,
+                                name="Среднее 3 мес.",
+                                mode="lines+markers",
+                                line=dict(color=SECONDARY_COLOR, width=3),
+                            )
+                        )
+                        forecast_metric_value = float("nan")
+                        if selected_trend_metric == "quantity":
+                            forecast_metric_value = safe_row_float(procurement_row, "forecast_qty")
+                        elif selected_trend_metric == "revenue":
+                            forecast_metric_value = safe_row_float(procurement_row, "forecast_revenue")
+                        elif selected_trend_metric == "margin" and margin_visible:
+                            forecast_metric_value = safe_row_float(procurement_row, "forecast_margin")
+                        if not is_missing(forecast_metric_value):
                             sku_trend_chart.add_trace(
                                 go.Scatter(
-                                    x=product_monthly["month_label"],
-                                    y=product_monthly["margin"],
-                                    name="Маржа",
-                                    mode="lines+markers",
-                                    line=dict(color=SECONDARY_COLOR, width=3),
+                                    x=["Прогноз"],
+                                    y=[forecast_metric_value],
+                                    name="Прогноз",
+                                    mode="markers+text",
+                                    text=["прогноз"],
+                                    textposition="top center",
+                                    marker=dict(color="#D97706", size=12, symbol="diamond"),
                                 )
                             )
-                        sku_trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
-                        polish_figure(sku_trend_chart, height=330)
+                        sku_trend_chart.update_layout(
+                            legend_title="",
+                            xaxis_title="",
+                            yaxis_title=trend_metric_options[selected_trend_metric],
+                        )
+                        polish_figure(sku_trend_chart, height=360)
                         st.plotly_chart(sku_trend_chart, use_container_width=True)
+
+                        monthly_detail_columns = [
+                            "month_label",
+                            "quantity",
+                            "revenue",
+                            "avg_price",
+                            "quantity_change_pct",
+                            "revenue_change_pct",
+                            "moving_avg_quantity_3m",
+                        ]
+                        monthly_detail_rename = {
+                            "month_label": "Месяц",
+                            "quantity": "Количество",
+                            "revenue": "Выручка",
+                            "avg_price": "Средняя цена",
+                            "margin": "Маржа",
+                            "avg_margin_per_unit": "Маржа на ед.",
+                            "quantity_change_pct": "Изм. количества, %",
+                            "revenue_change_pct": "Изм. выручки, %",
+                            "margin_change_pct": "Изм. маржи, %",
+                            "moving_avg_quantity_3m": "Среднее кол-во 3 мес.",
+                            "moving_avg_revenue_3m": "Средняя выручка 3 мес.",
+                        }
+                        if margin_visible:
+                            monthly_detail_columns.insert(3, "margin")
+                            monthly_detail_columns.insert(5, "avg_margin_per_unit")
+                            monthly_detail_columns.append("margin_change_pct")
+                        st.dataframe(
+                            format_display_frame_for_role(
+                                product_monthly_detail.tail(12),
+                                current_user,
+                                rename_map=monthly_detail_rename,
+                                columns=monthly_detail_columns,
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=260,
+                        )
 
             with procurement_col:
                 with st.container(border=True):
@@ -5971,7 +6365,7 @@ if active_screen == "Карточка SKU":
             sku_export_sheets = {
                 "Паспорт SKU": prepare_excel_report_frame(passport_export, current_user),
                 "Месячная динамика": prepare_excel_report_frame(
-                    product_monthly,
+                    product_monthly_detail,
                     current_user,
                     {
                         "month_label": "Месяц",
@@ -5979,9 +6373,16 @@ if active_screen == "Карточка SKU":
                         "cost": "Себестоимость",
                         "margin": "Маржа",
                         "quantity": "Количество",
-                        "product_count": "SKU",
+                        "avg_price": "Средняя цена",
+                        "avg_margin_per_unit": "Маржа на ед.",
                         "revenue_change_pct": "Изм. выручки, %",
+                        "quantity_change_pct": "Изм. количества, %",
+                        "avg_price_change_pct": "Изм. средней цены, %",
                         "margin_change_pct": "Изм. маржи, %",
+                        "moving_avg_revenue_3m": "Средняя выручка 3 мес.",
+                        "moving_avg_quantity_3m": "Среднее количество 3 мес.",
+                        "moving_avg_price_3m": "Средняя цена 3 мес.",
+                        "moving_avg_margin_3m": "Средняя маржа 3 мес.",
                     },
                     columns=[
                         "month_label",
@@ -5989,9 +6390,16 @@ if active_screen == "Карточка SKU":
                         "cost",
                         "margin",
                         "quantity",
-                        "product_count",
+                        "avg_price",
+                        "avg_margin_per_unit",
                         "revenue_change_pct",
+                        "quantity_change_pct",
+                        "avg_price_change_pct",
                         "margin_change_pct",
+                        "moving_avg_revenue_3m",
+                        "moving_avg_quantity_3m",
+                        "moving_avg_price_3m",
+                        "moving_avg_margin_3m",
                     ],
                 ),
                 "Продажи": prepare_excel_report_frame(
@@ -10276,6 +10684,153 @@ if active_screen == "Данные":
                 },
             ]
         )
+
+        sku_cleanup_queue = build_sku_cleanup_queue(
+            data,
+            procurement_items,
+            supplier_product_assignments,
+            require_item_code=has_item_codes,
+        )
+        cleanup_issue_types = [
+            "Без поставщика",
+            "Без категории",
+            "Без кода товара",
+            "Нет в остатках",
+            "Нулевой остаток",
+        ]
+        cleanup_counts = {
+            issue: int(sku_cleanup_queue["issues"].fillna("").astype(str).str.contains(issue, regex=False).sum())
+            if not sku_cleanup_queue.empty
+            else 0
+            for issue in cleanup_issue_types
+        }
+
+        with st.container(border=True):
+            render_panel_header(
+                "Очередь очистки SKU",
+                "Автоматически собирает номенклатуру, где не хватает поставщика, категории, кода товара или связки с остатками. "
+                "Это первый шаг к единому справочнику номенклатуры без ручного поиска проблем.",
+            )
+            render_snapshot_strip(
+                [
+                    {
+                        "label": "SKU к разбору",
+                        "value": format_number(len(sku_cleanup_queue)),
+                        "hint": "позиции с хотя бы одной проблемой",
+                        "tone": "warning" if not sku_cleanup_queue.empty else "success",
+                    },
+                    {
+                        "label": "Без поставщика",
+                        "value": format_number(cleanup_counts["Без поставщика"]),
+                        "hint": "мешает заказам поставщикам",
+                        "tone": "warning" if cleanup_counts["Без поставщика"] else "success",
+                    },
+                    {
+                        "label": "Нет в остатках",
+                        "value": format_number(cleanup_counts["Нет в остатках"]),
+                        "hint": "не участвует в точном прогнозе закупки",
+                        "tone": "warning" if cleanup_counts["Нет в остатках"] else "success",
+                    },
+                ]
+            )
+            if sku_cleanup_queue.empty:
+                st.success("В текущем срезе не найдено проблемных SKU. Справочник выглядит аккуратно.")
+            else:
+                cleanup_filter = st.multiselect(
+                    "Какие проблемы показать",
+                    cleanup_issue_types,
+                    default=[issue for issue in cleanup_issue_types if cleanup_counts[issue] > 0],
+                    key="sku_cleanup_issue_filter",
+                )
+                cleanup_view = sku_cleanup_queue.copy()
+                if cleanup_filter:
+                    issue_mask = pd.Series(False, index=cleanup_view.index)
+                    issue_text = cleanup_view["issues"].fillna("").astype(str)
+                    for issue in cleanup_filter:
+                        issue_mask = issue_mask | issue_text.str.contains(issue, regex=False)
+                    cleanup_view = cleanup_view[issue_mask].copy()
+
+                cleanup_rename_map = {
+                    "issue_count": "Проблем",
+                    "issues": "Что исправить",
+                    "suggested_action": "Рекомендованное действие",
+                    "product_key": "Ключ SKU",
+                    "product": "Номенклатура",
+                    "item_code": "Код товара",
+                    "category": "Категория",
+                    "effective_supplier": "Поставщик",
+                    "sales_supplier": "Поставщик из продаж",
+                    "manual_supplier": "Ручной поставщик",
+                    "stock_supplier": "Поставщик из остатков",
+                    "revenue": "Выручка",
+                    "quantity": "Количество",
+                    "line_count": "Строк продаж",
+                    "stock_on_hand": "Остаток",
+                    "stock_in_transit": "В пути",
+                }
+                cleanup_display_columns = [
+                    "issue_count",
+                    "issues",
+                    "suggested_action",
+                    "product",
+                    "item_code",
+                    "category",
+                    "effective_supplier",
+                    "revenue",
+                    "quantity",
+                    "line_count",
+                    "stock_on_hand",
+                    "stock_in_transit",
+                ]
+                st.caption(
+                    f"Показано {format_number(len(cleanup_view.head(300)))} из "
+                    f"{format_number(len(cleanup_view))} SKU. Полный список можно скачать в Excel."
+                )
+                st.dataframe(
+                    format_display_frame_for_role(
+                        cleanup_view.head(300),
+                        current_user,
+                        rename_map=cleanup_rename_map,
+                        columns=cleanup_display_columns,
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                )
+                st.download_button(
+                    "Скачать очередь очистки SKU",
+                    data=to_excel_report_bytes(
+                        {
+                            "Очередь SKU": prepare_excel_report_frame(
+                                cleanup_view,
+                                current_user,
+                                cleanup_rename_map,
+                                columns=[
+                                    "issue_count",
+                                    "issues",
+                                    "suggested_action",
+                                    "product_key",
+                                    "product",
+                                    "item_code",
+                                    "category",
+                                    "effective_supplier",
+                                    "sales_supplier",
+                                    "manual_supplier",
+                                    "stock_supplier",
+                                    "revenue",
+                                    "quantity",
+                                    "line_count",
+                                    "stock_on_hand",
+                                    "stock_in_transit",
+                                ],
+                            )
+                        },
+                        report_title="Очередь очистки SKU",
+                    ),
+                    file_name="sku_cleanup_queue.xlsx",
+                    mime=EXCEL_MIME,
+                    use_container_width=True,
+                )
 
         with st.container(border=True):
             render_panel_header(
