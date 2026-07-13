@@ -1779,7 +1779,24 @@ def render_screen_switcher(title: str, options: list[str], *, key: str, descript
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {".csv", ".xls", ".xlsx"}
-MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_UPLOAD_SIZE_MB = 200
+
+
+def get_max_upload_size_mb() -> int:
+    raw_value = os.getenv("APP_MAX_UPLOAD_SIZE_MB") or os.getenv("STREAMLIT_SERVER_MAX_UPLOAD_SIZE")
+    if not raw_value:
+        return DEFAULT_MAX_UPLOAD_SIZE_MB
+
+    try:
+        parsed_value = int(float(raw_value))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_UPLOAD_SIZE_MB
+
+    return max(1, parsed_value)
+
+
+MAX_UPLOAD_SIZE_MB = get_max_upload_size_mb()
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
 def validate_uploaded_file(file_bytes: bytes, filename: str) -> str:
@@ -1794,7 +1811,7 @@ def validate_uploaded_file(file_bytes: bytes, filename: str) -> str:
     if not file_bytes:
         raise ValueError("Файл пустой. Загрузите выгрузку с данными.")
     if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
-        raise ValueError("Файл слишком большой. Максимальный размер загрузки: 50 МБ.")
+        raise ValueError(f"Файл слишком большой. Максимальный размер загрузки: {MAX_UPLOAD_SIZE_MB} МБ.")
 
     header = file_bytes[:8]
     if extension == ".xlsx" and not header.startswith(b"PK"):
