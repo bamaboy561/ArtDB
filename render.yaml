@@ -6,7 +6,7 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/init_db.py
-    startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false
+    startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false --server.enableXsrfProtection=false --server.maxUploadSize=200
     healthCheckPath: /_stcore/health
     domains:
       - artisandb.shop.kg
@@ -27,6 +27,12 @@ services:
           property: connectionString
       - key: STREAMLIT_SERVER_COOKIE_SECRET
         generateValue: true
+      - key: STREAMLIT_SERVER_ENABLE_CORS
+        value: "false"
+      - key: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
+        value: "false"
+      - key: STREAMLIT_SERVER_MAX_UPLOAD_SIZE
+        value: "200"
       - key: APP_PGCRYPTO_KEY
         generateValue: true
       - key: INITIAL_ADMIN_USERNAME

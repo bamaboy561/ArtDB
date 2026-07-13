@@ -8,6 +8,9 @@ font = "sans serif"
 
 [server]
 headless = true
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 200
 
 [client]
 toolbarMode = "viewer"
