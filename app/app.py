@@ -136,7 +136,7 @@ APP_DIR = Path(__file__).resolve().parent
 APP_FAVICON_PATH = APP_DIR / "assets" / "favicon.svg"
 
 st.set_page_config(
-    page_title="Аналитика продаж 1С",
+    page_title="ArtDB — аналитика продаж",
     page_icon=APP_FAVICON_PATH if APP_FAVICON_PATH.exists() else "📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1029,7 +1029,383 @@ REFERENCE_THEME_CSS = f"""
 """
 
 
-st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS, unsafe_allow_html=True)
+WORKSPACE_UI_CSS = f"""
+<style>
+    :root {{
+        --artdb-navy: {PRIMARY_COLOR};
+        --artdb-green: {SECONDARY_COLOR};
+        --artdb-bg: {BG_COLOR};
+        --artdb-surface: {SURFACE_COLOR};
+        --artdb-border: {BORDER_COLOR};
+        --artdb-muted: {TEXT_MUTED};
+    }}
+
+    .block-container {{
+        max-width: 1680px;
+        padding-top: 0.65rem;
+        padding-bottom: 2rem;
+    }}
+
+    [data-testid="stVerticalBlockBorderWrapper"] {{
+        border-radius: 8px !important;
+        padding: 0.88rem !important;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
+    }}
+
+    .app-shell-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.72rem 0 0.82rem;
+        border-bottom: 1px solid {BORDER_COLOR};
+        margin-bottom: 0.72rem;
+    }}
+
+    .app-shell-brand {{
+        display: flex;
+        align-items: baseline;
+        gap: 0.7rem;
+        min-width: 0;
+    }}
+
+    .app-shell-name {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.34rem;
+        font-weight: 800;
+        line-height: 1;
+    }}
+
+    .app-shell-copy {{
+        color: {TEXT_MUTED};
+        font-size: 0.82rem;
+        line-height: 1.3;
+    }}
+
+    .app-shell-user {{
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.65rem;
+        text-align: right;
+    }}
+
+    .app-shell-user-name {{
+        color: {TEXT_PRIMARY};
+        font-size: 0.8rem;
+        font-weight: 800;
+        line-height: 1.2;
+    }}
+
+    .app-shell-user-meta {{
+        color: {TEXT_MUTED};
+        font-size: 0.7rem;
+        line-height: 1.25;
+        margin-top: 0.12rem;
+    }}
+
+    .app-shell-role {{
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0.24rem 0.52rem;
+        border-radius: 999px;
+        background: #EEF6F2;
+        color: {SECONDARY_COLOR};
+        font-size: 0.7rem;
+        font-weight: 800;
+        white-space: nowrap;
+    }}
+
+    .workspace-header {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+        margin: 0.15rem 0 0.68rem;
+        padding: 0.35rem 0 0.55rem;
+    }}
+
+    .workspace-header-title {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.55rem;
+        font-weight: 800;
+        line-height: 1.15;
+    }}
+
+    .workspace-header-meta {{
+        color: {TEXT_SECONDARY};
+        font-size: 0.82rem;
+        line-height: 1.4;
+        margin-top: 0.28rem;
+    }}
+
+    .workspace-context {{
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.38rem;
+        flex-wrap: wrap;
+    }}
+
+    .workspace-chip {{
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0.25rem 0.55rem;
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 999px;
+        background: {SURFACE_COLOR};
+        color: {TEXT_SECONDARY};
+        font-size: 0.74rem;
+        font-weight: 650;
+        line-height: 1.2;
+    }}
+
+    .filter-toolbar-heading {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding-bottom: 0.45rem;
+    }}
+
+    .filter-toolbar-title {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 0.95rem;
+        font-weight: 800;
+    }}
+
+    .filter-toolbar-meta {{
+        color: {TEXT_MUTED};
+        font-size: 0.74rem;
+    }}
+
+    .filter-summary {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-top: 0.55rem;
+    }}
+
+    .filter-summary span {{
+        padding: 0.22rem 0.48rem;
+        border-radius: 999px;
+        background: #EEF6F2;
+        color: {SECONDARY_COLOR};
+        font-size: 0.72rem;
+        font-weight: 700;
+    }}
+
+    .metric-grid {{
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 0.55rem;
+        margin: 0.55rem 0 0.75rem;
+    }}
+
+    .metric-card,
+    .snapshot-card,
+    .insight-compact-item,
+    .overview-focus-card,
+    .spotlight-card {{
+        border-radius: 8px;
+        background: {SURFACE_COLOR};
+        box-shadow: none;
+    }}
+
+    .metric-card {{
+        padding: 0.74rem 0.8rem;
+        min-height: 92px;
+    }}
+
+    .metric-card.warning,
+    .metric-card.danger,
+    .snapshot-card.warning,
+    .snapshot-card.danger,
+    .insight-compact-item.warning,
+    .insight-compact-item.danger,
+    .overview-focus-card.warning,
+    .overview-focus-card.danger {{
+        background: {SURFACE_COLOR};
+    }}
+
+    .metric-label {{
+        letter-spacing: 0;
+        text-transform: none;
+        font-size: 0.73rem;
+    }}
+
+    .metric-value {{
+        font-size: 1.3rem;
+    }}
+
+    .overview-action-center {{
+        height: 100%;
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 8px;
+        background: {SURFACE_COLOR};
+        overflow: hidden;
+    }}
+
+    .overview-action-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.7rem;
+        padding: 0.78rem 0.85rem;
+        border-bottom: 1px solid {BORDER_COLOR};
+        background: #F8FAFC;
+    }}
+
+    .overview-action-title {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1rem;
+        font-weight: 800;
+    }}
+
+    .overview-action-count {{
+        color: {TEXT_MUTED};
+        font-size: 0.72rem;
+        font-weight: 700;
+    }}
+
+    .overview-action-list {{
+        display: grid;
+    }}
+
+    .overview-action-item {{
+        display: grid;
+        grid-template-columns: 8px minmax(0, 1fr);
+        gap: 0.65rem;
+        padding: 0.68rem 0.82rem;
+        border-bottom: 1px solid #EEF2F6;
+    }}
+
+    .overview-action-item:last-child {{
+        border-bottom: 0;
+    }}
+
+    .overview-action-indicator {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-top: 0.25rem;
+        background: {PRIMARY_COLOR};
+    }}
+
+    .overview-action-item.success .overview-action-indicator {{ background: {SECONDARY_COLOR}; }}
+    .overview-action-item.warning .overview-action-indicator {{ background: {CHART_ACCENT_COLOR}; }}
+    .overview-action-item.danger .overview-action-indicator {{ background: {CHART_DANGER_COLOR}; }}
+
+    .overview-action-item-title {{
+        color: {TEXT_PRIMARY};
+        font-size: 0.8rem;
+        font-weight: 800;
+        line-height: 1.28;
+    }}
+
+    .overview-action-item-body {{
+        color: {TEXT_SECONDARY};
+        font-size: 0.73rem;
+        line-height: 1.35;
+        margin-top: 0.18rem;
+    }}
+
+    [data-testid="stPlotlyChart"] {{
+        background: {SURFACE_COLOR};
+        border-radius: 8px;
+        box-shadow: none;
+        padding: 0.2rem;
+    }}
+
+    [data-testid="stPlotlyChart"]::before {{
+        display: none;
+    }}
+
+    [data-testid="stPlotlyChart"]:hover {{
+        transform: none;
+        box-shadow: none;
+        border-color: rgba(0, 52, 97, 0.24);
+    }}
+
+    [data-testid="stDataFrame"],
+    [data-testid="stDataEditor"] {{
+        border-radius: 8px;
+    }}
+
+    section[data-testid="stSidebar"] [role="radiogroup"] {{
+        gap: 0.18rem;
+    }}
+
+    .sidebar-section-label {{
+        color: {TEXT_MUTED};
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        margin: 0.75rem 0 0.32rem;
+        text-transform: uppercase;
+    }}
+
+    section[data-testid="stSidebar"] [role="radiogroup"] label {{
+        min-height: 38px;
+        padding: 0.38rem 0.48rem;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        transition: background-color 120ms ease, border-color 120ms ease;
+    }}
+
+    section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {{
+        background: #EEF6F2;
+        border-color: rgba(0, 108, 73, 0.18);
+    }}
+
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {{
+        border-radius: 8px;
+        background: {SURFACE_COLOR};
+    }}
+
+    @media (max-width: 900px) {{
+        .app-shell-header,
+        .workspace-header {{
+            align-items: flex-start;
+            flex-direction: column;
+        }}
+
+        .app-shell-user {{
+            justify-content: flex-start;
+            text-align: left;
+        }}
+
+        .workspace-context {{
+            justify-content: flex-start;
+        }}
+    }}
+
+    @media (max-width: 680px) {{
+        .block-container {{
+            padding-left: 0.8rem;
+            padding-right: 0.8rem;
+        }}
+
+        .app-shell-brand {{
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 0.25rem;
+        }}
+
+        .workspace-header-title {{
+            font-size: 1.3rem;
+        }}
+    }}
+</style>
+"""
+
+
+st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS + WORKSPACE_UI_CSS, unsafe_allow_html=True)
 
 
 def inject_chart_motion() -> None:
@@ -1499,11 +1875,13 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
     use_unified_hover = bool(trace_types & {"bar", "scatter", "waterfall"}) and not bool(
         trace_types & {"pie", "treemap", "heatmap"}
     )
+    title_text = str(getattr(figure.layout.title, "text", "") or "")
     style_chart_traces(figure)
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(255,255,255,0)",
         font=dict(family="Inter", color=TEXT_PRIMARY, size=12),
+        title_text=title_text,
         title_font=dict(family="Manrope", size=17, color=TEXT_PRIMARY),
         title_x=0.02,
         title_xanchor="left",
@@ -1832,22 +2210,30 @@ def render_data_quality_report(report, current_user: dict[str, str]) -> None:
             )
 
 
+SCREEN_NAV_LABELS = {
+    "Обзор": "Главная",
+    "ABC-анализ": "Ассортимент · ABC",
+    "Карточка SKU": "Ассортимент · Карточка SKU",
+    "Финансы": "Продажи · Финансы",
+    "Аналитика": "Продажи · Аналитика",
+    "Поставщики": "Закупки · Поставщики",
+    "Закупки": "Закупки · Планирование",
+    "План / факт": "Планирование · План / факт",
+    "Данные": "Данные и отчёты",
+    "Управление": "Настройки и доступ",
+    "Маржинальность": "Маржинальность",
+    "Сравнение месяцев": "Сравнение месяцев",
+    "Расширенный": "Расширенный анализ",
+}
+
+
 def render_screen_switcher(title: str, options: list[str], *, key: str, description: str = "") -> str:
     if not options:
         return ""
     if key in st.session_state and st.session_state[key] not in options:
         st.session_state[key] = options[0]
 
-    description_html = (
-        f'<div class="panel-caption" style="margin-bottom: 0.5rem;">{escape(description)}</div>'
-        if description
-        else ""
-    )
-    st.markdown(f'<div class="panel-title" style="font-size: 0.85rem; text-transform: uppercase; color: #64748b;">{escape(title)}</div>', unsafe_allow_html=True)
-    if description_html:
-        st.markdown(description_html, unsafe_allow_html=True)
-
-    # Custom styled selector using radio buttons but making it look cleaner
+    st.markdown(f'<div class="sidebar-section-label">{escape(title)}</div>', unsafe_allow_html=True)
     current_value = st.session_state.get(key, options[0])
 
     return str(
@@ -1855,6 +2241,7 @@ def render_screen_switcher(title: str, options: list[str], *, key: str, descript
             title,
             options=options,
             index=options.index(current_value) if current_value in options else 0,
+            format_func=lambda option: SCREEN_NAV_LABELS.get(str(option), str(option)),
             horizontal=False,
             label_visibility="collapsed",
             key=key,
@@ -4420,29 +4807,25 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                 st.write("4. Для входа можно использовать логин, email или телефон.")
 
 
-def render_intro() -> None:
+def render_intro(current_user: dict[str, str]) -> None:
+    salon_text = current_user.get("salon") or "Вся сеть"
     render_html_block(
-        """
-        <div class="dashboard-hero">
-            <div class="dashboard-eyebrow">Локальная аналитика продаж</div>
-            <h1 class="dashboard-title">Панель продаж для выгрузок из 1С</h1>
-            <p class="dashboard-subtitle">
-                Каждый салон может загружать ежедневные Excel или CSV из 1С в свой архив,
-                а руководитель может смотреть все салоны сразу и общую картину по сети.
-            </p>
+        f"""
+        <div class="app-shell-header">
+            <div class="app-shell-brand">
+                <div class="app-shell-name">ArtDB</div>
+                <div class="app-shell-copy">Продажи, ассортимент и закупки в одном рабочем пространстве</div>
+            </div>
+            <div class="app-shell-user">
+                <div>
+                    <div class="app-shell-user-name">{escape(current_user['display_name'])}</div>
+                    <div class="app-shell-user-meta">{escape(salon_text)}</div>
+                </div>
+                <div class="app-shell-role">{escape(role_label(current_user['role']))}</div>
+            </div>
         </div>
         """
     )
-
-    sample_path = Path("sample_sales_data.csv")
-    if sample_path.exists():
-        st.download_button(
-            "Скачать пример файла",
-            data=sample_path.read_bytes(),
-            file_name=sample_path.name,
-            mime="text/csv",
-            use_container_width=True,
-        )
 
 
 def render_dataset_hero(
@@ -4452,48 +4835,30 @@ def render_dataset_hero(
     selected_categories: list[str] | None,
     selected_managers: list[str] | None,
     current_user: dict[str, str],
+    active_screen: str = "Обзор",
 ) -> None:
     min_date = format_date_value(data["date"].min())
     max_date = format_date_value(data["date"].max())
 
-    category_text = "Все категории"
-    manager_text = "Все менеджеры"
-
-    if selected_categories:
-        category_text = ", ".join(selected_categories[:3])
-        if len(selected_categories) > 3:
-            category_text += f" +{len(selected_categories) - 3}"
-
-    if selected_managers:
-        manager_text = ", ".join(selected_managers[:3])
-        if len(selected_managers) > 3:
-            manager_text += f" +{len(selected_managers) - 3}"
-
     chips = [
-        f"Роль: {role_label(current_user['role'])}",
-        f"Источник: {escape(filename)}",
         f"Период: {min_date} - {max_date}",
-        f"Строк в анализе: {format_number(overview['line_count'])}",
+        f"Строк: {format_number(overview['line_count'])}",
         f"Товаров: {format_number(overview['product_count'])}",
-        f"Категории: {escape(category_text)}",
-        f"Менеджеры: {escape(manager_text)}",
     ]
-    chips_html = "".join(f'<span class="scope-chip">{chip}</span>' for chip in chips)
-    build_badge_html = f'<span class="app-build-badge">{escape(get_build_badge_label())}</span>'
+    chips_html = "".join(f'<span class="workspace-chip">{chip}</span>' for chip in chips)
+    screen_title = SCREEN_NAV_LABELS.get(active_screen, active_screen)
 
     render_html_block(
         f"""
-        <div class="dashboard-hero">
-            <div class="dashboard-hero-meta">
-                <div class="dashboard-eyebrow">Единая панель продаж</div>
-                {build_badge_html}
+        <div class="workspace-header">
+            <div>
+                <div class="workspace-header-title">{escape(screen_title)}</div>
+                <div class="workspace-header-meta">Источник: {escape(filename)} · {escape(role_label(current_user['role']))}</div>
             </div>
-            <h1 class="dashboard-title">Картина по продажам в одном экране</h1>
-            <p class="dashboard-subtitle">
-                Здесь собраны дневные загрузки, управленческие KPI, точки роста и зоны риска.
-                Салон видит только свой контур, руководитель работает со всей сетью.
-            </p>
-            <div class="scope-strip">{chips_html}</div>
+            <div class="workspace-context">
+                {chips_html}
+                <span class="workspace-chip">{escape(get_build_badge_label())}</span>
+            </div>
         </div>
         """
     )
@@ -4616,6 +4981,71 @@ def render_insight_panel(insights: list[tuple[str, str]]) -> None:
                 <div class="overview-command-meta">{len(items_html)} сигналов</div>
             </div>
             <div class="insight-compact-list">{"".join(items_html)}</div>
+        </section>
+        """
+    )
+
+
+def render_overview_action_center(
+    insights: list[tuple[str, str]],
+    focus_cards: list[dict[str, str]],
+) -> None:
+    combined: list[dict[str, str]] = []
+    for title, body in insights:
+        combined.append(
+            {
+                "title": str(title),
+                "body": str(body),
+                "tone": infer_dashboard_tone(title, body),
+            }
+        )
+
+    for card in focus_cards:
+        combined.append(
+            {
+                "title": f"{card.get('label', '')}: {card.get('value', '')}".strip(": "),
+                "body": str(card.get("body", "")),
+                "tone": str(card.get("tone") or infer_dashboard_tone(card.get("label", ""), card.get("body", ""))),
+            }
+        )
+
+    priority = {"danger": 0, "warning": 1, "success": 2, "info": 3}
+    unique_items: list[dict[str, str]] = []
+    seen_titles: set[str] = set()
+    for item in sorted(combined, key=lambda value: priority.get(value.get("tone", "info"), 3)):
+        normalized_title = item["title"].casefold().strip()
+        if not normalized_title or normalized_title in seen_titles:
+            continue
+        seen_titles.add(normalized_title)
+        unique_items.append(item)
+        if len(unique_items) >= 5:
+            break
+
+    if not unique_items:
+        return
+
+    items_html = "".join(
+        dedent(
+            f"""
+            <div class="overview-action-item {escape(item['tone'])}">
+                <div class="overview-action-indicator"></div>
+                <div>
+                    <div class="overview-action-item-title">{escape(item['title'])}</div>
+                    <div class="overview-action-item-body">{escape(item['body'])}</div>
+                </div>
+            </div>
+            """
+        ).strip()
+        for item in unique_items
+    )
+    render_html_block(
+        f"""
+        <section class="overview-action-center">
+            <div class="overview-action-header">
+                <div class="overview-action-title">Что важно сейчас</div>
+                <div class="overview-action-count">{len(unique_items)} сигналов</div>
+            </div>
+            <div class="overview-action-list">{items_html}</div>
         </section>
         """
     )
@@ -5471,8 +5901,7 @@ with st.sidebar:
         st.rerun()
 
 # --- Main Area ---
-render_intro()
-render_user_strip(current_user)
+render_intro(current_user)
 
 upload_modes = {"Новая выгрузка", "Загрузка салона", "Разовая загрузка"}
 upload_flash_message = st.session_state.pop("upload_flash_message", "")
@@ -5734,12 +6163,12 @@ if work_mode not in upload_modes:
 
     if data.empty:
         if current_user["role"] == "salon":
-            st.info("РЈ СЌС‚РѕРіРѕ СЃР°Р»РѕРЅР° РїРѕРєР° РЅРµС‚ СЃРѕС…СЂР°РЅС‘РЅРЅС‹С… РІС‹РіСЂСѓР·РѕРє. Р—Р°РіСЂСѓР·РёС‚Рµ РїРµСЂРІС‹Р№ С„Р°Р№Р» Рё СЃРѕС…СЂР°РЅРёС‚Рµ РµРіРѕ РІ Р°СЂС…РёРІ.")
+            st.info("У этого салона пока нет сохранённых выгрузок. Загрузите первый файл и сохраните его в архив.")
         else:
-            st.info("Р’ Р°СЂС…РёРІРµ РїРѕРєР° РЅРµС‚ РґР°РЅРЅС‹С… РїРѕ РІС‹Р±СЂР°РЅРЅС‹Рј СЃР°Р»РѕРЅР°Рј.")
+            st.info("В архиве пока нет данных по выбранным салонам.")
         st.stop()
 
-    source_label = "РђСЂС…РёРІ СЃРµС‚Рё" if is_network_role(current_user["role"]) else f"РђСЂС…РёРІ СЃР°Р»РѕРЅР°: {selected_salon_name}"
+    source_label = "Архив сети" if is_network_role(current_user["role"]) else f"Архив салона: {selected_salon_name}"
 
 if data.empty:
     st.warning("После применения фильтров не осталось данных.")
@@ -5754,86 +6183,7 @@ data = enrich_sales_with_supplier(
 )
 
 margin_visible = can_view_margin(current_user)
-has_item_codes = (
-    "item_code" in data.columns
-    and data["item_code"].fillna("").astype(str).str.strip().ne("").any()
-)
-product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
-
-overview = cached_build_overview_metrics(data)
-product_summary = cached_build_product_summary(data, product_analysis_column)
-category_summary = cached_build_product_summary(data, "category")
-manager_summary = cached_build_product_summary(data, "manager")
-salon_summary = cached_build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
-supplier_sales_summary = cached_build_product_summary(data, "supplier") if "supplier" in data.columns else pd.DataFrame()
-monthly_summary = cached_build_monthly_summary(data)
-returns_overview = cached_build_returns_overview(data)
-plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
-monthly_plans = load_monthly_plans()
-procurement_orders = load_procurement_orders()
-procurement_order_items = load_procurement_order_items()
-open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
-procurement_order_overview = build_procurement_order_overview(procurement_orders, procurement_order_items)
-plan_scope_salons = (
-    sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
-    if "salon" in plan_fact_source_data.columns
-    else ([current_user.get("salon", "")] if current_user.get("salon") else [])
-)
-allow_network_plan_fallback = bool(
-    is_network_role(current_user["role"])
-    and registered_salons
-    and sorted({str(salon).strip() for salon in plan_scope_salons if str(salon).strip()}) == sorted({str(salon).strip() for salon in registered_salons})
-)
-scope_plan_summary = build_scope_plan_summary(
-    monthly_plans,
-    plan_scope_salons,
-    allow_network_fallback=allow_network_plan_fallback,
-)
-plan_fact_summary = cached_build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
-plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
-
-with main_col:
-    render_dataset_hero(source_label, data, overview, selected_categories, selected_managers, current_user)
-    latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
-    latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
-
-    _digest_lines = build_text_summary(
-        overview,
-        monthly_summary,
-        returns_overview,
-        plan_fact_summary,
-        latest_revenue_delta,
-        allow_margin=margin_visible,
-    )
-    if _digest_lines:
-        render_html_block(
-            '<div class="section-intro"><div class="section-intro-body" style="font-size:1.05rem;letter-spacing:.01em">'
-            + " &nbsp;\u00b7&nbsp; ".join(escape(l) for l in _digest_lines)
-            + "</div></div>"
-        )
-
-    _rev_delta_str = f"{format_change_percent(latest_revenue_delta)} к пред. месяцу" if not is_missing(latest_revenue_delta) else ""
-    _mar_delta_str = f"{format_change_percent(latest_margin_delta)} к пред. месяцу" if not is_missing(latest_margin_delta) else ""
-    overview_cards = [
-        {
-            "label": "Выручка",
-            "value": format_money(overview["total_revenue"]),
-            "delta": _rev_delta_str,
-        },
-    ]
-    if margin_visible:
-        overview_cards.extend(
-            [
-                {
-                    "label": "Маржа",
-                    "value": format_money(overview["total_margin"]),
-                    "delta": _mar_delta_str,
-                },
-                {"label": "Маржа %", "value": format_percent(overview["margin_pct"]), "delta": ""},
-            ]
-        )
-    overview_cards.append({"label": "Количество", "value": format_number(overview["total_quantity"]), "delta": ""})
-    render_metric_cards(overview_cards)
+initial_monthly_summary = cached_build_monthly_summary(data)
 
 screen_options = ["Обзор", "ABC-анализ", "Карточка SKU"]
 if margin_visible:
@@ -5849,7 +6199,10 @@ active_screen = screen_options[0]
 active_analytics_screen = ""
 active_advanced_screen = ""
 abc_metric = "revenue"
-procurement_history_months = min(max(int(monthly_summary["month_label"].nunique()) if not monthly_summary.empty else 6, 3), 6)
+procurement_history_months = min(
+    max(int(initial_monthly_summary["month_label"].nunique()) if not initial_monthly_summary.empty else 6, 3),
+    6,
+)
 procurement_coverage_days = 30
 procurement_lead_time_days = 14
 procurement_safety_days = 7
@@ -5870,15 +6223,12 @@ if (
     st.session_state["primary_screen_nav"] = "ABC-анализ"
 
 with st.sidebar:
-    st.markdown("---")
-    st.subheader("Панель управления")
-    st.caption("Основные переключатели снова собраны в боковой панели и доступны во время прокрутки страницы.")
+    st.markdown('<div class="sidebar-section-label">Рабочее пространство</div>', unsafe_allow_html=True)
 
     active_screen = render_screen_switcher(
         "Основной экран",
         screen_options,
         key="primary_screen_nav",
-        description="Быстрый выбор рабочего раздела.",
     )
 
     if active_screen == "Аналитика":
@@ -5886,7 +6236,6 @@ with st.sidebar:
             "Раздел аналитики",
             analytics_screen_options,
             key="analytics_screen_nav",
-            description="Позволяет быстро перейти к нужному типу анализа.",
         )
     else:
         active_analytics_screen = ""
@@ -5896,7 +6245,6 @@ with st.sidebar:
             "Глубокий разбор",
             ["RFM-анализ", "Тепловая карта", "Прогноз", "Возвраты"],
             key="advanced_screen_nav",
-            description="Точечный переход к расширенному блоку.",
         )
     else:
         active_advanced_screen = ""
@@ -5960,68 +6308,6 @@ with st.sidebar:
                 key="procurement_min_active_months",
             )
 
-    with st.expander("Фильтры", expanded=True):
-        min_date = data["date"].min().date()
-        max_date = data["date"].max().date()
-        selected_dates = st.date_input(
-            "Период продаж",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="main_selected_dates",
-        )
-
-        if len(selected_dates) == 2:
-            date_from, date_to = selected_dates
-            data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
-
-        if is_network_role(current_user["role"]) and "salon" in data.columns and data["salon"].nunique() > 1:
-            all_salons = sorted(data["salon"].dropna().unique().tolist())
-            selected_salons_filter = st.multiselect(
-                "Салоны",
-                all_salons,
-                default=all_salons,
-                key="main_selected_salons_filter",
-            )
-            data = data[data["salon"].isin(selected_salons_filter)]
-
-        plan_fact_source_data = data.copy()
-
-        if data["category"].nunique() > 1:
-            all_categories = sorted(data["category"].dropna().unique().tolist())
-            selected_categories = st.multiselect(
-                "Категории",
-                all_categories,
-                default=all_categories,
-                key="main_selected_categories",
-            )
-            data = data[data["category"].isin(selected_categories)]
-
-        if "supplier" in data.columns and data["supplier"].nunique() > 1:
-            all_suppliers = sorted(data["supplier"].dropna().astype(str).unique().tolist())
-            selected_suppliers = st.multiselect(
-                "Поставщики",
-                all_suppliers,
-                default=all_suppliers,
-                key="main_selected_suppliers",
-            )
-            data = data[data["supplier"].isin(selected_suppliers)]
-
-        procurement_source_data = data.copy()
-        procurement_uses_manager_unfiltered_scope = False
-
-        if data["manager"].nunique() > 1:
-            all_managers = sorted(data["manager"].dropna().unique().tolist())
-            selected_managers = st.multiselect(
-                "Менеджеры",
-                all_managers,
-                default=all_managers,
-                key="main_selected_managers",
-            )
-            manager_filtered_data = data[data["manager"].isin(selected_managers)]
-            procurement_uses_manager_unfiltered_scope = len(manager_filtered_data) != len(data)
-            data = manager_filtered_data
-
     if is_network_role(current_user["role"]):
         with st.expander("Telegram", expanded=False):
             st.caption("Отправляет управленческую сводку, риски, CSV-отчёты и Excel-заказ поставщикам в настроенный чат.")
@@ -6046,6 +6332,173 @@ with st.sidebar:
                 except Exception as error:
                     st.error(f"Не удалось отправить отчёт: {error}")
 
+filter_source_data = data.copy()
+valid_filter_dates = filter_source_data["date"].dropna()
+if valid_filter_dates.empty:
+    st.error("В данных нет корректных дат для построения аналитики.")
+    st.stop()
+
+min_date = valid_filter_dates.min().date()
+max_date = valid_filter_dates.max().date()
+all_salons = (
+    sorted(filter_source_data["salon"].dropna().astype(str).unique().tolist())
+    if is_network_role(current_user["role"])
+    and "salon" in filter_source_data.columns
+    and filter_source_data["salon"].nunique() > 1
+    else []
+)
+all_categories = (
+    sorted(filter_source_data["category"].dropna().astype(str).unique().tolist())
+    if "category" in filter_source_data.columns and filter_source_data["category"].nunique() > 1
+    else []
+)
+all_suppliers = (
+    sorted(filter_source_data["supplier"].dropna().astype(str).unique().tolist())
+    if "supplier" in filter_source_data.columns and filter_source_data["supplier"].nunique() > 1
+    else []
+)
+all_managers = (
+    sorted(filter_source_data["manager"].dropna().astype(str).unique().tolist())
+    if "manager" in filter_source_data.columns and filter_source_data["manager"].nunique() > 1
+    else []
+)
+
+for state_key, available_values in (
+    ("main_selected_salons_filter", all_salons),
+    ("main_selected_categories", all_categories),
+    ("main_selected_suppliers", all_suppliers),
+    ("main_selected_managers", all_managers),
+):
+    if state_key in st.session_state:
+        saved_values = st.session_state.get(state_key) or []
+        st.session_state[state_key] = [
+            value for value in saved_values if value in available_values
+        ]
+
+saved_date_range = st.session_state.get("main_selected_dates")
+if saved_date_range:
+    saved_dates = list(saved_date_range) if isinstance(saved_date_range, (list, tuple)) else [saved_date_range]
+    if len(saved_dates) != 2 or saved_dates[0] < min_date or saved_dates[1] > max_date:
+        st.session_state.pop("main_selected_dates", None)
+
+with main_col:
+    filter_shell = st.container(border=True)
+    with filter_shell:
+        render_sticky_header_marker()
+        filter_title_col, filter_reset_col = st.columns([4.6, 1], gap="small")
+        with filter_title_col:
+            st.markdown(
+                '<div class="filter-toolbar-heading"><div><div class="filter-toolbar-title">Фильтры и срез данных</div>'
+                '<div class="filter-toolbar-meta">Один контекст для всех показателей и отчётов</div></div></div>',
+                unsafe_allow_html=True,
+            )
+        with filter_reset_col:
+            if st.button("Сбросить", key="reset_global_filters", use_container_width=True):
+                for filter_key in (
+                    "main_selected_dates",
+                    "main_selected_salons_filter",
+                    "main_selected_categories",
+                    "main_selected_suppliers",
+                    "main_selected_managers",
+                ):
+                    st.session_state.pop(filter_key, None)
+                st.rerun()
+
+        with st.expander("Настроить фильтры", expanded=False):
+            date_col, salon_col, category_col = st.columns([1.15, 1, 1], gap="small")
+            with date_col:
+                selected_dates = st.date_input(
+                    "Период продаж",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    key="main_selected_dates",
+                )
+            with salon_col:
+                if all_salons:
+                    selected_salons_filter = st.multiselect(
+                        "Салоны",
+                        all_salons,
+                        default=all_salons,
+                        key="main_selected_salons_filter",
+                    )
+                else:
+                    st.text_input("Салоны", value="Текущий контур", disabled=True, key="main_salon_scope_display")
+            with category_col:
+                if all_categories:
+                    selected_categories = st.multiselect(
+                        "Категории",
+                        all_categories,
+                        default=all_categories,
+                        key="main_selected_categories",
+                    )
+                else:
+                    st.text_input("Категории", value="Все", disabled=True, key="main_category_scope_display")
+
+            supplier_col, manager_col = st.columns(2, gap="small")
+            with supplier_col:
+                if all_suppliers:
+                    selected_suppliers = st.multiselect(
+                        "Поставщики",
+                        all_suppliers,
+                        default=all_suppliers,
+                        key="main_selected_suppliers",
+                    )
+                else:
+                    st.text_input("Поставщики", value="Все", disabled=True, key="main_supplier_scope_display")
+            with manager_col:
+                if all_managers:
+                    selected_managers = st.multiselect(
+                        "Менеджеры",
+                        all_managers,
+                        default=all_managers,
+                        key="main_selected_managers",
+                    )
+                else:
+                    st.text_input("Менеджеры", value="Все", disabled=True, key="main_manager_scope_display")
+
+filter_badges = []
+if len(selected_dates) == 2:
+    date_from, date_to = selected_dates
+    data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
+    if date_from != min_date or date_to != max_date:
+        filter_badges.append(f"Период: {date_from:%d.%m.%Y} - {date_to:%d.%m.%Y}")
+
+if all_salons:
+    data = data[data["salon"].astype(str).isin(selected_salons_filter)]
+    if len(selected_salons_filter) != len(all_salons):
+        filter_badges.append(f"Салоны: {len(selected_salons_filter)} из {len(all_salons)}")
+
+plan_fact_source_data = data.copy()
+
+if all_categories:
+    data = data[data["category"].astype(str).isin(selected_categories)]
+    if len(selected_categories) != len(all_categories):
+        filter_badges.append(f"Категории: {len(selected_categories)} из {len(all_categories)}")
+
+if all_suppliers:
+    data = data[data["supplier"].astype(str).isin(selected_suppliers)]
+    if len(selected_suppliers) != len(all_suppliers):
+        filter_badges.append(f"Поставщики: {len(selected_suppliers)} из {len(all_suppliers)}")
+
+procurement_source_data = data.copy()
+procurement_uses_manager_unfiltered_scope = False
+
+if all_managers:
+    manager_filtered_data = data[data["manager"].astype(str).isin(selected_managers)]
+    procurement_uses_manager_unfiltered_scope = len(manager_filtered_data) != len(data)
+    data = manager_filtered_data
+    if len(selected_managers) != len(all_managers):
+        filter_badges.append(f"Менеджеры: {len(selected_managers)} из {len(all_managers)}")
+
+if filter_badges:
+    with main_col:
+        render_html_block(
+            '<div class="filter-summary">'
+            + "".join(f"<span>{escape(badge)}</span>" for badge in filter_badges)
+            + "</div>"
+        )
+
 if data.empty:
     st.warning("После применения фильтров не осталось данных.")
     st.stop()
@@ -6064,6 +6517,11 @@ supplier_sales_summary = cached_build_product_summary(data, "supplier") if "supp
 monthly_summary = cached_build_monthly_summary(data)
 returns_overview = cached_build_returns_overview(data)
 plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
+monthly_plans = load_monthly_plans()
+procurement_orders = load_procurement_orders()
+procurement_order_items = load_procurement_order_items()
+open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
+procurement_order_overview = build_procurement_order_overview(procurement_orders, procurement_order_items)
 plan_scope_salons = (
     sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
     if "salon" in plan_fact_source_data.columns
@@ -6114,6 +6572,87 @@ if needs_procurement_analysis:
     )
     procurement_overview = cached_build_procurement_overview(procurement_forecast)
     procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
+
+with main_col:
+    render_dataset_hero(
+        source_label,
+        data,
+        overview,
+        selected_categories,
+        selected_managers,
+        current_user,
+        active_screen=active_screen,
+    )
+
+    if active_screen == "Обзор":
+        _rev_delta_str = (
+            f"{format_change_percent(latest_revenue_delta)} к предыдущему месяцу"
+            if not is_missing(latest_revenue_delta)
+            else ""
+        )
+        _mar_delta_str = (
+            f"{format_change_percent(latest_margin_delta)} к предыдущему месяцу"
+            if not is_missing(latest_margin_delta)
+            else ""
+        )
+        overview_cards = [
+            {
+                "label": "Выручка",
+                "value": format_money(overview["total_revenue"]),
+                "delta": _rev_delta_str,
+            },
+        ]
+        if margin_visible:
+            overview_cards.extend(
+                [
+                    {
+                        "label": "Валовая маржа",
+                        "value": format_money(overview["total_margin"]),
+                        "delta": _mar_delta_str,
+                    },
+                    {
+                        "label": "Маржинальность",
+                        "value": format_percent(overview["margin_pct"]),
+                        "delta": "",
+                    },
+                ]
+            )
+
+        if not plan_fact_summary.empty:
+            latest_plan_execution = plan_fact_summary.iloc[-1].get("revenue_execution_pct")
+            overview_cards.append(
+                {
+                    "label": "Выполнение плана",
+                    "value": (
+                        format_percent(latest_plan_execution)
+                        if not is_missing(latest_plan_execution)
+                        else "Не задан"
+                    ),
+                    "delta": str(plan_fact_summary.iloc[-1].get("month_label", "")),
+                    "tone": (
+                        "success"
+                        if not is_missing(latest_plan_execution) and float(latest_plan_execution) >= 100
+                        else "warning"
+                    ),
+                }
+            )
+
+        overview_cards.append(
+            {
+                "label": "К закупке",
+                "value": f"{format_number(procurement_overview.get('reorder_sku_count', 0))} SKU",
+                "delta": f"Критичных: {format_number(procurement_overview.get('critical_stock_count', 0))}",
+                "tone": "danger" if procurement_overview.get("critical_stock_count", 0) else "success",
+            }
+        )
+        overview_cards.append(
+            {
+                "label": "Продано единиц",
+                "value": format_number(overview["total_quantity"]),
+                "delta": f"Позиций: {format_number(overview['product_count'])}",
+            }
+        )
+        render_metric_cards(overview_cards)
 
 if active_screen == "Карточка SKU":
     with main_col:
@@ -7162,19 +7701,18 @@ if active_screen == "Обзор":
     )
 
     with main_col:
-        render_insight_panel(insights)
-
-    with main_col:
-        overview_left, overview_right = st.columns([1.38, 0.82], gap="medium")
+        overview_left, overview_right = st.columns([1.55, 0.75], gap="medium")
 
         with overview_left:
             with st.container(border=True):
                 render_panel_header(
                     "Динамика продаж",
-                    "Выручка по месяцам, а для руководителя ещё и маржа.",
+                    "Факт, маржа и ближайший прогноз по месяцам.",
                 )
                 trend_chart = go.Figure()
-                trend_revenue_colors = gradient_colors(len(monthly_summary), CHART_SOFT_BLUE, PRIMARY_COLOR)
+                trend_revenue_colors = [CHART_SOFT_BLUE] * len(monthly_summary)
+                if trend_revenue_colors:
+                    trend_revenue_colors[-1] = PRIMARY_COLOR
                 trend_chart.add_trace(
                     go.Bar(
                         x=monthly_summary["month_label"],
@@ -7204,10 +7742,10 @@ if active_screen == "Обзор":
                             y=forecast_data["revenue"],
                             name="Прогноз выручки",
                             marker=dict(
-                                color=gradient_colors(len(forecast_data), "#E7EEF7", "#A9BED3"),
+                                color="#CBD5E1",
                                 line=dict(color="rgba(255,255,255,0.7)", width=0.8),
                             ),
-                            opacity=0.72,
+                            opacity=0.68,
                         )
                     )
                     if margin_visible and not forecast_data["margin"].isna().all():
@@ -7222,18 +7760,13 @@ if active_screen == "Обзор":
                             )
                         )
                 trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="", bargap=0.24)
-                polish_figure(trend_chart, height=360)
+                polish_figure(trend_chart, height=340)
                 st.plotly_chart(trend_chart, use_container_width=True)
                 if not forecast_data.empty:
                     st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
 
         with overview_right:
-            with st.container(border=True):
-                render_panel_header(
-                    "Рабочий пульс",
-                    "Короткие статусы, которые помогают понять, куда смотреть дальше.",
-                )
-                render_overview_focus_stack(overview_focus_cards)
+            render_overview_action_center(insights, overview_focus_cards)
 
     if not salon_summary.empty and len(salon_summary) > 1:
         with main_col:
@@ -7498,7 +8031,7 @@ if active_screen == "ABC-анализ":
             pareto_chart_data = abc_tab_data.copy().reset_index(drop=True)
             pareto_chart_data["rank"] = range(1, len(pareto_chart_data) + 1)
             pareto_chart_data["abc_label"] = pareto_chart_data["abc_class"].map(
-                {"A": "РљР»Р°СЃСЃ A", "B": "РљР»Р°СЃСЃ B", "C": "РљР»Р°СЃСЃ C"}
+                {"A": "Класс A", "B": "Класс B", "C": "Класс C"}
             )
             pareto_class_colors = {"A": PRIMARY_COLOR, "B": CHART_ACCENT_COLOR, "C": "#7B8796"}
             pareto_hover = pareto_chart_data[["group_name", "cum_share_pct", "abc_label"]]
@@ -9865,10 +10398,10 @@ if active_screen == "Закупки":
                             procurement_order_items["order_id"] == selected_order_id
                         ][["product", "quantity", "unit_cost", "comment"]].copy()
                         order_lines_rename_map = {
-                            "product": "SKU / РўРѕРІР°СЂ",
-                            "quantity": "РљРѕР»РёС‡РµСЃС‚РІРѕ",
-                            "unit_cost": "Р¦РµРЅР° Р·Р°РєСѓРїРєРё",
-                            "comment": "РљРѕРјРјРµРЅС‚Р°СЂРёР№",
+                            "product": "SKU / Товар",
+                            "quantity": "Количество",
+                            "unit_cost": "Цена закупки",
+                            "comment": "Комментарий",
                         }
                         selected_order_lines_display = selected_order_lines.rename(columns=order_lines_rename_map)
 
@@ -10883,6 +11416,15 @@ if active_screen == "Данные":
             "Источники и выгрузки",
             "Здесь собраны исходные данные, служебная информация по сопоставлению колонок, журнал загрузок и сводка по месяцам. Эта вкладка нужна для проверки качества загрузки и состава данных.",
         )
+        sample_path = Path("sample_sales_data.csv")
+        if sample_path.exists():
+            st.download_button(
+                "Скачать безопасный шаблон CSV",
+                data=sample_path.read_bytes(),
+                file_name=sample_path.name,
+                mime="text/csv",
+                key="download_sales_data_template",
+            )
         data_period_text = format_date_range_values(data["date"].min(), data["date"].max())
         archive_upload_count = len(manifest_view) if manifest_view is not None else 0
         data_salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
