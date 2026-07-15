@@ -115,15 +115,21 @@ TEXT_SECONDARY = "#475569"
 TEXT_MUTED = "#64748b"
 CHART_GRID_COLOR = "#EAF0F4"
 CHART_ZERO_COLOR = "#CBD5E1"
+CHART_ACCENT_COLOR = "#D89A2B"
+CHART_DANGER_COLOR = "#D94D3D"
+CHART_INFO_COLOR = "#2673B8"
+CHART_SOFT_BLUE = "#DDEBFA"
+CHART_SOFT_TEAL = "#DDEFE8"
+CHART_SOFT_AMBER = "#F6E5C4"
 CHART_COLORS = [
     PRIMARY_COLOR,
+    CHART_ACCENT_COLOR,
     SECONDARY_COLOR,
-    "#2563EB",
-    "#D97706",
-    "#0F766E",
-    "#E11D48",
-    "#0891B2",
-    "#64748B",
+    CHART_INFO_COLOR,
+    "#0E9AA7",
+    CHART_DANGER_COLOR,
+    "#7C5CC4",
+    "#58667A",
 ]
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 APP_DIR = Path(__file__).resolve().parent
@@ -329,7 +335,7 @@ DASHBOARD_CSS = f"""
     }}
 
     .metric-card.warning {{
-        border-left-color: #D97706;
+        border-left-color: {CHART_ACCENT_COLOR};
         background: linear-gradient(180deg, rgba(255,251,235,0.72), rgba(255,255,255,0.98));
     }}
 
@@ -592,7 +598,7 @@ DASHBOARD_CSS = f"""
     }}
 
     .snapshot-card.warning {{
-        border-left-color: #D97706;
+        border-left-color: {CHART_ACCENT_COLOR};
         background: linear-gradient(180deg, rgba(255,251,235,0.84), rgba(255,255,255,0.98));
     }}
 
@@ -673,7 +679,7 @@ DASHBOARD_CSS = f"""
     }}
 
     .insight-compact-item.warning {{
-        border-left-color: #D97706;
+        border-left-color: {CHART_ACCENT_COLOR};
         background: linear-gradient(180deg, rgba(255,251,235,0.78), rgba(255,255,255,0.98));
     }}
 
@@ -754,7 +760,7 @@ DASHBOARD_CSS = f"""
     }}
 
     .overview-focus-card.warning {{
-        border-left-color: #D97706;
+        border-left-color: {CHART_ACCENT_COLOR};
         background: linear-gradient(180deg, rgba(255,251,235,0.82), rgba(255,255,255,0.98));
     }}
 
@@ -813,7 +819,7 @@ DASHBOARD_CSS = f"""
     }}
 
     .spotlight-card.warm {{
-        border-left: 4px solid #D97706;
+        border-left: 4px solid {CHART_ACCENT_COLOR};
     }}
 
     .spotlight-label {{
@@ -947,21 +953,49 @@ REFERENCE_THEME_CSS = f"""
 
     /* Premium chart surface */
     [data-testid="stPlotlyChart"] {{
+        position: relative;
         background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 252, 0.9));
-        border: 1px solid rgba(203, 213, 225, 0.78);
-        border-radius: 18px;
+            radial-gradient(circle at 10% 0%, rgba(0, 52, 97, 0.12), transparent 32%),
+            radial-gradient(circle at 92% 8%, rgba(216, 154, 43, 0.12), transparent 30%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 252, 0.94));
+        border: 1px solid rgba(184, 199, 211, 0.78);
+        border-radius: 20px;
         box-shadow:
             0 1px 0 rgba(255, 255, 255, 0.85) inset,
-            0 14px 34px rgba(15, 23, 42, 0.06);
-        padding: 0.45rem 0.35rem 0.15rem;
+            0 18px 42px rgba(15, 23, 42, 0.07),
+            0 4px 12px rgba(15, 23, 42, 0.035);
+        padding: 0.48rem 0.38rem 0.16rem;
         overflow: hidden;
+        transition:
+            transform 180ms ease,
+            box-shadow 180ms ease,
+            border-color 180ms ease;
+    }}
+
+    [data-testid="stPlotlyChart"]::before {{
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        border-radius: inherit;
+        background:
+            linear-gradient(120deg, rgba(255,255,255,0.42), transparent 28%, rgba(255,255,255,0.12) 64%, transparent);
+        opacity: 0.75;
+    }}
+
+    [data-testid="stPlotlyChart"]:hover {{
+        transform: translateY(-2px);
+        border-color: rgba(0, 52, 97, 0.22);
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.9) inset,
+            0 22px 50px rgba(15, 23, 42, 0.09),
+            0 8px 18px rgba(0, 52, 97, 0.06);
     }}
 
     [data-testid="stPlotlyChart"] .js-plotly-plot,
     [data-testid="stPlotlyChart"] .plot-container,
     [data-testid="stPlotlyChart"] .svg-container {{
-        border-radius: 14px;
+        border-radius: 16px;
     }}
 
     [data-testid="stPlotlyChart"] .modebar {{
@@ -1387,19 +1421,50 @@ def margin_safe_mapping(selected_mapping: dict[str, str | None], current_user: d
     }
 
 
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    cleaned = color.strip().lstrip("#")
+    if len(cleaned) != 6:
+        return (0, 0, 0)
+    return tuple(int(cleaned[index : index + 2], 16) for index in (0, 2, 4))
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*[max(0, min(255, int(value))) for value in rgb])
+
+
+def blend_hex_color(start: str, end: str, ratio: float) -> str:
+    start_rgb = _hex_to_rgb(start)
+    end_rgb = _hex_to_rgb(end)
+    safe_ratio = max(0.0, min(1.0, float(ratio)))
+    blended = tuple(
+        start_rgb[channel] + (end_rgb[channel] - start_rgb[channel]) * safe_ratio
+        for channel in range(3)
+    )
+    return _rgb_to_hex(blended)
+
+
+def gradient_colors(count: int, start: str, end: str) -> list[str]:
+    safe_count = max(int(count), 0)
+    if safe_count <= 0:
+        return []
+    if safe_count == 1:
+        return [end]
+    return [blend_hex_color(start, end, index / (safe_count - 1)) for index in range(safe_count)]
+
+
 def style_chart_traces(figure: go.Figure) -> None:
     figure.update_traces(
         selector=dict(type="bar"),
-        opacity=0.94,
-        marker_line_width=0.6,
-        marker_line_color="rgba(255,255,255,0.55)",
-        hoverlabel=dict(bordercolor="rgba(15,23,42,0.14)"),
+        opacity=0.96,
+        marker_line_width=0.75,
+        marker_line_color="rgba(255,255,255,0.7)",
+        hoverlabel=dict(bordercolor="rgba(15,23,42,0.12)"),
     )
     figure.update_traces(
         selector=dict(type="scatter"),
-        line=dict(width=3),
-        marker=dict(line=dict(width=1.4, color=SURFACE_COLOR)),
-        hoverlabel=dict(bordercolor="rgba(15,23,42,0.14)"),
+        line=dict(width=3.25),
+        marker=dict(line=dict(width=1.7, color=SURFACE_COLOR)),
+        hoverlabel=dict(bordercolor="rgba(15,23,42,0.12)"),
     )
     figure.update_traces(
         selector=dict(type="waterfall"),
@@ -1410,12 +1475,22 @@ def style_chart_traces(figure: go.Figure) -> None:
         selector=dict(type="pie"),
         textfont=dict(size=12, color=TEXT_PRIMARY),
         marker=dict(line=dict(color=SURFACE_COLOR, width=2)),
+        hole=0.38,
         pull=0.015,
     )
     figure.update_traces(
         selector=dict(type="treemap"),
         marker=dict(line=dict(color=SURFACE_COLOR, width=2)),
         textfont=dict(size=12),
+        tiling=dict(pad=3),
+    )
+    figure.update_traces(
+        selector=dict(type="heatmap"),
+        colorscale=[
+            [0.0, "#EEF6FA"],
+            [0.45, "#8EC5D6"],
+            [1.0, PRIMARY_COLOR],
+        ],
     )
 
 
@@ -1427,19 +1502,25 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
     style_chart_traces(figure)
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(248,250,252,0.55)",
+        plot_bgcolor="rgba(255,255,255,0)",
         font=dict(family="Inter", color=TEXT_PRIMARY, size=12),
-        margin=dict(l=22, r=18, t=48, b=26),
+        title=dict(
+            font=dict(family="Manrope", size=17, color=TEXT_PRIMARY),
+            x=0.02,
+            xanchor="left",
+        ),
+        margin=dict(l=24, r=20, t=52, b=30),
         legend_title_text="",
         transition=dict(duration=520, easing="cubic-in-out"),
         colorway=CHART_COLORS,
         hovermode="x unified" if use_unified_hover else None,
         hoverlabel=dict(
-            bgcolor="#0F172A",
-            bordercolor="#0F172A",
+            bgcolor="rgba(15, 23, 42, 0.96)",
+            bordercolor="rgba(15, 23, 42, 0.96)",
             font_color="#FFFFFF",
             font_size=13,
             font_family="Inter",
+            align="left",
         ),
         legend=dict(
             orientation="h",
@@ -1447,32 +1528,37 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
             y=1.02,
             xanchor="left",
             x=0,
-            bgcolor="rgba(255,255,255,0)",
+            bgcolor="rgba(255,255,255,0.62)",
+            bordercolor="rgba(203,213,225,0.62)",
+            borderwidth=1,
             font=dict(size=12, color=TEXT_SECONDARY),
             itemclick="toggleothers",
             itemdoubleclick="toggle",
         ),
         uniformtext=dict(minsize=10, mode="hide"),
-        bargap=0.34,
+        bargap=0.28,
+        bargroupgap=0.08,
     )
     figure.update_xaxes(
         gridcolor=CHART_GRID_COLOR,
         zerolinecolor=CHART_ZERO_COLOR,
-        linecolor=CHART_ZERO_COLOR,
-        showline=True,
+        linecolor="rgba(203,213,225,0.62)",
+        showline=False,
         tickfont=dict(color=TEXT_MUTED),
         title_font=dict(color=TEXT_SECONDARY),
         ticks="",
+        ticklabelposition="outside",
         automargin=True,
     )
     figure.update_yaxes(
         gridcolor=CHART_GRID_COLOR,
         zerolinecolor=CHART_ZERO_COLOR,
-        linecolor=CHART_ZERO_COLOR,
-        showline=True,
+        linecolor="rgba(203,213,225,0.62)",
+        showline=False,
         tickfont=dict(color=TEXT_MUTED),
         title_font=dict(color=TEXT_SECONDARY),
         ticks="",
+        ticklabelposition="outside",
         automargin=True,
     )
     if height is not None:
@@ -5260,6 +5346,11 @@ def build_movement_chart(comparison: pd.DataFrame, left_month: str, right_month:
     movement = comparison.copy()
     movement["abs_revenue_delta"] = movement["revenue_delta"].abs()
     movement = movement.nlargest(12, "abs_revenue_delta").sort_values("revenue_delta")
+    movement_scale = [
+        [0.0, CHART_DANGER_COLOR],
+        [0.48, "#F3D78C"],
+        [1.0, PRIMARY_COLOR],
+    ]
 
     figure = px.bar(
         movement,
@@ -5267,11 +5358,12 @@ def build_movement_chart(comparison: pd.DataFrame, left_month: str, right_month:
         y="group_name",
         orientation="h",
         color="revenue_delta",
-        color_continuous_scale=["#991B1B", "#FACC15", PRIMARY_COLOR],
+        color_continuous_scale=movement_scale,
         labels={"group_name": "Товар", "revenue_delta": "Изменение выручки"},
         title=f"Главные движения: {right_month} к {left_month}",
     )
-    figure.update_layout(coloraxis_showscale=False)
+    figure.add_vline(x=0, line_width=1.2, line_color="rgba(15, 23, 42, 0.28)")
+    figure.update_layout(coloraxis_showscale=False, bargap=0.22)
     return polish_figure(figure, height=460)
 
 
@@ -6297,7 +6389,7 @@ if active_screen == "Карточка SKU":
                                     mode="markers+text",
                                     text=["прогноз"],
                                     textposition="top center",
-                                    marker=dict(color="#D97706", size=12, symbol="diamond"),
+                                    marker=dict(color=CHART_ACCENT_COLOR, size=12, symbol="diamond"),
                                 )
                             )
                         sku_trend_chart.update_layout(
@@ -6796,7 +6888,7 @@ if active_screen == "Финансы":
                             y="group_name",
                             orientation="h",
                             color="margin_pct",
-                            color_continuous_scale=["#fee2e2", "#facc15", SECONDARY_COLOR],
+                            color_continuous_scale=[CHART_DANGER_COLOR, CHART_SOFT_AMBER, SECONDARY_COLOR],
                             labels={"group_name": "Категория", "margin": "Маржа", "margin_pct": "Маржа, %"},
                         )
                         category_finance_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
@@ -6821,7 +6913,7 @@ if active_screen == "Финансы":
                             y="product",
                             orientation="h",
                             color="stock_coverage_days",
-                            color_continuous_scale=["#dcfce7", "#fef3c7", "#fecaca"],
+                            color_continuous_scale=[SECONDARY_COLOR, CHART_SOFT_AMBER, CHART_DANGER_COLOR],
                             labels={"product": "Товар", "stock_value": "Стоимость остатка", "stock_coverage_days": "Покрытие, дней"},
                         )
                         stock_value_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
@@ -7084,12 +7176,16 @@ if active_screen == "Обзор":
                     "Выручка по месяцам, а для руководителя ещё и маржа.",
                 )
                 trend_chart = go.Figure()
+                trend_revenue_colors = gradient_colors(len(monthly_summary), CHART_SOFT_BLUE, PRIMARY_COLOR)
                 trend_chart.add_trace(
                     go.Bar(
                         x=monthly_summary["month_label"],
                         y=monthly_summary["revenue"],
                         name="Выручка",
-                        marker_color=PRIMARY_COLOR,
+                        marker=dict(
+                            color=trend_revenue_colors,
+                            line=dict(color="rgba(255,255,255,0.72)", width=0.8),
+                        ),
                     )
                 )
                 if margin_visible:
@@ -7099,7 +7195,8 @@ if active_screen == "Обзор":
                             y=monthly_summary["margin"],
                             name="Маржа",
                             mode="lines+markers",
-                            line=dict(color=SECONDARY_COLOR, width=3),
+                            line=dict(color=CHART_ACCENT_COLOR, width=3.4, shape="spline", smoothing=0.45),
+                            marker=dict(size=9, color=CHART_ACCENT_COLOR, symbol="circle"),
                         )
                     )
                 if not forecast_data.empty:
@@ -7108,8 +7205,11 @@ if active_screen == "Обзор":
                             x=forecast_data["month_label"],
                             y=forecast_data["revenue"],
                             name="Прогноз выручки",
-                            marker_color=PRIMARY_COLOR,
-                            opacity=0.4,
+                            marker=dict(
+                                color=gradient_colors(len(forecast_data), "#E7EEF7", "#A9BED3"),
+                                line=dict(color="rgba(255,255,255,0.7)", width=0.8),
+                            ),
+                            opacity=0.72,
                         )
                     )
                     if margin_visible and not forecast_data["margin"].isna().all():
@@ -7119,11 +7219,11 @@ if active_screen == "Обзор":
                                 y=forecast_data["margin"],
                                 name="Прогноз маржи",
                                 mode="lines+markers",
-                                line=dict(color=SECONDARY_COLOR, width=2, dash="dot"),
-                                marker=dict(symbol="diamond", size=8),
+                                line=dict(color=CHART_ACCENT_COLOR, width=2.6, dash="dot", shape="spline", smoothing=0.45),
+                                marker=dict(symbol="diamond", size=8, color=CHART_ACCENT_COLOR),
                             )
                         )
-                trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="")
+                trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="", bargap=0.24)
                 polish_figure(trend_chart, height=360)
                 st.plotly_chart(trend_chart, use_container_width=True)
                 if not forecast_data.empty:
@@ -7143,13 +7243,28 @@ if active_screen == "Обзор":
                 render_panel_header("Салоны сети", "Выручка по точкам, а для руководителя ещё и маржа.")
                 salon_chart = go.Figure()
                 salon_chart.add_trace(
-                    go.Bar(x=salon_summary["group_name"], y=salon_summary["revenue"], name="Выручка", marker_color=PRIMARY_COLOR)
+                    go.Bar(
+                        x=salon_summary["group_name"],
+                        y=salon_summary["revenue"],
+                        name="Выручка",
+                        marker=dict(
+                            color=gradient_colors(len(salon_summary), CHART_SOFT_BLUE, PRIMARY_COLOR),
+                            line=dict(color="rgba(255,255,255,0.72)", width=0.8),
+                        ),
+                    )
                 )
                 if margin_visible:
                     salon_chart.add_trace(
-                        go.Scatter(x=salon_summary["group_name"], y=salon_summary["margin"], name="Маржа", mode="lines+markers", line=dict(color=SECONDARY_COLOR, width=3))
+                        go.Scatter(
+                            x=salon_summary["group_name"],
+                            y=salon_summary["margin"],
+                            name="Маржа",
+                            mode="lines+markers",
+                            line=dict(color=CHART_ACCENT_COLOR, width=3.2, shape="spline", smoothing=0.35),
+                            marker=dict(size=8, color=CHART_ACCENT_COLOR),
+                        )
                     )
-                salon_chart.update_layout(xaxis_tickangle=-20)
+                salon_chart.update_layout(xaxis_tickangle=-20, bargap=0.26)
                 polish_figure(salon_chart, height=360)
                 st.plotly_chart(salon_chart, use_container_width=True)
 
@@ -7175,7 +7290,7 @@ if active_screen == "Обзор":
                             y="group_name",
                             orientation="h",
                             color="margin_pct",
-                            color_continuous_scale=["#FEE2E2", "#FDE68A", SECONDARY_COLOR],
+                            color_continuous_scale=[CHART_DANGER_COLOR, CHART_SOFT_AMBER, SECONDARY_COLOR],
                             labels={
                                 "group_name": "Поставщик",
                                 "revenue": "Выручка",
@@ -7239,7 +7354,7 @@ if active_screen == "Обзор":
                 if margin_visible:
                     category_chart = px.bar(
                         category_chart_data, x="revenue", y="group_name", orientation="h",
-                        color="margin_pct", color_continuous_scale=["#DBEAFE", "#60A5FA", PRIMARY_COLOR],
+                        color="margin_pct", color_continuous_scale=[CHART_SOFT_BLUE, CHART_INFO_COLOR, PRIMARY_COLOR],
                         labels={"group_name": "Категория", "revenue": "Выручка", "margin_pct": "Маржа %"},
                     )
                     category_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
@@ -7263,7 +7378,7 @@ if active_screen == "Обзор":
                 if margin_visible:
                     manager_chart = px.bar(
                         manager_chart_data, x="revenue", y="group_name", orientation="h",
-                        color="margin_pct", color_continuous_scale=["#E0F2FE", "#38BDF8", PRIMARY_COLOR],
+                        color="margin_pct", color_continuous_scale=[CHART_SOFT_TEAL, CHART_INFO_COLOR, PRIMARY_COLOR],
                         labels={"group_name": "Менеджер", "revenue": "Выручка", "margin_pct": "Маржа %"},
                     )
                     manager_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
@@ -7273,7 +7388,7 @@ if active_screen == "Обзор":
                         x="revenue",
                         y="group_name",
                         orientation="h",
-                        color_discrete_sequence=["#2563EB"],
+                        color_discrete_sequence=[CHART_INFO_COLOR],
                         labels={"group_name": "Менеджер", "revenue": "Выручка"},
                     )
                     manager_chart.update_layout(yaxis_title="")
@@ -7354,7 +7469,7 @@ if active_screen == "ABC-анализ":
                     y="group_name",
                     orientation="h",
                     color="abc_class",
-                    color_discrete_map={"A": PRIMARY_COLOR, "B": "#D97706", "C": "#64748B"},
+                    color_discrete_map={"A": PRIMARY_COLOR, "B": CHART_ACCENT_COLOR, "C": "#7B8796"},
                     labels={"group_name": "Товар", "abc_basis": abc_metric_options[abc_metric]},
                 )
                 fig_abc.update_layout(yaxis_title="", coloraxis_showscale=False)
@@ -7372,7 +7487,7 @@ if active_screen == "ABC-анализ":
                     path=["abc_class", "group_name"],
                     values="abc_basis",
                     color="abc_class",
-                    color_discrete_map={"A": PRIMARY_COLOR, "B": "#D97706", "C": "#64748B"},
+                    color_discrete_map={"A": PRIMARY_COLOR, "B": CHART_ACCENT_COLOR, "C": "#7B8796"},
                 )
                 polish_figure(fig_treemap, height=450)
                 st.plotly_chart(fig_treemap, use_container_width=True)
@@ -7387,7 +7502,7 @@ if active_screen == "ABC-анализ":
             pareto_chart_data["abc_label"] = pareto_chart_data["abc_class"].map(
                 {"A": "РљР»Р°СЃСЃ A", "B": "РљР»Р°СЃСЃ B", "C": "РљР»Р°СЃСЃ C"}
             )
-            pareto_class_colors = {"A": PRIMARY_COLOR, "B": "#D97706", "C": "#64748B"}
+            pareto_class_colors = {"A": PRIMARY_COLOR, "B": CHART_ACCENT_COLOR, "C": "#7B8796"}
             pareto_hover = pareto_chart_data[["group_name", "cum_share_pct", "abc_label"]]
             pareto_tick_step = max(1, len(pareto_chart_data) // 12)
             cutoff_80 = pareto_chart_data[pareto_chart_data["cum_share_pct"] >= 80].head(1)
@@ -7418,8 +7533,8 @@ if active_screen == "ABC-анализ":
                     y=pareto_chart_data["cum_share_pct"],
                     name="Накопленная доля, %",
                     mode="lines+markers",
-                    line=dict(color=SECONDARY_COLOR, width=3, shape="spline", smoothing=0.45),
-                    marker=dict(size=7, color=SECONDARY_COLOR),
+                    line=dict(color=CHART_ACCENT_COLOR, width=3.4, shape="spline", smoothing=0.45),
+                    marker=dict(size=7.5, color=CHART_ACCENT_COLOR),
                     customdata=pareto_hover.to_numpy(),
                     hovertemplate=(
                         "<b>%{customdata[0]}</b><br>"
@@ -7430,6 +7545,14 @@ if active_screen == "ABC-анализ":
                     yaxis="y2",
                 )
             )
+            pareto_fig.add_hrect(
+                y0=80,
+                y1=100,
+                yref="y2",
+                line_width=0,
+                fillcolor="rgba(216, 154, 43, 0.08)",
+                layer="below",
+            )
             pareto_fig.add_shape(
                 type="line",
                 x0=0.5,
@@ -7438,7 +7561,7 @@ if active_screen == "ABC-анализ":
                 y1=80,
                 xref="x",
                 yref="y2",
-                line=dict(color="#991B1B", dash="dash", width=1.6),
+                line=dict(color=CHART_ACCENT_COLOR, dash="dash", width=1.8),
             )
             pareto_fig.add_annotation(
                 x=1,
@@ -7448,7 +7571,7 @@ if active_screen == "ABC-анализ":
                 text="Порог 80%",
                 showarrow=False,
                 yshift=14,
-                font=dict(size=12, color="#991B1B"),
+                font=dict(size=12, color=TEXT_PRIMARY),
                 bgcolor="rgba(255, 255, 255, 0.84)",
             )
             if not cutoff_80.empty:
@@ -7456,8 +7579,8 @@ if active_screen == "ABC-анализ":
                 pareto_fig.add_vline(
                     x=cutoff_rank,
                     line_dash="dot",
-                    line_color="#0F766E",
-                    line_width=1.4,
+                    line_color=PRIMARY_COLOR,
+                    line_width=1.6,
                 )
                 st.caption(
                     f"80% накопленной доли достигается на ранге {cutoff_rank}: "
@@ -7617,7 +7740,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                         y="group_name",
                         orientation="h",
                         color="margin_pct",
-                        color_continuous_scale=["#FDE68A", "#D97706", "#92400E"],
+                        color_continuous_scale=[CHART_SOFT_AMBER, CHART_ACCENT_COLOR, PRIMARY_COLOR],
                         title="",
                         labels={"group_name": "Товар", "margin": "Маржа", "margin_pct": "Маржа %"},
                     )
@@ -7637,7 +7760,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                         y="group_name",
                         orientation="h",
                         color="margin_pct",
-                        color_continuous_scale=["#991B1B", "#DC2626", "#F59E0B"],
+                        color_continuous_scale=[CHART_DANGER_COLOR, "#E9785F", CHART_ACCENT_COLOR],
                         title="",
                         labels={"group_name": "Товар", "margin_pct": "Маржа %"},
                     )
@@ -7659,13 +7782,13 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                         y="margin_pct",
                         size="quantity_bubble",
                         color="margin_pct",
-                        color_continuous_scale=["#991B1B", "#F59E0B", PRIMARY_COLOR],
+                        color_continuous_scale=[CHART_DANGER_COLOR, CHART_ACCENT_COLOR, PRIMARY_COLOR],
                         hover_name="group_name",
                         labels={"revenue": "Выручка", "margin_pct": "Маржа, %", "quantity_bubble": "Объём продаж"},
                         title="",
                         size_max=60,
                     )
-                    scatter_fig.add_hline(y=20, line_dash="dash", line_color="#991B1B", annotation_text="Порог 20%")
+                    scatter_fig.add_hline(y=20, line_dash="dash", line_color=CHART_DANGER_COLOR, annotation_text="Порог 20%")
                     polish_figure(scatter_fig, height=560)
                     st.plotly_chart(scatter_fig, use_container_width=True)
                 else:
@@ -7852,8 +7975,8 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                                 measure=wf_measure,
                                 connector=dict(line=dict(color=PRIMARY_COLOR, width=1)),
                                 increasing=dict(marker_color=PRIMARY_COLOR),
-                                decreasing=dict(marker_color="#991B1B"),
-                                totals=dict(marker_color="#D97706"),
+                                decreasing=dict(marker_color=CHART_DANGER_COLOR),
+                                totals=dict(marker_color=CHART_ACCENT_COLOR),
                                 name="Изменение выручки",
                             )
                         )
@@ -7926,7 +8049,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                 y=yoy_metric,
                 color="year",
                 barmode="group",
-                color_discrete_sequence=[PRIMARY_COLOR, SECONDARY_COLOR, "#64748B", "#991B1B"],
+                color_discrete_sequence=[PRIMARY_COLOR, SECONDARY_COLOR, CHART_INFO_COLOR, CHART_DANGER_COLOR],
                 labels={"month_num": "Месяц", yoy_metric: {"revenue": "Выручка", "margin": "Маржа", "quantity": "Количество"}[yoy_metric], "year": "Год"},
                 title="",
             )
@@ -8987,16 +9110,16 @@ if active_screen == "Закупки":
         render_snapshot_strip(procurement_snapshot_items)
 
         priority_color_map = {
-            "Критичный": "#991B1B",
-            "Высокий": "#D97706",
+            "Критичный": CHART_DANGER_COLOR,
+            "Высокий": CHART_ACCENT_COLOR,
             "Средний": PRIMARY_COLOR,
-            "Низкий": "#64748B",
-            "Новый": "#0F766E",
+            "Низкий": TEXT_MUTED,
+            "Новый": SECONDARY_COLOR,
             "Спящий": "#CBD5E1",
         }
         stock_status_color_map = {
-            "Нет остатка": "#991B1B",
-            "Риск дефицита": "#D97706",
+            "Нет остатка": CHART_DANGER_COLOR,
+            "Риск дефицита": CHART_ACCENT_COLOR,
             "Нужно пополнение": PRIMARY_COLOR,
             "Покрыто остатком": SECONDARY_COLOR,
             "Нет спроса": "#CBD5E1",
@@ -10406,9 +10529,9 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                             hover_name="group_name",
                             color_discrete_map={
                                 "Лидер": PRIMARY_COLOR,
-                                "Активный": "#D97706",
-                                "Стабильный": "#64748B",
-                                "Слабый": "#991B1B",
+                                "Активный": CHART_ACCENT_COLOR,
+                                "Стабильный": CHART_INFO_COLOR,
+                                "Слабый": CHART_DANGER_COLOR,
                             },
                             labels={
                                 "recency": "Давность (дней)",
@@ -10438,9 +10561,9 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                             color="segment",
                             color_discrete_map={
                                 "Лидер": PRIMARY_COLOR,
-                                "Активный": "#D97706",
-                                "Стабильный": "#64748B",
-                                "Слабый": "#991B1B",
+                                "Активный": CHART_ACCENT_COLOR,
+                                "Стабильный": CHART_INFO_COLOR,
+                                "Слабый": CHART_DANGER_COLOR,
                             },
                             title="",
                         )
@@ -10633,7 +10756,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                                     x=return_monthly_summary["month_label"],
                                     y=return_monthly_summary["return_revenue"],
                                     name="Сумма возвратов",
-                                    marker_color="#991B1B",
+                                    marker_color=CHART_DANGER_COLOR,
                                 )
                             )
                             monthly_returns_chart.add_trace(
@@ -10667,7 +10790,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                                 y="group_name",
                                 orientation="h",
                                 color="return_share_pct",
-                                color_continuous_scale=["#FECACA", "#F97316", "#991B1B"],
+                                color_continuous_scale=[CHART_SOFT_AMBER, CHART_ACCENT_COLOR, CHART_DANGER_COLOR],
                                 labels={"group_name": "Товар", "return_revenue": "Сумма возвратов", "return_share_pct": "Доля возвратов, %"},
                                 title="",
                             )
