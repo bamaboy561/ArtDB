@@ -139,7 +139,7 @@ st.set_page_config(
     page_title="ArtDB — аналитика продаж",
     page_icon=APP_FAVICON_PATH if APP_FAVICON_PATH.exists() else "📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -1368,6 +1368,38 @@ WORKSPACE_UI_CSS = f"""
         background: {SURFACE_COLOR};
     }}
 
+    .st-key-mobile_screen_navigation {{
+        display: none;
+    }}
+
+    .st-key-mobile_bottom_navigation,
+    .mobile-table-card-grid,
+    .artdb-pwa-install {{
+        display: none;
+    }}
+
+    .mobile-nav-heading {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.6rem;
+        margin-bottom: 0.35rem;
+    }}
+
+    .mobile-nav-title {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 0.78rem;
+        font-weight: 800;
+    }}
+
+    .mobile-nav-hint {{
+        color: {TEXT_MUTED};
+        font-size: 0.67rem;
+        font-weight: 650;
+        white-space: nowrap;
+    }}
+
     @media (max-width: 900px) {{
         .app-shell-header,
         .workspace-header {{
@@ -1385,20 +1417,447 @@ WORKSPACE_UI_CSS = f"""
         }}
     }}
 
-    @media (max-width: 680px) {{
+    @media (max-width: 767px) {{
         .block-container {{
-            padding-left: 0.8rem;
-            padding-right: 0.8rem;
+            padding: 0.45rem 0.65rem calc(6rem + env(safe-area-inset-bottom));
+        }}
+
+        header[data-testid="stHeader"] {{
+            height: 3rem;
+            background: rgba(244, 247, 249, 0.94);
+            backdrop-filter: blur(10px);
+        }}
+
+        [data-testid="stSidebarCollapsedControl"] {{
+            position: fixed;
+            top: max(0.32rem, env(safe-area-inset-top));
+            left: 0.45rem;
+            z-index: 1002;
+        }}
+
+        [data-testid="stSidebarCollapsedControl"] button {{
+            width: 44px;
+            height: 44px;
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 8px;
+            background: {SURFACE_COLOR};
+            box-shadow: 0 3px 12px rgba(15, 23, 42, 0.1);
+        }}
+
+        section[data-testid="stSidebar"] {{
+            width: min(88vw, 360px) !important;
+            min-width: min(88vw, 360px) !important;
+            box-shadow: 12px 0 30px rgba(15, 23, 42, 0.16);
+        }}
+
+        section[data-testid="stSidebar"][aria-expanded="false"] {{
+            width: 0 !important;
+            min-width: 0 !important;
+            overflow: hidden;
+            transform: none !important;
+            box-shadow: none;
+        }}
+
+        section[data-testid="stSidebar"] > div {{
+            padding-bottom: calc(1.2rem + env(safe-area-inset-bottom));
+        }}
+
+        section[data-testid="stSidebar"] [role="radiogroup"] label {{
+            min-height: 46px;
+            padding: 0.52rem 0.62rem;
+        }}
+
+        section[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+            min-height: 46px;
+        }}
+
+        .st-key-mobile_screen_navigation {{
+            display: block;
+            position: sticky;
+            top: 0.25rem;
+            z-index: 25;
+            margin: 0 0 0.55rem;
+            padding: 0.55rem 0.62rem 0.62rem;
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+            backdrop-filter: blur(12px);
+        }}
+
+        .st-key-mobile_screen_navigation > [data-testid="stElementContainer"]:has(.mobile-nav-heading) {{
+            min-height: 25px;
+        }}
+
+        .st-key-mobile_screen_navigation .mobile-nav-heading {{
+            min-height: 20px;
+            line-height: 1.2;
+        }}
+
+        .st-key-mobile_screen_navigation [data-baseweb="select"] > div {{
+            min-height: 44px;
+            border-radius: 6px;
+        }}
+
+        .st-key-mobile_bottom_navigation {{
+            display: block;
+            position: fixed;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 1000;
+            padding: 0.42rem max(0.55rem, env(safe-area-inset-right)) calc(0.42rem + env(safe-area-inset-bottom)) max(0.55rem, env(safe-area-inset-left));
+            border-top: 1px solid rgba(148, 163, 184, 0.32);
+            background: rgba(255, 255, 255, 0.97);
+            box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.1);
+            backdrop-filter: blur(16px);
+        }}
+
+        .st-key-mobile_bottom_navigation [data-testid="stHorizontalBlock"] {{
+            display: grid !important;
+            grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+            gap: 0.3rem !important;
+            align-items: stretch !important;
+        }}
+
+        .st-key-mobile_bottom_navigation [data-testid="stColumn"] {{
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            flex: none !important;
+        }}
+
+        .st-key-mobile_bottom_navigation .stButton {{
+            width: 100% !important;
+        }}
+
+        .st-key-mobile_bottom_navigation .stButton > button {{
+            width: 100% !important;
+            min-height: 52px;
+            gap: 0.1rem;
+            flex-direction: column;
+            justify-content: center;
+            padding: 0.25rem 0.12rem;
+            border-color: transparent;
+            border-radius: 8px;
+            box-shadow: none;
+        }}
+
+        .st-key-mobile_bottom_navigation .stButton > button p {{
+            font-size: 0.66rem;
+            font-weight: 750;
+            line-height: 1.05;
+        }}
+
+        .st-key-mobile_bottom_navigation .stButton > button span[data-testid="stIconMaterial"] {{
+            font-size: 1.18rem;
+        }}
+
+        .artdb-pwa-install {{
+            position: fixed;
+            right: 0.7rem;
+            bottom: calc(5rem + env(safe-area-inset-bottom));
+            z-index: 1001;
+            align-items: center;
+            gap: 0.38rem;
+            min-height: 42px;
+            padding: 0.58rem 0.78rem;
+            border: 0;
+            border-radius: 999px;
+            color: #FFFFFF;
+            background: {PRIMARY_COLOR};
+            box-shadow: 0 10px 24px rgba(0, 52, 97, 0.22);
+            font-family: 'Manrope', sans-serif;
+            font-size: 0.76rem;
+            font-weight: 800;
+        }}
+
+        .app-shell-header {{
+            align-items: center;
+            flex-direction: row;
+            min-height: 44px;
+            padding: 0.42rem 0 0.55rem 3.25rem;
+            margin-bottom: 0.45rem;
         }}
 
         .app-shell-brand {{
             align-items: flex-start;
             flex-direction: column;
-            gap: 0.25rem;
+            gap: 0.12rem;
+        }}
+
+        .app-shell-name {{
+            font-size: 1.15rem;
+        }}
+
+        .app-shell-copy,
+        .app-shell-user-meta,
+        .app-shell-role {{
+            display: none;
+        }}
+
+        .app-shell-user-name {{
+            max-width: 38vw;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+
+        .workspace-header {{
+            gap: 0.45rem;
+            margin: 0.05rem 0 0.5rem;
+            padding: 0.2rem 0 0.35rem;
         }}
 
         .workspace-header-title {{
-            font-size: 1.3rem;
+            font-size: 1.22rem;
+        }}
+
+        .workspace-header-meta {{
+            font-size: 0.75rem;
+            margin-top: 0.18rem;
+        }}
+
+        .workspace-context {{
+            width: 100%;
+            flex-wrap: nowrap;
+            justify-content: flex-start;
+            overflow-x: auto;
+            padding: 0 0 0.25rem;
+            scrollbar-width: none;
+            scroll-snap-type: x proximity;
+        }}
+
+        .workspace-context::-webkit-scrollbar {{
+            display: none;
+        }}
+
+        .workspace-chip {{
+            flex: 0 0 auto;
+            min-height: 30px;
+            scroll-snap-align: start;
+        }}
+
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            padding: 0.68rem !important;
+        }}
+
+        .metric-grid {{
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.42rem;
+            margin: 0.45rem 0 0.65rem;
+        }}
+
+        .metric-card {{
+            min-height: 86px;
+            padding: 0.62rem;
+        }}
+
+        .metric-label {{
+            font-size: 0.65rem;
+            line-height: 1.2;
+        }}
+
+        .metric-value {{
+            font-size: 1.08rem;
+            overflow-wrap: anywhere;
+        }}
+
+        .metric-delta {{
+            font-size: 0.68rem;
+            line-height: 1.25;
+        }}
+
+        .workspace-band,
+        .journey-grid,
+        .snapshot-strip,
+        .admin-stat-grid,
+        .spotlight-grid {{
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.45rem;
+        }}
+
+        .insight-compact-list {{
+            grid-template-columns: 1fr;
+            grid-auto-rows: auto;
+        }}
+
+        .insight-compact-item,
+        .spotlight-card {{
+            min-height: auto;
+            padding: 0.65rem;
+        }}
+
+        .overview-action-header {{
+            padding: 0.65rem;
+        }}
+
+        .overview-action-item {{
+            gap: 0.52rem;
+            padding: 0.62rem 0.65rem;
+        }}
+
+        .section-intro {{
+            min-height: auto;
+            padding: 0.7rem;
+        }}
+
+        .section-intro h2,
+        h1 {{
+            font-size: 1.35rem !important;
+        }}
+
+        h2 {{
+            font-size: 1.16rem !important;
+        }}
+
+        h3 {{
+            font-size: 1rem !important;
+        }}
+
+        .panel-title {{
+            font-size: 0.98rem;
+        }}
+
+        .panel-caption,
+        [data-testid="stCaptionContainer"] {{
+            font-size: 0.76rem;
+        }}
+
+        .stButton > button,
+        .stDownloadButton > button,
+        div[data-testid="stFormSubmitButton"] > button {{
+            width: 100%;
+            min-height: 44px;
+            padding: 0.55rem 0.75rem;
+        }}
+
+        [data-baseweb="input"] > div,
+        [data-baseweb="select"] > div,
+        [data-testid="stDateInput"] input,
+        [data-testid="stNumberInput"] input {{
+            min-height: 44px;
+        }}
+
+        [data-testid="stFileUploaderDropzone"] {{
+            min-height: 112px;
+            padding: 0.72rem;
+            border-radius: 8px;
+        }}
+
+        [data-testid="stFileUploaderDropzone"] button {{
+            min-height: 42px;
+        }}
+
+        .stTabs [data-baseweb="tab-list"] {{
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            overscroll-behavior-x: contain;
+            scrollbar-width: none;
+        }}
+
+        .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{
+            display: none;
+        }}
+
+        .stTabs [data-baseweb="tab"] {{
+            flex: 0 0 auto;
+            min-height: 44px;
+            white-space: nowrap;
+        }}
+
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"] {{
+            max-width: calc(100vw - 1.3rem);
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }}
+
+        [data-testid="stDataFrame"] [role="gridcell"],
+        [data-testid="stDataFrame"] [role="columnheader"],
+        [data-testid="stDataEditor"] [role="gridcell"],
+        [data-testid="stDataEditor"] [role="columnheader"] {{
+            font-size: 0.74rem !important;
+        }}
+
+        .mobile-table-card-grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.48rem;
+            margin: 0.35rem 0 0.6rem;
+        }}
+
+        .mobile-data-card {{
+            padding: 0.68rem;
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 8px;
+            background: linear-gradient(145deg, #FFFFFF 0%, #F8FBFA 100%);
+        }}
+
+        .mobile-data-card-title {{
+            color: {PRIMARY_COLOR};
+            font-family: 'Manrope', sans-serif;
+            font-size: 0.82rem;
+            font-weight: 800;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }}
+
+        .mobile-data-card-fields {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.42rem 0.65rem;
+            margin-top: 0.55rem;
+        }}
+
+        .mobile-data-card-field {{
+            min-width: 0;
+        }}
+
+        .mobile-data-card-label {{
+            color: {TEXT_MUTED};
+            font-size: 0.62rem;
+            font-weight: 750;
+            letter-spacing: 0.035em;
+            text-transform: uppercase;
+        }}
+
+        .mobile-data-card-value {{
+            margin-top: 0.08rem;
+            color: {TEXT_PRIMARY};
+            font-size: 0.78rem;
+            font-weight: 700;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }}
+
+        .mobile-table-card-note {{
+            color: {TEXT_MUTED};
+            font-size: 0.68rem;
+            line-height: 1.3;
+        }}
+
+        [data-testid="stPlotlyChart"] {{
+            min-height: 290px;
+            padding: 0;
+            touch-action: pan-y;
+            animation: none !important;
+        }}
+
+        [data-testid="stPlotlyChart"] .modebar {{
+            display: none !important;
+        }}
+
+        [data-testid="stExpander"] summary {{
+            min-height: 46px;
+        }}
+
+        [data-testid="stAlert"] {{
+            padding: 0.7rem;
+        }}
+
+        [data-testid="stHorizontalBlock"] {{
+            gap: 0.55rem;
         }}
     }}
 </style>
@@ -1406,6 +1865,97 @@ WORKSPACE_UI_CSS = f"""
 
 
 st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS + WORKSPACE_UI_CSS, unsafe_allow_html=True)
+
+
+def inject_pwa_shell() -> None:
+    components.html(
+        """
+        <script>
+        (() => {
+          const parentWindow = window.parent;
+          const parentDoc = parentWindow && parentWindow.document;
+          if (!parentDoc) return;
+
+          const ensureLink = (rel, href, attributes = {}) => {
+            let node = parentDoc.head.querySelector(`link[rel="${rel}"]`);
+            if (!node) {
+              node = parentDoc.createElement('link');
+              node.rel = rel;
+              parentDoc.head.appendChild(node);
+            }
+            node.href = href;
+            Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, value));
+          };
+
+          const ensureMeta = (name, content) => {
+            let node = parentDoc.head.querySelector(`meta[name="${name}"]`);
+            if (!node) {
+              node = parentDoc.createElement('meta');
+              node.name = name;
+              parentDoc.head.appendChild(node);
+            }
+            node.content = content;
+          };
+
+          const staticRoot = `${parentWindow.location.origin}/app/static`;
+          ensureLink('manifest', `${staticRoot}/manifest.webmanifest`);
+          ensureLink('icon', `${staticRoot}/artdb-icon.svg`, { type: 'image/svg+xml' });
+          ensureLink('apple-touch-icon', `${staticRoot}/artdb-icon.svg`);
+          ensureMeta('theme-color', '#003461');
+          ensureMeta('mobile-web-app-capable', 'yes');
+          ensureMeta('apple-mobile-web-app-capable', 'yes');
+          ensureMeta('apple-mobile-web-app-status-bar-style', 'default');
+          ensureMeta('apple-mobile-web-app-title', 'ArtDB');
+
+          const viewport = parentDoc.head.querySelector('meta[name="viewport"]');
+          if (viewport && !viewport.content.includes('viewport-fit=cover')) {
+            viewport.content = `${viewport.content}, viewport-fit=cover`;
+          }
+
+          if ('serviceWorker' in parentWindow.navigator && parentWindow.isSecureContext) {
+            parentWindow.navigator.serviceWorker
+              .register(`${staticRoot}/service-worker.js`, { scope: '/app/static/' })
+              .catch(() => undefined);
+          }
+
+          if (parentWindow.__artdbInstallPromptBound) return;
+          parentWindow.__artdbInstallPromptBound = true;
+          let deferredPrompt = null;
+
+          const removeInstallButton = () => {
+            parentDoc.getElementById('artdb-pwa-install')?.remove();
+          };
+
+          parentWindow.addEventListener('beforeinstallprompt', (event) => {
+            event.preventDefault();
+            deferredPrompt = event;
+            removeInstallButton();
+
+            const button = parentDoc.createElement('button');
+            button.id = 'artdb-pwa-install';
+            button.className = 'artdb-pwa-install';
+            button.type = 'button';
+            button.innerHTML = '<span aria-hidden="true">＋</span><span>Установить ArtDB</span>';
+            button.addEventListener('click', async () => {
+              if (!deferredPrompt) return;
+              deferredPrompt.prompt();
+              await deferredPrompt.userChoice;
+              deferredPrompt = null;
+              removeInstallButton();
+            });
+            parentDoc.body.appendChild(button);
+          });
+
+          parentWindow.addEventListener('appinstalled', removeInstallButton);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+inject_pwa_shell()
 
 
 def inject_chart_motion() -> None:
@@ -2227,7 +2777,39 @@ SCREEN_NAV_LABELS = {
 }
 
 
-def render_screen_switcher(title: str, options: list[str], *, key: str, description: str = "") -> str:
+def sync_session_value(source_key: str, target_key: str) -> None:
+    value = st.session_state.get(source_key)
+    if value is not None:
+        st.session_state[target_key] = value
+
+
+def initialize_synchronized_state(
+    primary_key: str,
+    mobile_key: str,
+    options: list[str],
+) -> str:
+    if not options:
+        return ""
+
+    current_value = st.session_state.get(primary_key)
+    if current_value not in options:
+        current_value = st.session_state.get(mobile_key)
+    if current_value not in options:
+        current_value = options[0]
+
+    st.session_state[primary_key] = current_value
+    st.session_state[mobile_key] = current_value
+    return str(current_value)
+
+
+def render_screen_switcher(
+    title: str,
+    options: list[str],
+    *,
+    key: str,
+    description: str = "",
+    sync_key: str | None = None,
+) -> str:
     if not options:
         return ""
     if key in st.session_state and st.session_state[key] not in options:
@@ -2235,18 +2817,145 @@ def render_screen_switcher(title: str, options: list[str], *, key: str, descript
 
     st.markdown(f'<div class="sidebar-section-label">{escape(title)}</div>', unsafe_allow_html=True)
     current_value = st.session_state.get(key, options[0])
+    widget_index = None if key in st.session_state else options.index(current_value)
 
     return str(
         st.radio(
             title,
             options=options,
-            index=options.index(current_value) if current_value in options else 0,
+            index=widget_index,
             format_func=lambda option: SCREEN_NAV_LABELS.get(str(option), str(option)),
             horizontal=False,
             label_visibility="collapsed",
             key=key,
+            on_change=sync_session_value if sync_key else None,
+            args=(key, sync_key) if sync_key else None,
         )
     )
+
+
+def render_mobile_screen_navigation(
+    screen_options: list[str],
+    analytics_options: list[str],
+    *,
+    margin_visible: bool,
+) -> tuple[str, str, str, str]:
+    active_screen = initialize_synchronized_state(
+        "primary_screen_nav",
+        "mobile_primary_screen_nav",
+        screen_options,
+    )
+    active_analytics_screen = ""
+    active_advanced_screen = ""
+    abc_metric = "revenue"
+
+    with st.container(key="mobile_screen_navigation"):
+        st.markdown(
+            '<div class="mobile-nav-heading"><div class="mobile-nav-title">Текущий раздел</div>'
+            '<div class="mobile-nav-hint">☰ режим и настройки</div></div>',
+            unsafe_allow_html=True,
+        )
+        active_screen = str(
+            st.selectbox(
+                "Текущий раздел",
+                options=screen_options,
+                format_func=lambda option: SCREEN_NAV_LABELS.get(str(option), str(option)),
+                key="mobile_primary_screen_nav",
+                label_visibility="collapsed",
+                on_change=sync_session_value,
+                args=("mobile_primary_screen_nav", "primary_screen_nav"),
+            )
+        )
+
+        if active_screen == "Аналитика":
+            initialize_synchronized_state(
+                "analytics_screen_nav",
+                "mobile_analytics_screen_nav",
+                analytics_options,
+            )
+            active_analytics_screen = str(
+                st.selectbox(
+                    "Раздел аналитики",
+                    options=analytics_options,
+                    format_func=lambda option: SCREEN_NAV_LABELS.get(str(option), str(option)),
+                    key="mobile_analytics_screen_nav",
+                    on_change=sync_session_value,
+                    args=("mobile_analytics_screen_nav", "analytics_screen_nav"),
+                )
+            )
+
+            if active_analytics_screen == "Расширенный":
+                advanced_options = ["RFM-анализ", "Тепловая карта", "Прогноз", "Возвраты"]
+                initialize_synchronized_state(
+                    "advanced_screen_nav",
+                    "mobile_advanced_screen_nav",
+                    advanced_options,
+                )
+                active_advanced_screen = str(
+                    st.selectbox(
+                        "Глубокий разбор",
+                        options=advanced_options,
+                        key="mobile_advanced_screen_nav",
+                        on_change=sync_session_value,
+                        args=("mobile_advanced_screen_nav", "advanced_screen_nav"),
+                    )
+                )
+
+        if active_screen == "ABC-анализ":
+            abc_metric_options = {"revenue": "Выручка", "quantity": "Количество"}
+            if margin_visible:
+                abc_metric_options["margin"] = "Маржа"
+            abc_metric_keys = list(abc_metric_options)
+            initialize_synchronized_state(
+                "abc_metric_sidebar",
+                "mobile_abc_metric",
+                abc_metric_keys,
+            )
+            abc_metric = str(
+                st.selectbox(
+                    "Метрика ABC",
+                    options=abc_metric_keys,
+                    format_func=abc_metric_options.get,
+                    key="mobile_abc_metric",
+                    on_change=sync_session_value,
+                    args=("mobile_abc_metric", "abc_metric_sidebar"),
+                )
+            )
+
+    return active_screen, active_analytics_screen, active_advanced_screen, abc_metric
+
+
+MOBILE_BOTTOM_NAV_ITEMS = (
+    ("Обзор", "Главная", ":material/home:"),
+    ("ABC-анализ", "ABC", ":material/donut_large:"),
+    ("Закупки", "Закупки", ":material/inventory_2:"),
+    ("Данные", "Данные", ":material/upload_file:"),
+)
+
+
+def set_mobile_navigation_target(target_screen: str) -> None:
+    st.session_state["primary_screen_nav"] = target_screen
+    st.session_state["mobile_primary_screen_nav"] = target_screen
+
+
+def render_mobile_bottom_navigation(active_screen: str, screen_options: list[str]) -> None:
+    available_items = [item for item in MOBILE_BOTTOM_NAV_ITEMS if item[0] in screen_options]
+    if not available_items:
+        return
+
+    with st.container(key="mobile_bottom_navigation"):
+        columns = st.columns(len(available_items), gap="small")
+        for column, (target_screen, label, icon) in zip(columns, available_items):
+            with column:
+                st.button(
+                    label,
+                    key=f"mobile_bottom_{target_screen}",
+                    type="primary" if active_screen == target_screen else "tertiary",
+                    icon=icon,
+                    on_click=set_mobile_navigation_target,
+                    args=(target_screen,),
+                    use_container_width=True,
+                )
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {".csv", ".xls", ".xlsx"}
@@ -3553,20 +4262,33 @@ def _normalized_label(value: object) -> str:
     return str(value).strip().casefold().replace("_", " ")
 
 
+def _strip_metric_prefix(label: str) -> str:
+    for prefix in ("план ", "факт ", "отклонение ", "плановая ", "фактическая "):
+        if label.startswith(prefix):
+            return label[len(prefix) :]
+    return label
+
+
 def _is_money_label(label: str) -> bool:
-    normalized = _normalized_label(label)
+    normalized = _strip_metric_prefix(_normalized_label(label))
     return normalized.startswith(
         (
             "выручка",
+            "выручки",
             "валовая выручка",
             "чистая выручка",
             "себестоимость",
+            "себестоимости",
             "стоимость",
+            "стоимости",
             "маржа",
+            "маржи",
             "средняя себестоимость",
             "доход",
             "прибыль",
+            "прибыли",
             "сумма",
+            "суммы",
             "деньги",
             "прогноз себестоимости",
             "изменение выручки",
@@ -3593,7 +4315,7 @@ def _is_percent_label(label: str) -> bool:
 
 
 def _is_count_label(label: str) -> bool:
-    normalized = _normalized_label(label)
+    normalized = _strip_metric_prefix(_normalized_label(label))
     if "/" in normalized:
         return False
     if normalized == "sku":
@@ -3601,7 +4323,9 @@ def _is_count_label(label: str) -> bool:
     return normalized.startswith(
         (
             "количество",
+            "количества",
             "остаток",
+            "остатка",
             "доступный остаток",
             "покрытие",
             "к заказу",
@@ -3764,24 +4488,6 @@ def format_display_frame(
             )
             continue
 
-        if _is_percent_label(final_label):
-            formatted_columns[final_label] = series.map(
-                lambda value: "—" if is_missing(value) else format_percent(_coerce_float_for_display(value))
-            )
-            continue
-
-        if _is_money_label(final_label):
-            formatted_columns[final_label] = series.map(
-                lambda value: "—" if is_missing(value) else format_money(_coerce_float_for_display(value))
-            )
-            continue
-
-        if _is_count_label(final_label):
-            formatted_columns[final_label] = series.map(
-                lambda value: "—" if is_missing(value) else format_number(_coerce_float_for_display(value))
-            )
-            continue
-
         formatted_columns[final_label] = series.map(lambda value: "—" if is_missing(value) else value)
 
     return pd.DataFrame(formatted_columns, index=view.index)
@@ -3808,6 +4514,56 @@ def format_display_frame_for_role(
         safe_rename_map,
         columns=safe_columns,
     )
+
+
+def render_mobile_table_cards(
+    frame: pd.DataFrame,
+    *,
+    title_column: str | None = None,
+    field_columns: list[str] | None = None,
+    max_rows: int = 6,
+) -> None:
+    if frame.empty or not len(frame.columns):
+        return
+
+    available_columns = [str(column) for column in frame.columns]
+    resolved_title = title_column if title_column in available_columns else available_columns[0]
+    if field_columns is None:
+        resolved_fields = [column for column in available_columns if column != resolved_title][:4]
+    else:
+        resolved_fields = [
+            column for column in field_columns if column in available_columns and column != resolved_title
+        ][:4]
+
+    cards: list[str] = []
+    for _, row in frame.head(max_rows).iterrows():
+        title_value = row.get(resolved_title, "—")
+        safe_title = "—" if is_missing(title_value) else escape(str(title_value))
+        fields = []
+        for column in resolved_fields:
+            value = row.get(column, "—")
+            safe_value = "—" if is_missing(value) else escape(str(value))
+            fields.append(
+                '<div class="mobile-data-card-field">'
+                f'<div class="mobile-data-card-label">{escape(column)}</div>'
+                f'<div class="mobile-data-card-value">{safe_value}</div>'
+                "</div>"
+            )
+        cards.append(
+            '<article class="mobile-data-card">'
+            f'<div class="mobile-data-card-title">{safe_title}</div>'
+            f'<div class="mobile-data-card-fields">{"".join(fields)}</div>'
+            "</article>"
+        )
+
+    note = ""
+    if len(frame) > max_rows:
+        note = (
+            '<div class="mobile-table-card-note">'
+            f'Показано {max_rows} из {len(frame)} строк. Полная таблица доступна ниже.'
+            "</div>"
+        )
+    render_html_block(f'<div class="mobile-table-card-grid">{"".join(cards)}{note}</div>')
 
 
 def _safe_excel_sheet_name(raw_name: str, used_names: set[str]) -> str:
@@ -5909,6 +6665,8 @@ if upload_flash_message:
     st.success(upload_flash_message)
 
 main_col = st.container()
+mobile_navigation_slot = main_col.empty()
+mobile_bottom_navigation_slot = main_col.empty()
 control_col = main_col
 
 if work_mode in upload_modes:
@@ -6183,7 +6941,11 @@ data = enrich_sales_with_supplier(
 )
 
 margin_visible = can_view_margin(current_user)
-initial_monthly_summary = cached_build_monthly_summary(data)
+available_history_months = (
+    int(data["date"].dropna().dt.to_period("M").nunique())
+    if "date" in data.columns and not data.empty
+    else 6
+)
 
 screen_options = ["Обзор", "ABC-анализ", "Карточка SKU"]
 if margin_visible:
@@ -6200,7 +6962,7 @@ active_analytics_screen = ""
 active_advanced_screen = ""
 abc_metric = "revenue"
 procurement_history_months = min(
-    max(int(initial_monthly_summary["month_label"].nunique()) if not initial_monthly_summary.empty else 6, 3),
+    max(available_history_months, 3),
     6,
 )
 procurement_coverage_days = 30
@@ -6222,6 +6984,21 @@ if (
 ):
     st.session_state["primary_screen_nav"] = "ABC-анализ"
 
+with mobile_navigation_slot.container():
+    (
+        active_screen,
+        active_analytics_screen,
+        active_advanced_screen,
+        abc_metric,
+    ) = render_mobile_screen_navigation(
+        screen_options,
+        analytics_screen_options,
+        margin_visible=margin_visible,
+    )
+
+with mobile_bottom_navigation_slot.container():
+    render_mobile_bottom_navigation(active_screen, screen_options)
+
 with st.sidebar:
     st.markdown('<div class="sidebar-section-label">Рабочее пространство</div>', unsafe_allow_html=True)
 
@@ -6229,6 +7006,7 @@ with st.sidebar:
         "Основной экран",
         screen_options,
         key="primary_screen_nav",
+        sync_key="mobile_primary_screen_nav",
     )
 
     if active_screen == "Аналитика":
@@ -6236,6 +7014,7 @@ with st.sidebar:
             "Раздел аналитики",
             analytics_screen_options,
             key="analytics_screen_nav",
+            sync_key="mobile_analytics_screen_nav",
         )
     else:
         active_analytics_screen = ""
@@ -6245,6 +7024,7 @@ with st.sidebar:
             "Глубокий разбор",
             ["RFM-анализ", "Тепловая карта", "Прогноз", "Возвраты"],
             key="advanced_screen_nav",
+            sync_key="mobile_advanced_screen_nav",
         )
     else:
         active_advanced_screen = ""
@@ -6259,6 +7039,8 @@ with st.sidebar:
             format_func=abc_metric_options.get,
             index=0,
             key="abc_metric_sidebar",
+            on_change=sync_session_value,
+            args=("abc_metric_sidebar", "mobile_abc_metric"),
         )
 
     if active_screen == "Закупки":
@@ -6509,35 +7291,101 @@ has_item_codes = (
 )
 product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
 overview = cached_build_overview_metrics(data)
-product_summary = cached_build_product_summary(data, product_analysis_column)
-category_summary = cached_build_product_summary(data, "category")
-manager_summary = cached_build_product_summary(data, "manager")
-salon_summary = cached_build_product_summary(data, "salon") if "salon" in data.columns else pd.DataFrame()
-supplier_sales_summary = cached_build_product_summary(data, "supplier") if "supplier" in data.columns else pd.DataFrame()
-monthly_summary = cached_build_monthly_summary(data)
-returns_overview = cached_build_returns_overview(data)
-plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
-monthly_plans = load_monthly_plans()
-procurement_orders = load_procurement_orders()
-procurement_order_items = load_procurement_order_items()
-open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
-procurement_order_overview = build_procurement_order_overview(procurement_orders, procurement_order_items)
-plan_scope_salons = (
-    sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
-    if "salon" in plan_fact_source_data.columns
-    else ([current_user.get("salon", "")] if current_user.get("salon") else [])
+
+needs_product_summary = active_screen in {"Обзор", "Карточка SKU", "Финансы", "ABC-анализ"} or (
+    active_screen == "Аналитика" and active_analytics_screen == "Маржинальность"
 )
-allow_network_plan_fallback = bool(
-    is_network_role(current_user["role"])
-    and registered_salons
-    and sorted({str(salon).strip() for salon in plan_scope_salons if str(salon).strip()}) == sorted({str(salon).strip() for salon in registered_salons})
+needs_breakdown_summaries = active_screen in {"Обзор", "Финансы"}
+needs_monthly_summary = active_screen in {"Обзор", "Данные"} or (
+    active_screen == "Аналитика"
+    and (
+        active_analytics_screen == "Сравнение месяцев"
+        or (
+            active_analytics_screen == "Расширенный"
+            and active_advanced_screen == "Прогноз"
+        )
+    )
 )
-scope_plan_summary = build_scope_plan_summary(
-    monthly_plans,
-    plan_scope_salons,
-    allow_network_fallback=allow_network_plan_fallback,
+needs_returns_overview = active_screen in {"Обзор", "Финансы"} or (
+    active_screen == "Аналитика"
+    and active_analytics_screen == "Расширенный"
+    and active_advanced_screen == "Возвраты"
 )
-plan_fact_summary = cached_build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
+needs_plan_analysis = active_screen in {"Обзор", "Финансы", "План / факт"}
+needs_order_analysis = active_screen in {"Обзор", "Карточка SKU", "Финансы", "Закупки"}
+
+product_summary = (
+    cached_build_product_summary(data, product_analysis_column)
+    if needs_product_summary
+    else pd.DataFrame()
+)
+category_summary = (
+    cached_build_product_summary(data, "category")
+    if needs_breakdown_summaries
+    else pd.DataFrame()
+)
+manager_summary = (
+    cached_build_product_summary(data, "manager")
+    if active_screen == "Обзор"
+    else pd.DataFrame()
+)
+salon_summary = (
+    cached_build_product_summary(data, "salon")
+    if needs_breakdown_summaries and "salon" in data.columns
+    else pd.DataFrame()
+)
+supplier_sales_summary = (
+    cached_build_product_summary(data, "supplier")
+    if active_screen == "Обзор" and "supplier" in data.columns
+    else pd.DataFrame()
+)
+monthly_summary = (
+    cached_build_monthly_summary(data)
+    if needs_monthly_summary
+    else pd.DataFrame()
+)
+returns_overview = cached_build_returns_overview(data) if needs_returns_overview else {}
+
+plan_monthly_summary = pd.DataFrame()
+monthly_plans = pd.DataFrame()
+plan_scope_salons: list[str] = []
+scope_plan_summary = pd.DataFrame()
+plan_fact_summary = pd.DataFrame()
+if needs_plan_analysis:
+    plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
+    monthly_plans = load_monthly_plans()
+    plan_scope_salons = (
+        sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
+        if "salon" in plan_fact_source_data.columns
+        else ([current_user.get("salon", "")] if current_user.get("salon") else [])
+    )
+    allow_network_plan_fallback = bool(
+        is_network_role(current_user["role"])
+        and registered_salons
+        and sorted({str(salon).strip() for salon in plan_scope_salons if str(salon).strip()})
+        == sorted({str(salon).strip() for salon in registered_salons})
+    )
+    scope_plan_summary = build_scope_plan_summary(
+        monthly_plans,
+        plan_scope_salons,
+        allow_network_fallback=allow_network_plan_fallback,
+    )
+    plan_fact_summary = cached_build_plan_fact_summary(plan_monthly_summary, scope_plan_summary)
+
+procurement_orders = pd.DataFrame()
+procurement_order_items = pd.DataFrame()
+open_procurement_orders = pd.DataFrame()
+procurement_order_overview = pd.DataFrame()
+if needs_order_analysis:
+    procurement_orders = load_procurement_orders()
+    procurement_order_items = load_procurement_order_items()
+    open_procurement_orders = build_open_order_summary(procurement_orders, procurement_order_items)
+    if active_screen == "Закупки":
+        procurement_order_overview = build_procurement_order_overview(
+            procurement_orders,
+            procurement_order_items,
+        )
+
 plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
@@ -6558,7 +7406,7 @@ if selected_suppliers and "supplier" in procurement_items.columns:
 procurement_forecast = pd.DataFrame()
 procurement_overview = cached_build_procurement_overview(procurement_forecast)
 procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
-needs_procurement_analysis = active_screen in {"Обзор", "Карточка SKU", "Финансы", "Закупки"}
+needs_procurement_analysis = needs_order_analysis
 if needs_procurement_analysis:
     procurement_forecast = cached_build_procurement_forecast(
         procurement_source_data,
@@ -7929,12 +8777,19 @@ if active_screen == "Обзор":
 
         with st.container(border=True):
             render_panel_header("Топ товаров", "Лидеры по выручке.")
+            top_products_display = format_display_frame_for_role(
+                top_products,
+                current_user,
+                {"group_name": "Товар", "revenue": "Выручка", "margin": "Маржа", "quantity": "Количество", "margin_pct": "Маржа, %"},
+            )
+            render_mobile_table_cards(
+                top_products_display,
+                title_column="Товар",
+                field_columns=["Выручка", "Маржа", "Количество", "Маржа, %"],
+                max_rows=7,
+            )
             st.dataframe(
-                format_display_frame_for_role(
-                    top_products,
-                    current_user,
-                    {"group_name": "Товар", "revenue": "Выручка", "margin": "Маржа", "quantity": "Количество", "margin_pct": "Маржа, %"},
-                ),
+                top_products_display,
                 use_container_width=True,
                 hide_index=True,
                 height=300,
@@ -8150,21 +9005,28 @@ if active_screen == "ABC-анализ":
                 "Детальная таблица",
                 "Расшифровка по каждой позиции.",
             )
+            abc_display = format_display_frame_for_role(
+                abc_tab_data,
+                current_user,
+                {
+                    "group_name": "Товар",
+                    "abc_basis": abc_metric_options[abc_metric],
+                    "share_pct": "Доля, %",
+                    "abc_class": "Класс ABC",
+                    "revenue": "Выручка",
+                    "margin": "Маржа",
+                    "quantity": "Кол-во",
+                    "margin_pct": "Маржа, %",
+                },
+            )
+            render_mobile_table_cards(
+                abc_display,
+                title_column="Товар",
+                field_columns=["Класс ABC", abc_metric_options[abc_metric], "Доля, %", "Кол-во"],
+                max_rows=8,
+            )
             st.dataframe(
-                format_display_frame_for_role(
-                    abc_tab_data,
-                    current_user,
-                    {
-                        "group_name": "Товар",
-                        "abc_basis": abc_metric_options[abc_metric],
-                        "share_pct": "Доля, %",
-                        "abc_class": "Класс ABC",
-                        "revenue": "Выручка",
-                        "margin": "Маржа",
-                        "quantity": "Кол-во",
-                        "margin_pct": "Маржа, %",
-                    },
-                ),
+                abc_display,
                 use_container_width=True,
                 hide_index=True,
                 height=400,
@@ -9706,12 +10568,20 @@ if active_screen == "Закупки":
                 st.info(empty_message)
                 return
             visible_columns = [column for column in columns if column in frame.columns]
+            stock_risk_display = format_display_frame_for_role(
+                frame[visible_columns].copy(),
+                current_user,
+                rename_map=stock_risk_rename_map,
+            )
+            preferred_title = "Товар" if "Товар" in stock_risk_display.columns else None
+            render_mobile_table_cards(
+                stock_risk_display,
+                title_column=preferred_title,
+                field_columns=["Поставщик", "Статус остатка", "Количество доступно", "Количество к заказу"],
+                max_rows=6,
+            )
             st.dataframe(
-                format_display_frame_for_role(
-                    frame[visible_columns].copy(),
-                    current_user,
-                    rename_map=stock_risk_rename_map,
-                ),
+                stock_risk_display,
                 use_container_width=True,
                 hide_index=True,
                 height=height,

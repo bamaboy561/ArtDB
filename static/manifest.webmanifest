@@ -1,0 +1,22 @@
+{
+  "id": "/",
+  "name": "ArtDB - аналитика продаж",
+  "short_name": "ArtDB",
+  "description": "Продажи, ассортимент, остатки и закупки в одном рабочем пространстве.",
+  "lang": "ru",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F4F7F9",
+  "theme_color": "#003461",
+  "icons": [
+    {
+      "src": "/app/static/artdb-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "finance", "productivity"]
+}
