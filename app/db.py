@@ -16,6 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - local fallback without postgre
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 PGCRYPTO_KEY_ENV = "APP_PGCRYPTO_KEY"
 PGCRYPTO_OPTIONS = "cipher-algo=aes256,compress-algo=1"
+SUPPLIER_TO_BRAND_MIGRATION_SERVICE = "supplier_assignments_to_brands_v1"
 DATABASE_SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -374,6 +375,78 @@ def _migrate_procurement_items_table(cursor: Any) -> None:
     )
 
 
+def _migrate_supplier_assignments_to_brands(cursor: Any) -> None:
+    cursor.execute(
+        "SELECT last_run_key FROM service_state WHERE service_name = %s",
+        (SUPPLIER_TO_BRAND_MIGRATION_SERVICE,),
+    )
+    migration_state = cursor.fetchone()
+    if migration_state and str(migration_state.get("last_run_key", "")).strip() == "complete":
+        return
+
+    # These assignments were previously entered as suppliers, but represent product brands.
+    cursor.execute(
+        """
+        INSERT INTO procurement_items (
+            product,
+            brand,
+            updated_by,
+            updated_at
+        )
+        SELECT
+            COALESCE(NULLIF(BTRIM(product), ''), BTRIM(product_key)),
+            BTRIM(supplier),
+            'supplier-to-brand-migration',
+            NOW()
+        FROM supplier_product_assignments
+        WHERE BTRIM(supplier) <> ''
+          AND COALESCE(NULLIF(BTRIM(product), ''), BTRIM(product_key)) <> ''
+        ON CONFLICT (product) DO UPDATE SET
+            brand = CASE
+                WHEN BTRIM(procurement_items.brand) = '' THEN EXCLUDED.brand
+                ELSE procurement_items.brand
+            END,
+            updated_by = CASE
+                WHEN BTRIM(procurement_items.brand) = '' THEN EXCLUDED.updated_by
+                ELSE procurement_items.updated_by
+            END,
+            updated_at = CASE
+                WHEN BTRIM(procurement_items.brand) = '' THEN NOW()
+                ELSE procurement_items.updated_at
+            END
+        """
+    )
+    cursor.execute(
+        """
+        UPDATE procurement_items
+        SET
+            brand = CASE
+                WHEN BTRIM(brand) = '' THEN BTRIM(supplier)
+                ELSE brand
+            END,
+            supplier = '',
+            updated_by = 'supplier-to-brand-migration',
+            updated_at = NOW()
+        WHERE BTRIM(supplier) <> ''
+          AND (
+              BTRIM(brand) = ''
+              OR LOWER(BTRIM(brand)) = LOWER(BTRIM(supplier))
+          )
+        """
+    )
+    cursor.execute("DELETE FROM supplier_product_assignments")
+    cursor.execute(
+        """
+        INSERT INTO service_state (service_name, last_run_key, updated_at)
+        VALUES (%s, 'complete', NOW())
+        ON CONFLICT (service_name) DO UPDATE SET
+            last_run_key = EXCLUDED.last_run_key,
+            updated_at = NOW()
+        """,
+        (SUPPLIER_TO_BRAND_MIGRATION_SERVICE,),
+    )
+
+
 def ensure_database_ready() -> None:
     global _DB_READY
     if _DB_READY or not database_enabled():
@@ -385,6 +458,7 @@ def ensure_database_ready() -> None:
             _migrate_users_table(cursor)
             _migrate_audit_logs_table(cursor)
             _migrate_procurement_items_table(cursor)
+            _migrate_supplier_assignments_to_brands(cursor)
     _DB_READY = True
 
 
