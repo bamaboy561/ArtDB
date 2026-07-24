@@ -63,6 +63,14 @@ INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "supplier",
         "vendor",
     ),
+    "brand": (
+        "бренд",
+        "торговая марка",
+        "марка",
+        "производитель",
+        "brand",
+        "manufacturer",
+    ),
     "min_order_qty": (
         "moq",
         "минимальный заказ",
@@ -311,7 +319,7 @@ def prepare_inventory_data(frame: pd.DataFrame, mapping: dict[str, str | None]) 
     raw_product = _series_from_mapping(frame, resolved_mapping, "product")
     prepared["product"] = raw_product.fillna("").astype(str).str.strip() if raw_product is not None else ""
 
-    text_fields = ("supplier", "notes")
+    text_fields = ("supplier", "brand", "notes")
     numeric_fields = ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple")
     integer_fields = ("lead_time_days",)
 

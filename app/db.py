@@ -111,7 +111,9 @@ CREATE INDEX IF NOT EXISTS monthly_plans_salon_idx
 CREATE TABLE IF NOT EXISTS procurement_items (
     product TEXT PRIMARY KEY,
     supplier TEXT NOT NULL DEFAULT '',
+    brand TEXT NOT NULL DEFAULT '',
     stock_on_hand DOUBLE PRECISION NOT NULL DEFAULT 0,
+    stock_value DOUBLE PRECISION NOT NULL DEFAULT 0,
     stock_in_transit DOUBLE PRECISION NOT NULL DEFAULT 0,
     min_order_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
     order_multiple DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -360,6 +362,18 @@ def _migrate_audit_logs_table(cursor: Any) -> None:
     )
 
 
+def _migrate_procurement_items_table(cursor: Any) -> None:
+    cursor.execute(
+        "ALTER TABLE procurement_items ADD COLUMN IF NOT EXISTS brand TEXT NOT NULL DEFAULT ''"
+    )
+    cursor.execute(
+        "ALTER TABLE procurement_items ADD COLUMN IF NOT EXISTS stock_value DOUBLE PRECISION NOT NULL DEFAULT 0"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS procurement_items_brand_idx ON procurement_items (brand)"
+    )
+
+
 def ensure_database_ready() -> None:
     global _DB_READY
     if _DB_READY or not database_enabled():
@@ -370,6 +384,7 @@ def ensure_database_ready() -> None:
             cursor.execute(DATABASE_SCHEMA_SQL)
             _migrate_users_table(cursor)
             _migrate_audit_logs_table(cursor)
+            _migrate_procurement_items_table(cursor)
     _DB_READY = True
 
 

@@ -10,7 +10,9 @@ from sales_analytics import build_abc_analysis, build_product_summary
 PROCUREMENT_ITEM_COLUMNS = [
     "product",
     "supplier",
+    "brand",
     "stock_on_hand",
+    "stock_value",
     "stock_in_transit",
     "min_order_qty",
     "order_multiple",
@@ -79,6 +81,7 @@ def build_procurement_forecast(
         "product",
         "category",
         "supplier",
+        "brand",
         "abc_class",
         "xyz_class",
         "priority",
@@ -93,6 +96,7 @@ def build_procurement_forecast(
         "forecast_qty",
         "avg_daily_qty",
         "stock_on_hand",
+        "stock_value",
         "manual_stock_in_transit",
         "ordered_in_transit_qty",
         "stock_in_transit",
@@ -303,8 +307,9 @@ def build_procurement_forecast(
     item_settings = item_settings[item_settings["product"] != ""].copy()
     item_settings = item_settings.drop_duplicates(subset=["product"], keep="last")
     item_settings["supplier"] = item_settings["supplier"].fillna("").astype(str).str.strip()
+    item_settings["brand"] = item_settings["brand"].fillna("").astype(str).str.strip()
     item_settings["notes"] = item_settings["notes"].fillna("").astype(str).str.strip()
-    for numeric_column in ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple"):
+    for numeric_column in ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple"):
         item_settings[numeric_column] = item_settings[numeric_column].map(_safe_non_negative_number)
     item_settings["lead_time_days"] = item_settings["lead_time_days"].map(_safe_non_negative_int)
 
@@ -358,13 +363,16 @@ def build_procurement_forecast(
         how="left",
     )
     procurement["supplier"] = procurement["supplier"].fillna("").astype(str).str.strip()
+    procurement["brand"] = (
+        procurement["brand"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+    )
     missing_procurement_supplier = procurement["supplier"].eq("") | procurement["supplier"].str.casefold().eq("не назначен")
     sales_supplier = procurement["sales_supplier"].fillna("").astype(str).str.strip()
     procurement.loc[missing_procurement_supplier & sales_supplier.ne(""), "supplier"] = (
         sales_supplier.loc[missing_procurement_supplier & sales_supplier.ne("")]
     )
     procurement["notes"] = procurement["notes"].fillna("").astype(str).str.strip()
-    for numeric_column in ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple"):
+    for numeric_column in ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple"):
         procurement[numeric_column] = procurement[numeric_column].map(_safe_non_negative_number)
     procurement["lead_time_days"] = procurement["lead_time_days"].map(_safe_non_negative_int)
     procurement["lead_time_days"] = procurement["lead_time_days"].where(procurement["lead_time_days"] > 0, safe_lead_time_days)
@@ -648,6 +656,7 @@ def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, flo
             "critical_stock_count": 0.0,
             "stable_sku_count": 0.0,
             "supplier_count": 0.0,
+            "brand_count": 0.0,
             "available_stock_qty_total": 0.0,
             "ordered_in_transit_qty_total": 0.0,
             "forecast_qty_total": 0.0,
@@ -664,6 +673,14 @@ def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, flo
     reorder_mask = procurement_frame["recommended_order_qty"].fillna(0) > 0
     critical_stock_mask = procurement_frame["stock_status"].isin(["Нет остатка", "Риск дефицита"])
     supplier_count = procurement_frame["supplier"].fillna("").astype(str).str.strip().replace("", pd.NA).nunique(dropna=True)
+    brand_count = (
+        procurement_frame.get("brand", pd.Series(dtype="object"))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace({"": pd.NA, "Не назначен": pd.NA})
+        .nunique(dropna=True)
+    )
     forecast_revenue_total = procurement_frame["forecast_revenue"].sum(min_count=1)
 
     return {
@@ -674,6 +691,7 @@ def build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, flo
         "critical_stock_count": float(critical_stock_mask.sum()),
         "stable_sku_count": float(stable_mask.sum()),
         "supplier_count": float(supplier_count),
+        "brand_count": float(brand_count),
         "available_stock_qty_total": float(procurement_frame["available_stock_qty"].sum()),
         "ordered_in_transit_qty_total": float(procurement_frame["ordered_in_transit_qty"].sum()),
         "forecast_qty_total": float(procurement_frame["forecast_qty"].sum()),

@@ -3743,6 +3743,57 @@ def enrich_sales_with_supplier(
     return enriched
 
 
+def enrich_sales_with_brand(
+    data: pd.DataFrame,
+    procurement_items: pd.DataFrame,
+) -> pd.DataFrame:
+    if data.empty:
+        return data
+
+    enriched = data.copy()
+    enriched["brand"] = (
+        enriched.get("brand", pd.Series("", index=enriched.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    if procurement_items.empty or not {"product", "brand"}.issubset(procurement_items.columns):
+        enriched["brand"] = enriched["brand"].replace("", "Не назначен")
+        return enriched
+
+    brand_lookup_source = procurement_items[["product", "brand"]].copy()
+    brand_lookup_source["product_lookup_key"] = (
+        brand_lookup_source["product"].fillna("").astype(str).str.strip().str.casefold()
+    )
+    brand_lookup_source["brand"] = (
+        brand_lookup_source["brand"].fillna("").astype(str).str.strip()
+    )
+    brand_lookup_source = brand_lookup_source[
+        brand_lookup_source["product_lookup_key"].ne("")
+        & brand_lookup_source["brand"].ne("")
+    ]
+    if not brand_lookup_source.empty:
+        brand_lookup = (
+            brand_lookup_source.drop_duplicates("product_lookup_key", keep="last")
+            .set_index("product_lookup_key")["brand"]
+            .to_dict()
+        )
+        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+        mapped_brand = product_lookup.map(brand_lookup)
+        if "product_key" in enriched.columns:
+            product_key_lookup = (
+                enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+            )
+            mapped_brand = mapped_brand.fillna(product_key_lookup.map(brand_lookup))
+
+        missing_brand = enriched["brand"].eq("") | enriched["brand"].str.casefold().eq("не назначен")
+        fill_mask = missing_brand & mapped_brand.fillna("").astype(str).str.strip().ne("")
+        enriched.loc[fill_mask, "brand"] = mapped_brand.loc[fill_mask].astype(str).str.strip()
+
+    enriched["brand"] = enriched["brand"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+    return enriched
+
+
 def build_missing_supplier_assignment_candidates(data: pd.DataFrame) -> pd.DataFrame:
     columns = ["product_key", "product", "category", "revenue", "quantity", "line_count", "supplier"]
     if data.empty or "supplier" not in data.columns:
@@ -6945,6 +6996,7 @@ data = enrich_sales_with_supplier(
     supplier_rule_items=supplier_rule_items,
     supplier_product_assignments=supplier_product_assignments,
 )
+data = enrich_sales_with_brand(data, procurement_items)
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -6977,6 +7029,7 @@ procurement_safety_days = 7
 procurement_min_active_months = 2
 selected_categories = []
 selected_suppliers = []
+selected_brands = []
 selected_managers = []
 selected_salons_filter = []
 analytics_screen_options = []
@@ -7145,6 +7198,20 @@ all_suppliers = (
     if "supplier" in filter_source_data.columns and filter_source_data["supplier"].nunique() > 1
     else []
 )
+brand_scope_values: set[str] = set()
+if "brand" in filter_source_data.columns:
+    brand_scope_values.update(
+        value
+        for value in filter_source_data["brand"].dropna().astype(str).str.strip().tolist()
+        if value
+    )
+if "brand" in procurement_items.columns:
+    brand_scope_values.update(
+        value
+        for value in procurement_items["brand"].dropna().astype(str).str.strip().tolist()
+        if value
+    )
+all_brands = sorted(brand_scope_values) if len(brand_scope_values) > 1 else []
 all_managers = (
     sorted(filter_source_data["manager"].dropna().astype(str).unique().tolist())
     if "manager" in filter_source_data.columns and filter_source_data["manager"].nunique() > 1
@@ -7155,6 +7222,7 @@ for state_key, available_values in (
     ("main_selected_salons_filter", all_salons),
     ("main_selected_categories", all_categories),
     ("main_selected_suppliers", all_suppliers),
+    ("main_selected_brands", all_brands),
     ("main_selected_managers", all_managers),
 ):
     if state_key in st.session_state:
@@ -7187,6 +7255,7 @@ with main_col:
                     "main_selected_salons_filter",
                     "main_selected_categories",
                     "main_selected_suppliers",
+                    "main_selected_brands",
                     "main_selected_managers",
                 ):
                     st.session_state.pop(filter_key, None)
@@ -7223,7 +7292,7 @@ with main_col:
                 else:
                     st.text_input("Категории", value="Все", disabled=True, key="main_category_scope_display")
 
-            supplier_col, manager_col = st.columns(2, gap="small")
+            supplier_col, brand_col, manager_col = st.columns(3, gap="small")
             with supplier_col:
                 if all_suppliers:
                     selected_suppliers = st.multiselect(
@@ -7234,6 +7303,16 @@ with main_col:
                     )
                 else:
                     st.text_input("Поставщики", value="Все", disabled=True, key="main_supplier_scope_display")
+            with brand_col:
+                if all_brands:
+                    selected_brands = st.multiselect(
+                        "Бренды",
+                        all_brands,
+                        default=all_brands,
+                        key="main_selected_brands",
+                    )
+                else:
+                    st.text_input("Бренды", value="Все", disabled=True, key="main_brand_scope_display")
             with manager_col:
                 if all_managers:
                     selected_managers = st.multiselect(
@@ -7270,6 +7349,12 @@ if all_suppliers:
         filter_badges.append(f"Поставщики: {len(selected_suppliers)} из {len(all_suppliers)}")
 
 procurement_source_data = data.copy()
+
+if all_brands:
+    data = data[data["brand"].astype(str).isin(selected_brands)]
+    if len(selected_brands) != len(all_brands):
+        filter_badges.append(f"Бренды: {len(selected_brands)} из {len(all_brands)}")
+
 procurement_uses_manager_unfiltered_scope = False
 
 if all_managers:
@@ -7395,9 +7480,8 @@ if needs_order_analysis:
 plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
-procurement_items_for_forecast = procurement_items
-if selected_suppliers and "supplier" in procurement_items.columns:
-    procurement_items_for_forecast = procurement_items.copy()
+procurement_items_for_forecast = procurement_items.copy()
+if all_suppliers and "supplier" in procurement_items_for_forecast.columns:
     procurement_supplier_text = (
         procurement_items_for_forecast["supplier"]
         .fillna("")
@@ -7408,7 +7492,6 @@ if selected_suppliers and "supplier" in procurement_items.columns:
     procurement_items_for_forecast = procurement_items_for_forecast[
         procurement_supplier_text.isin(set(selected_suppliers))
     ].copy()
-
 procurement_forecast = pd.DataFrame()
 procurement_overview = cached_build_procurement_overview(procurement_forecast)
 procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
@@ -7424,6 +7507,17 @@ if needs_procurement_analysis:
         procurement_items=procurement_items_for_forecast,
         inbound_orders=open_procurement_orders,
     )
+    if all_brands and "brand" in procurement_forecast.columns:
+        procurement_brand_text = (
+            procurement_forecast["brand"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Не назначен")
+        )
+        procurement_forecast = procurement_forecast[
+            procurement_brand_text.isin(set(selected_brands))
+        ].copy()
     procurement_overview = cached_build_procurement_overview(procurement_forecast)
     procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
 
@@ -10185,6 +10279,12 @@ if active_screen == "Закупки":
                     "tone": "success" if int(catalog_health["missing_supplier"]) == 0 else "warning",
                 },
                 {
+                    "label": "Без бренда",
+                    "value": format_number(float(catalog_health["missing_brand"])),
+                    "hint": f"брендов: {format_number(float(catalog_health['brand_count']))}",
+                    "tone": "success" if int(catalog_health["missing_brand"]) == 0 else "warning",
+                },
+                {
                     "label": "Без срока поставки",
                     "value": format_number(float(catalog_health["missing_lead_time"])),
                     "hint": "Иначе берется общий срок из настроек",
@@ -10313,6 +10413,12 @@ if active_screen == "Закупки":
                                                     key="stock_map_supplier",
                                                 )
                                             with inventory_map_right:
+                                                inventory_brand_col = select_column(
+                                                    "Бренд",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("brand"),
+                                                    key="stock_map_brand",
+                                                )
                                                 inventory_moq_col = select_column(
                                                     "MOQ",
                                                     inventory_columns,
@@ -10344,6 +10450,7 @@ if active_screen == "Закупки":
                                         "stock_value": inventory_stock_value_col,
                                         "stock_in_transit": inventory_in_transit_col,
                                         "supplier": inventory_supplier_col,
+                                        "brand": inventory_brand_col,
                                         "min_order_qty": inventory_moq_col,
                                         "order_multiple": inventory_multiple_col,
                                         "lead_time_days": inventory_lead_time_col,
@@ -10368,6 +10475,7 @@ if active_screen == "Закупки":
                                                 "stock_value",
                                                 "stock_in_transit",
                                                 "supplier",
+                                                "brand",
                                                 "min_order_qty",
                                                 "order_multiple",
                                                 "lead_time_days",
@@ -10380,6 +10488,7 @@ if active_screen == "Закупки":
                                                 "stock_value": "Сумма склада",
                                                 "stock_in_transit": "В пути",
                                                 "supplier": "Поставщик",
+                                                "brand": "Бренд",
                                                 "min_order_qty": "MOQ",
                                                 "order_multiple": "Кратность",
                                                 "lead_time_days": "Срок поставки, дн.",
@@ -10471,11 +10580,81 @@ if active_screen == "Закупки":
                                             )
                                             st.rerun()
 
+                with st.expander("Массово назначить бренд", expanded=False):
+                    st.caption(
+                        "Выберите несколько номенклатур и укажите один бренд. "
+                        "Продажи, остатки и закупочные рекомендации обновятся после сохранения."
+                    )
+                    with st.form("procurement_bulk_brand_form"):
+                        bulk_brand_products = st.multiselect(
+                            "Номенклатуры",
+                            procurement_forecast["product"].dropna().astype(str).drop_duplicates().tolist(),
+                            key="procurement_bulk_brand_products",
+                            placeholder="Начните вводить название товара",
+                        )
+                        bulk_brand_name = st.text_input(
+                            "Бренд",
+                            key="procurement_bulk_brand_name",
+                            placeholder="Например: Hettich",
+                        )
+                        bulk_brand_submit = st.form_submit_button(
+                            "Назначить бренд",
+                            type="primary",
+                            use_container_width=True,
+                        )
+                    if bulk_brand_submit:
+                        normalized_brand_name = bulk_brand_name.strip()
+                        if not bulk_brand_products:
+                            st.error("Выберите хотя бы одну номенклатуру.")
+                        elif not normalized_brand_name:
+                            st.error("Укажите название бренда.")
+                        else:
+                            bulk_brand_rows = procurement_forecast[
+                                procurement_forecast["product"].astype(str).isin(bulk_brand_products)
+                            ].copy()
+                            bulk_brand_rows["brand"] = normalized_brand_name
+                            bulk_brand_rows = bulk_brand_rows.rename(
+                                columns={"manual_stock_in_transit": "stock_in_transit"}
+                            )[
+                                [
+                                    "product",
+                                    "supplier",
+                                    "brand",
+                                    "stock_on_hand",
+                                    "stock_value",
+                                    "stock_in_transit",
+                                    "min_order_qty",
+                                    "order_multiple",
+                                    "lead_time_days",
+                                    "notes",
+                                ]
+                            ]
+                            saved_count = upsert_procurement_items(
+                                bulk_brand_rows,
+                                updated_by=current_user["username"],
+                            )
+                            st.cache_data.clear()
+                            audit_event(
+                                action="procurement.brand_bulk_assign",
+                                user_id=current_user["username"],
+                                details={
+                                    "brand": normalized_brand_name,
+                                    "saved_count": int(saved_count),
+                                    "products": bulk_brand_products,
+                                },
+                            )
+                            st.session_state["procurement_flash_message"] = (
+                                f"Бренд «{normalized_brand_name}» назначен для {saved_count} SKU."
+                            )
+                            st.rerun()
+
                 procurement_editor_source = procurement_forecast[
                     [
                         "product",
                         "supplier",
+                        "brand",
                         "stock_on_hand",
+                        "stock_value",
                         "manual_stock_in_transit",
                         "ordered_in_transit_qty",
                         "min_order_qty",
@@ -10494,7 +10673,9 @@ if active_screen == "Закупки":
                     column_config={
                         "product": st.column_config.TextColumn("SKU / Товар"),
                         "supplier": st.column_config.TextColumn("Поставщик"),
+                        "brand": st.column_config.TextColumn("Бренд"),
                         "stock_on_hand": st.column_config.NumberColumn("Остаток", min_value=0.0, step=1.0, format="%.2f"),
+                        "stock_value": st.column_config.NumberColumn("Сумма остатка", min_value=0.0, step=1.0, format="%.2f"),
                         "manual_stock_in_transit": st.column_config.NumberColumn("В пути (ручной)", min_value=0.0, step=1.0, format="%.2f"),
                         "ordered_in_transit_qty": st.column_config.NumberColumn("В пути по заказам", min_value=0.0, step=1.0, format="%.2f"),
                         "min_order_qty": st.column_config.NumberColumn("MOQ", min_value=0.0, step=1.0, format="%.2f"),
@@ -10510,7 +10691,9 @@ if active_screen == "Закупки":
                         [
                             "product",
                             "supplier",
+                            "brand",
                             "stock_on_hand",
+                            "stock_value",
                             "stock_in_transit",
                             "min_order_qty",
                             "order_multiple",
@@ -10575,6 +10758,11 @@ if active_screen == "Закупки":
                 "hint": "Сколько поставщиков уже привязано к SKU в этом срезе",
             },
             {
+                "label": "Брендов",
+                "value": format_number(procurement_overview["brand_count"]),
+                "hint": "Сколько брендов назначено номенклатурам в текущем срезе",
+            },
+            {
                 "label": "Активных заказов",
                 "value": format_number(active_procurement_order_count),
                 "hint": "Черновики, заказанные и заказы в пути",
@@ -10615,6 +10803,7 @@ if active_screen == "Закупки":
             "product": "SKU / Товар",
             "category": "Категория",
             "supplier": "Поставщик",
+            "brand": "Бренд",
             "abc_class": "ABC",
             "xyz_class": "XYZ",
             "priority": "Приоритет",
@@ -10623,6 +10812,7 @@ if active_screen == "Закупки":
             "forecast_qty": "Количество прогноза, шт/мес.",
             "avg_daily_qty": "Среднедневной спрос",
             "stock_on_hand": "Количество остатка",
+            "stock_value": "Сумма остатка",
             "manual_stock_in_transit": "Количество в пути вручную",
             "ordered_in_transit_qty": "Количество в заказах",
             "stock_in_transit": "Количество в пути",
@@ -10657,7 +10847,7 @@ if active_screen == "Закупки":
             render_mobile_table_cards(
                 stock_risk_display,
                 title_column=preferred_title,
-                field_columns=["Поставщик", "Статус остатка", "Количество доступно", "Количество к заказу"],
+                field_columns=["Бренд", "Поставщик", "Статус остатка", "Количество доступно", "Количество к заказу"],
                 max_rows=6,
             )
             st.dataframe(
@@ -10665,6 +10855,65 @@ if active_screen == "Закупки":
                 use_container_width=True,
                 hide_index=True,
                 height=height,
+            )
+
+        brand_summary_source = stock_risk_frame.copy()
+        brand_summary_source["brand"] = (
+            brand_summary_source["brand"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Не назначен")
+        )
+        brand_summary_source["deficit_sku"] = brand_summary_source["stock_status"].isin(
+            ["Нет остатка", "Риск дефицита"]
+        ).astype(int)
+        brand_summary_source["overstock_sku"] = (
+            (brand_summary_source["stock_on_hand"] > 0)
+            & (brand_summary_source["stock_coverage_days"] > overstock_days_threshold)
+        ).astype(int)
+        brand_summary_source["order_sku"] = (
+            brand_summary_source["recommended_order_qty"] > 0
+        ).astype(int)
+        brand_summary = (
+            brand_summary_source.groupby("brand", as_index=False)
+            .agg(
+                sku_count=("product", "nunique"),
+                forecast_revenue=("forecast_revenue", "sum"),
+                stock_value=("stock_value", "sum"),
+                stock_on_hand=("stock_on_hand", "sum"),
+                deficit_sku=("deficit_sku", "sum"),
+                overstock_sku=("overstock_sku", "sum"),
+                order_sku=("order_sku", "sum"),
+                recommended_order_qty=("recommended_order_qty", "sum"),
+            )
+            .sort_values(["forecast_revenue", "stock_value"], ascending=[False, False])
+        )
+        with st.container(border=True):
+            render_panel_header(
+                "Сводка по брендам",
+                "Продажи, стоимость остатка и закупочные риски в одном разрезе. "
+                "Выберите бренд в общих фильтрах, чтобы весь экран пересчитался только по нему.",
+            )
+            st.dataframe(
+                format_display_frame_for_role(
+                    brand_summary,
+                    current_user,
+                    rename_map={
+                        "brand": "Бренд",
+                        "sku_count": "SKU",
+                        "forecast_revenue": "Прогноз выручки",
+                        "stock_value": "Сумма склада",
+                        "stock_on_hand": "Остаток, шт",
+                        "deficit_sku": "Дефицит, SKU",
+                        "overstock_sku": "Излишки, SKU",
+                        "order_sku": "К заказу, SKU",
+                        "recommended_order_qty": "К заказу, шт",
+                    },
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=min(420, 46 + max(len(brand_summary), 1) * 35),
             )
 
         with st.container(border=True):
@@ -10759,6 +11008,7 @@ if active_screen == "Закупки":
                         "product",
                         "category",
                         "supplier",
+                        "brand",
                         "stock_status",
                         "available_stock_qty",
                         "stock_coverage_days",
@@ -10781,6 +11031,7 @@ if active_screen == "Закупки":
                         "product",
                         "category",
                         "supplier",
+                        "brand",
                         "priority",
                         "stock_status",
                         "available_stock_qty",
@@ -10798,8 +11049,10 @@ if active_screen == "Закупки":
                         "product",
                         "category",
                         "supplier",
+                        "brand",
                         "stock_status",
                         "available_stock_qty",
+                        "stock_value",
                         "stock_coverage_days",
                         "forecast_qty",
                         "last_sale_date",
@@ -10814,8 +11067,10 @@ if active_screen == "Закупки":
                         "product",
                         "category",
                         "supplier",
+                        "brand",
                         "available_stock_qty",
                         "stock_on_hand",
+                        "stock_value",
                         "stock_in_transit",
                         "demand_state",
                         "last_sale_date",
@@ -10831,6 +11086,7 @@ if active_screen == "Закупки":
                         "product",
                         "category",
                         "supplier",
+                        "brand",
                         "priority",
                         "stock_status",
                         "forecast_qty",
@@ -10848,6 +11104,7 @@ if active_screen == "Закупки":
                     "product",
                     "category",
                     "supplier",
+                    "brand",
                     "priority",
                     "stock_status",
                     "demand_state",
@@ -10855,6 +11112,7 @@ if active_screen == "Закупки":
                     "xyz_class",
                     "forecast_qty",
                     "stock_on_hand",
+                    "stock_value",
                     "stock_in_transit",
                     "available_stock_qty",
                     "stock_coverage_days",
@@ -11477,6 +11735,7 @@ if active_screen == "Закупки":
             "product",
             "category",
             "supplier",
+            "brand",
             "abc_class",
             "xyz_class",
             "priority",
@@ -11491,6 +11750,7 @@ if active_screen == "Закупки":
             "forecast_qty",
             "avg_daily_qty",
             "stock_on_hand",
+            "stock_value",
             "manual_stock_in_transit",
             "ordered_in_transit_qty",
             "stock_in_transit",
@@ -11515,6 +11775,7 @@ if active_screen == "Закупки":
             "product": "SKU / Товар",
             "category": "Категория",
             "supplier": "Поставщик",
+            "brand": "Бренд",
             "abc_class": "ABC",
             "xyz_class": "XYZ",
             "priority": "Приоритет",
@@ -11529,6 +11790,7 @@ if active_screen == "Закупки":
             "forecast_qty": "Прогноз потребности, шт",
             "avg_daily_qty": "Среднедневной спрос",
             "stock_on_hand": "Остаток",
+            "stock_value": "Сумма остатка",
             "manual_stock_in_transit": "В пути (ручной)",
             "ordered_in_transit_qty": "В пути по заказам",
             "stock_in_transit": "В пути",

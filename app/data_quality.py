@@ -430,35 +430,59 @@ def build_catalog_health(procurement_items: pd.DataFrame, procurement_forecast: 
             "forecast_products": 0,
             "missing_in_catalog": 0,
             "missing_supplier": 0,
+            "missing_brand": 0,
             "missing_lead_time": 0,
             "missing_order_rules": 0,
             "supplier_count": 0,
+            "brand_count": 0,
             "readiness_pct": 0.0,
         }
 
     supplier = forecast_scope.get("supplier", pd.Series("", index=forecast_scope.index)).fillna("").astype(str).str.strip()
+    brand = forecast_scope.get("brand", pd.Series("", index=forecast_scope.index)).fillna("").astype(str).str.strip()
     lead_time = pd.to_numeric(forecast_scope.get("lead_time_days", pd.Series(0, index=forecast_scope.index)), errors="coerce").fillna(0)
     min_order = pd.to_numeric(forecast_scope.get("min_order_qty", pd.Series(0, index=forecast_scope.index)), errors="coerce").fillna(0)
     multiple = pd.to_numeric(forecast_scope.get("order_multiple", pd.Series(0, index=forecast_scope.index)), errors="coerce").fillna(0)
 
     total_scope = max(int(len(forecast_scope)), 1)
-    missing_supplier = int(supplier.eq("").sum())
+    missing_supplier = int((supplier.eq("") | supplier.str.casefold().eq("не назначен")).sum())
+    missing_brand = int((brand.eq("") | brand.str.casefold().eq("не назначен")).sum())
     missing_lead_time = int(lead_time.le(0).sum())
     missing_order_rules = int((min_order.le(0) & multiple.le(0)).sum())
 
     coverage_score = 1 - (len(missing_in_catalog) / max(len(forecast_products), 1) if forecast_products else 0)
     supplier_score = 1 - missing_supplier / total_scope
+    brand_score = 1 - missing_brand / total_scope
     lead_time_score = 1 - missing_lead_time / total_scope
     order_rule_score = 1 - missing_order_rules / total_scope
-    readiness_pct = max(0.0, min(100.0, (coverage_score * 0.35 + supplier_score * 0.3 + lead_time_score * 0.2 + order_rule_score * 0.15) * 100))
+    readiness_pct = max(
+        0.0,
+        min(
+            100.0,
+            (
+                coverage_score * 0.3
+                + supplier_score * 0.25
+                + brand_score * 0.2
+                + lead_time_score * 0.15
+                + order_rule_score * 0.1
+            )
+            * 100,
+        ),
+    )
 
     return {
         "catalog_products": len(catalog_products),
         "forecast_products": len(forecast_products),
         "missing_in_catalog": len(missing_in_catalog),
         "missing_supplier": missing_supplier,
+        "missing_brand": missing_brand,
         "missing_lead_time": missing_lead_time,
         "missing_order_rules": missing_order_rules,
-        "supplier_count": int(supplier[supplier.ne("")].nunique()),
+        "supplier_count": int(
+            supplier[supplier.ne("") & supplier.str.casefold().ne("не назначен")].nunique()
+        ),
+        "brand_count": int(
+            brand[brand.ne("") & brand.str.casefold().ne("не назначен")].nunique()
+        ),
         "readiness_pct": readiness_pct,
     }

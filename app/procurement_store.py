@@ -18,7 +18,9 @@ INVENTORY_SNAPSHOTS_PATH = DATA_DIR / "inventory_snapshots.json"
 PROCUREMENT_COLUMNS = [
     "product",
     "supplier",
+    "brand",
     "stock_on_hand",
+    "stock_value",
     "stock_in_transit",
     "min_order_qty",
     "order_multiple",
@@ -29,7 +31,9 @@ PROCUREMENT_COLUMNS = [
 ]
 PROCUREMENT_EDITABLE_FIELDS = {
     "supplier",
+    "brand",
     "stock_on_hand",
+    "stock_value",
     "stock_in_transit",
     "min_order_qty",
     "order_multiple",
@@ -178,7 +182,9 @@ def _normalize_procurement_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "product": str(record.get("product", "")).strip(),
         "supplier": str(record.get("supplier", "")).strip(),
+        "brand": str(record.get("brand", "")).strip(),
         "stock_on_hand": _safe_float(record.get("stock_on_hand", 0)),
+        "stock_value": _safe_float(record.get("stock_value", 0)),
         "stock_in_transit": _safe_float(record.get("stock_in_transit", 0)),
         "min_order_qty": _safe_float(record.get("min_order_qty", 0)),
         "order_multiple": _safe_float(record.get("order_multiple", 0)),
@@ -199,7 +205,9 @@ def load_procurement_items() -> pd.DataFrame:
                     SELECT
                         product,
                         supplier,
+                        brand,
                         stock_on_hand,
+                        stock_value,
                         stock_in_transit,
                         min_order_qty,
                         order_multiple,
@@ -266,7 +274,9 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
                         INSERT INTO procurement_items (
                             product,
                             supplier,
+                            brand,
                             stock_on_hand,
+                            stock_value,
                             stock_in_transit,
                             min_order_qty,
                             order_multiple,
@@ -275,10 +285,12 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
                             updated_by,
                             updated_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (product) DO UPDATE SET
                             supplier = EXCLUDED.supplier,
+                            brand = EXCLUDED.brand,
                             stock_on_hand = EXCLUDED.stock_on_hand,
+                            stock_value = EXCLUDED.stock_value,
                             stock_in_transit = EXCLUDED.stock_in_transit,
                             min_order_qty = EXCLUDED.min_order_qty,
                             order_multiple = EXCLUDED.order_multiple,
@@ -290,7 +302,9 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
                         (
                             record["product"],
                             record["supplier"],
+                            record["brand"],
                             record["stock_on_hand"],
+                            record["stock_value"],
                             record["stock_in_transit"],
                             record["min_order_qty"],
                             record["order_multiple"],
@@ -395,12 +409,12 @@ def apply_procurement_receipts(frame: pd.DataFrame, *, updated_by: str) -> int:
     existing = existing[existing["product"] != ""].copy()
     merged = existing.merge(receipt_totals, on="product", how="outer")
 
-    for text_column in ("supplier", "notes", "updated_by", "updated_at"):
+    for text_column in ("supplier", "brand", "notes", "updated_by", "updated_at"):
         if text_column not in merged.columns:
             merged[text_column] = ""
         merged[text_column] = merged[text_column].fillna("").astype(str)
 
-    for numeric_column in ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple"):
+    for numeric_column in ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple"):
         if numeric_column not in merged.columns:
             merged[numeric_column] = 0.0
         merged[numeric_column] = pd.to_numeric(merged[numeric_column], errors="coerce").fillna(0.0)
@@ -415,7 +429,9 @@ def apply_procurement_receipts(frame: pd.DataFrame, *, updated_by: str) -> int:
         [
             "product",
             "supplier",
+            "brand",
             "stock_on_hand",
+            "stock_value",
             "stock_in_transit",
             "min_order_qty",
             "order_multiple",
