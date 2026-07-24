@@ -58,7 +58,13 @@ from procurement_order_store import (
     load_procurement_orders,
     update_procurement_order,
 )
-from procurement_store import load_procurement_items, merge_procurement_upload, upsert_procurement_items
+from procurement_store import (
+    load_latest_inventory_snapshot,
+    load_procurement_items,
+    merge_procurement_upload,
+    save_inventory_snapshot,
+    upsert_procurement_items,
+)
 from sales_analytics import (
     DISPLAY_NAMES,
     SUPPLIER_KEYWORD_PATTERNS,
@@ -8100,6 +8106,7 @@ if active_screen == "Финансы":
     else:
         financial_pnl = build_financial_pnl_frame(data, returns_overview)
         financial_inventory = build_financial_inventory_frame(procurement_forecast)
+        latest_inventory_snapshot = load_latest_inventory_snapshot()
         financial_alerts = build_financial_alerts(
             overview,
             category_summary,
@@ -8117,12 +8124,35 @@ if active_screen == "Финансы":
         total_cost = abs(float(pnl_amounts.get("Себестоимость", 0.0) or 0.0)) if not is_missing(pnl_amounts.get("Себестоимость")) else float("nan")
         total_margin = float(pnl_amounts.get("Валовая маржа", float("nan")) or 0.0)
 
-        stock_value_total_raw = (
+        estimated_stock_value_total_raw = (
             pd.to_numeric(financial_inventory["stock_value"], errors="coerce").sum(min_count=1)
             if not financial_inventory.empty
             else float("nan")
         )
-        stock_value_total = float(stock_value_total_raw) if pd.notna(stock_value_total_raw) else float("nan")
+        estimated_stock_value_total = (
+            float(estimated_stock_value_total_raw)
+            if pd.notna(estimated_stock_value_total_raw)
+            else float("nan")
+        )
+        uploaded_stock_value = (
+            float(latest_inventory_snapshot.get("total_value", 0.0))
+            if latest_inventory_snapshot
+            else float("nan")
+        )
+        stock_value_total = (
+            uploaded_stock_value
+            if not is_missing(uploaded_stock_value)
+            else estimated_stock_value_total
+        )
+        if latest_inventory_snapshot:
+            snapshot_date = format_date_value(latest_inventory_snapshot.get("uploaded_at"))
+            snapshot_item_count = int(latest_inventory_snapshot.get("item_count", 0) or 0)
+            stock_value_delta = (
+                f"файл остатков от {snapshot_date} · "
+                f"{format_number(snapshot_item_count)} SKU"
+            )
+        else:
+            stock_value_delta = "оценка: остаток × средняя себестоимость"
         monthly_cogs_forecast_raw = (
             pd.to_numeric(financial_inventory["monthly_cogs_forecast"], errors="coerce").sum(min_count=1)
             if not financial_inventory.empty
@@ -8166,9 +8196,9 @@ if active_screen == "Финансы":
                         "tone": "info",
                     },
                     {
-                        "label": "Деньги в остатках",
+                        "label": "Сумма склада",
                         "value": format_money(stock_value_total),
-                        "delta": "оценка по средней себестоимости",
+                        "delta": stock_value_delta,
                         "tone": "warning" if not is_missing(stock_value_total) and stock_value_total > total_margin else "info",
                     },
                     {
@@ -10264,6 +10294,12 @@ if active_screen == "Закупки":
                                                     inventory_guesses.get("stock_on_hand"),
                                                     key="stock_map_on_hand",
                                                 )
+                                                inventory_stock_value_col = select_column(
+                                                    "Сумма склада",
+                                                    inventory_columns,
+                                                    inventory_guesses.get("stock_value"),
+                                                    key="stock_map_value",
+                                                )
                                                 inventory_in_transit_col = select_column(
                                                     "В пути",
                                                     inventory_columns,
@@ -10305,6 +10341,7 @@ if active_screen == "Закупки":
                                     inventory_mapping = {
                                         "product": inventory_product_col,
                                         "stock_on_hand": inventory_stock_col,
+                                        "stock_value": inventory_stock_value_col,
                                         "stock_in_transit": inventory_in_transit_col,
                                         "supplier": inventory_supplier_col,
                                         "min_order_qty": inventory_moq_col,
@@ -10328,6 +10365,7 @@ if active_screen == "Закупки":
                                             [
                                                 "product",
                                                 "stock_on_hand",
+                                                "stock_value",
                                                 "stock_in_transit",
                                                 "supplier",
                                                 "min_order_qty",
@@ -10339,6 +10377,7 @@ if active_screen == "Закупки":
                                             columns={
                                                 "product": "Товар",
                                                 "stock_on_hand": "Остаток",
+                                                "stock_value": "Сумма склада",
                                                 "stock_in_transit": "В пути",
                                                 "supplier": "Поставщик",
                                                 "min_order_qty": "MOQ",
@@ -10359,10 +10398,34 @@ if active_screen == "Закупки":
                                             for field, column_name in inventory_mapping.items()
                                             if field != "product" and column_name
                                         }
+                                        stock_value_series = pd.to_numeric(
+                                            prepared_inventory_result.data.get(
+                                                "stock_value",
+                                                pd.Series(dtype="float64"),
+                                            ),
+                                            errors="coerce",
+                                        )
+                                        stock_value_total_raw = stock_value_series.sum(min_count=1)
+                                        uploaded_stock_value_total = (
+                                            float(stock_value_total_raw)
+                                            if pd.notna(stock_value_total_raw)
+                                            and inventory_stock_value_col
+                                            else float("nan")
+                                        )
                                         st.caption(
                                             f"К загрузке подготовлено SKU: {format_number(len(prepared_inventory_result.data))}. "
                                             "Обновятся только поля, которые вы сопоставили в файле."
                                         )
+                                        if not is_missing(uploaded_stock_value_total):
+                                            st.success(
+                                                "Сумма склада по файлу: "
+                                                f"{format_money(uploaded_stock_value_total)}"
+                                            )
+                                        else:
+                                            st.info(
+                                                "Чтобы обновить карточку «Сумма склада», "
+                                                "сопоставьте колонку с общей суммой остатка."
+                                            )
                                         if st.button(
                                             "Сохранить остатки из файла",
                                             key="procurement_stock_upload_save_button",
@@ -10374,6 +10437,13 @@ if active_screen == "Закупки":
                                                 updated_by=current_user["username"],
                                                 override_fields=override_fields,
                                             )
+                                            if not is_missing(uploaded_stock_value_total):
+                                                save_inventory_snapshot(
+                                                    total_value=uploaded_stock_value_total,
+                                                    item_count=len(prepared_inventory_result.data),
+                                                    filename=inventory_filename,
+                                                    uploaded_by=current_user["username"],
+                                                )
                                             st.cache_data.clear()
                                             audit_event(
                                                 action="procurement.stock_upload",
@@ -10381,6 +10451,11 @@ if active_screen == "Закупки":
                                                 details={
                                                     "filename": inventory_filename,
                                                     "saved_count": int(saved_count),
+                                                    "stock_value_total": (
+                                                        uploaded_stock_value_total
+                                                        if not is_missing(uploaded_stock_value_total)
+                                                        else None
+                                                    ),
                                                     "override_fields": sorted(override_fields),
                                                     "categories": selected_categories or [],
                                                     "salons": selected_salons_filter or [],
@@ -10388,6 +10463,11 @@ if active_screen == "Закупки":
                                             )
                                             st.session_state["procurement_flash_message"] = (
                                                 f"Остатки из файла обновлены для {saved_count} SKU."
+                                                + (
+                                                    f" Сумма склада: {format_money(uploaded_stock_value_total)}."
+                                                    if not is_missing(uploaded_stock_value_total)
+                                                    else ""
+                                                )
                                             )
                                             st.rerun()
 

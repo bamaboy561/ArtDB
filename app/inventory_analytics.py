@@ -37,6 +37,18 @@ INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
         "on hand",
         "qty on hand",
     ),
+    "stock_value": (
+        "сумма",
+        "сумма остатка",
+        "сумма склада",
+        "стоимость",
+        "стоимость остатка",
+        "стоимость запасов",
+        "остаток сумма",
+        "stock value",
+        "inventory value",
+        "warehouse value",
+    ),
     "stock_in_transit": (
         "в пути",
         "товар в пути",
@@ -300,7 +312,7 @@ def prepare_inventory_data(frame: pd.DataFrame, mapping: dict[str, str | None]) 
     prepared["product"] = raw_product.fillna("").astype(str).str.strip() if raw_product is not None else ""
 
     text_fields = ("supplier", "notes")
-    numeric_fields = ("stock_on_hand", "stock_in_transit", "min_order_qty", "order_multiple")
+    numeric_fields = ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple")
     integer_fields = ("lead_time_days",)
 
     for field in text_fields:
@@ -347,7 +359,11 @@ def prepare_inventory_data(frame: pd.DataFrame, mapping: dict[str, str | None]) 
             record[f"__has_{field}"] = has_field
             if has_field:
                 values = pd.to_numeric(group.loc[group[f"__has_{field}"].fillna(False), field], errors="coerce").fillna(0.0)
-                record[field] = float(values.sum()) if field in {"stock_on_hand", "stock_in_transit"} else float(values.max())
+                record[field] = (
+                    float(values.sum())
+                    if field in {"stock_on_hand", "stock_value", "stock_in_transit"}
+                    else float(values.max())
+                )
             else:
                 record[field] = pd.NA
 

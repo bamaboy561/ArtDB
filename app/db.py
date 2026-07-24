@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS procurement_items (
 CREATE INDEX IF NOT EXISTS procurement_items_supplier_idx
     ON procurement_items (supplier);
 
+CREATE TABLE IF NOT EXISTS inventory_snapshots (
+    snapshot_id BIGSERIAL PRIMARY KEY,
+    total_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    filename TEXT NOT NULL DEFAULT '',
+    uploaded_by TEXT NOT NULL DEFAULT '',
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS inventory_snapshots_uploaded_at_idx
+    ON inventory_snapshots (uploaded_at DESC, snapshot_id DESC);
+
 CREATE TABLE IF NOT EXISTS supplier_keyword_rules (
     rule_id BIGSERIAL PRIMARY KEY,
     supplier TEXT NOT NULL DEFAULT '',

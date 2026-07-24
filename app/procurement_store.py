@@ -14,6 +14,7 @@ from db import database_enabled, ensure_database_ready, get_db_connection, isofo
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(BASE_DIR.parent / "data"))).resolve()
 PROCUREMENT_ITEMS_PATH = DATA_DIR / "procurement_items.json"
+INVENTORY_SNAPSHOTS_PATH = DATA_DIR / "inventory_snapshots.json"
 PROCUREMENT_COLUMNS = [
     "product",
     "supplier",
@@ -44,6 +45,117 @@ def ensure_procurement_store() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     if not PROCUREMENT_ITEMS_PATH.exists():
         PROCUREMENT_ITEMS_PATH.write_text("[]", encoding="utf-8")
+    if not INVENTORY_SNAPSHOTS_PATH.exists():
+        INVENTORY_SNAPSHOTS_PATH.write_text("[]", encoding="utf-8")
+
+
+def _normalize_inventory_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "total_value": _safe_float(record.get("total_value", 0)),
+        "item_count": _safe_int(record.get("item_count", 0)),
+        "filename": str(record.get("filename", "")).strip(),
+        "uploaded_by": str(record.get("uploaded_by", "")).strip(),
+        "uploaded_at": (
+            str(record.get("uploaded_at", "")).strip()
+            or datetime.now().isoformat(timespec="seconds")
+        ),
+    }
+
+
+def save_inventory_snapshot(
+    *,
+    total_value: float,
+    item_count: int,
+    filename: str,
+    uploaded_by: str,
+) -> dict[str, Any]:
+    ensure_procurement_store()
+    snapshot = _normalize_inventory_snapshot(
+        {
+            "total_value": total_value,
+            "item_count": item_count,
+            "filename": filename,
+            "uploaded_by": uploaded_by,
+        }
+    )
+
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO inventory_snapshots (
+                        total_value,
+                        item_count,
+                        filename,
+                        uploaded_by
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING total_value, item_count, filename, uploaded_by, uploaded_at
+                    """,
+                    (
+                        snapshot["total_value"],
+                        snapshot["item_count"],
+                        snapshot["filename"],
+                        snapshot["uploaded_by"],
+                    ),
+                )
+                saved = cursor.fetchone()
+        return _normalize_inventory_snapshot(
+            {
+                **saved,
+                "uploaded_at": isoformat_seconds(saved.get("uploaded_at")),
+            }
+        )
+
+    try:
+        payload = json.loads(INVENTORY_SNAPSHOTS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        payload = []
+    snapshots = payload if isinstance(payload, list) else []
+    snapshots.append(snapshot)
+    INVENTORY_SNAPSHOTS_PATH.write_text(
+        json.dumps(snapshots[-365:], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return snapshot
+
+
+def load_latest_inventory_snapshot() -> dict[str, Any] | None:
+    ensure_procurement_store()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT total_value, item_count, filename, uploaded_by, uploaded_at
+                    FROM inventory_snapshots
+                    ORDER BY uploaded_at DESC, snapshot_id DESC
+                    LIMIT 1
+                    """
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return _normalize_inventory_snapshot(
+            {
+                **row,
+                "uploaded_at": isoformat_seconds(row.get("uploaded_at")),
+            }
+        )
+
+    try:
+        payload = json.loads(INVENTORY_SNAPSHOTS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        payload = []
+    if not isinstance(payload, list) or not payload:
+        return None
+    candidates = [
+        _normalize_inventory_snapshot(record)
+        for record in payload
+        if isinstance(record, dict)
+    ]
+    return candidates[-1] if candidates else None
 
 
 def _safe_float(value: Any) -> float:
