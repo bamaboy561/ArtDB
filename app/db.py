@@ -17,6 +17,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 PGCRYPTO_KEY_ENV = "APP_PGCRYPTO_KEY"
 PGCRYPTO_OPTIONS = "cipher-algo=aes256,compress-algo=1"
 SUPPLIER_TO_BRAND_MIGRATION_SERVICE = "supplier_assignments_to_brands_v1"
+SUPPLIER_ASSIGNMENT_RESTORE_SERVICE = "supplier_assignments_restore_v1"
 DATABASE_SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -447,6 +448,71 @@ def _migrate_supplier_assignments_to_brands(cursor: Any) -> None:
     )
 
 
+def _restore_migrated_supplier_assignments(cursor: Any) -> None:
+    cursor.execute(
+        "SELECT last_run_key FROM service_state WHERE service_name = %s",
+        (SUPPLIER_ASSIGNMENT_RESTORE_SERVICE,),
+    )
+    restore_state = cursor.fetchone()
+    if restore_state and str(restore_state.get("last_run_key", "")).strip() == "complete":
+        return
+
+    cursor.execute(
+        "SELECT last_run_key FROM service_state WHERE service_name = %s",
+        (SUPPLIER_TO_BRAND_MIGRATION_SERVICE,),
+    )
+    migration_state = cursor.fetchone()
+    if not migration_state or str(migration_state.get("last_run_key", "")).strip() != "complete":
+        return
+
+    # Restore only rows created by the previous supplier-to-brand migration.
+    # Existing manual supplier corrections always take precedence.
+    cursor.execute(
+        """
+        INSERT INTO supplier_product_assignments (
+            product_key,
+            product,
+            supplier,
+            updated_by,
+            updated_at
+        )
+        SELECT
+            BTRIM(product),
+            BTRIM(product),
+            BTRIM(brand),
+            'supplier-assignment-restore',
+            NOW()
+        FROM procurement_items
+        WHERE updated_by = 'supplier-to-brand-migration'
+          AND BTRIM(product) <> ''
+          AND BTRIM(brand) <> ''
+        ON CONFLICT (product_key) DO NOTHING
+        """
+    )
+    cursor.execute(
+        """
+        UPDATE procurement_items
+        SET
+            supplier = brand,
+            updated_by = 'supplier-assignment-restore',
+            updated_at = NOW()
+        WHERE updated_by = 'supplier-to-brand-migration'
+          AND BTRIM(supplier) = ''
+          AND BTRIM(brand) <> ''
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO service_state (service_name, last_run_key, updated_at)
+        VALUES (%s, 'complete', NOW())
+        ON CONFLICT (service_name) DO UPDATE SET
+            last_run_key = EXCLUDED.last_run_key,
+            updated_at = NOW()
+        """,
+        (SUPPLIER_ASSIGNMENT_RESTORE_SERVICE,),
+    )
+
+
 def ensure_database_ready() -> None:
     global _DB_READY
     if _DB_READY or not database_enabled():
@@ -459,6 +525,7 @@ def ensure_database_ready() -> None:
             _migrate_audit_logs_table(cursor)
             _migrate_procurement_items_table(cursor)
             _migrate_supplier_assignments_to_brands(cursor)
+            _restore_migrated_supplier_assignments(cursor)
     _DB_READY = True
 
 
