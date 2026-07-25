@@ -6399,6 +6399,359 @@ def build_product_detail_options(product_summary: pd.DataFrame) -> pd.DataFrame:
     return options[columns].sort_values("revenue", ascending=False, na_position="last").reset_index(drop=True)
 
 
+def build_partner_sku_portfolio(
+    sales_frame: pd.DataFrame,
+    procurement_frame: pd.DataFrame,
+    *,
+    dimension: str,
+    selected_value: str,
+    product_analysis_column: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    portfolio_columns = [
+        "portfolio_key",
+        "item_code",
+        "product",
+        "category",
+        "brand",
+        "supplier",
+        "revenue",
+        "cost",
+        "margin",
+        "margin_pct",
+        "quantity",
+        "avg_price",
+        "sales_lines",
+        "return_revenue",
+        "return_lines",
+        "last_sale_date",
+        "abc_class",
+        "xyz_class",
+        "stock_on_hand",
+        "stock_value",
+        "available_stock_qty",
+        "stock_coverage_days",
+        "forecast_qty",
+        "forecast_revenue",
+        "recommended_order_qty",
+        "priority",
+        "stock_status",
+    ]
+    monthly_columns = [
+        "month",
+        "month_label",
+        "revenue",
+        "cost",
+        "margin",
+        "quantity",
+        "product_count",
+        "revenue_change_pct",
+        "margin_change_pct",
+    ]
+    selected_normalized = str(selected_value).strip().casefold()
+    if not selected_normalized:
+        return pd.DataFrame(columns=portfolio_columns), pd.DataFrame(columns=monthly_columns)
+
+    sales_scope = sales_frame.copy()
+    if dimension not in sales_scope.columns:
+        sales_scope = sales_scope.iloc[0:0].copy()
+    else:
+        dimension_values = (
+            sales_scope[dimension]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Не назначен")
+            .str.casefold()
+        )
+        sales_scope = sales_scope.loc[dimension_values.eq(selected_normalized)].copy()
+
+    procurement_scope = procurement_frame.copy()
+    if dimension not in procurement_scope.columns:
+        procurement_scope = procurement_scope.iloc[0:0].copy()
+    else:
+        procurement_values = (
+            procurement_scope[dimension]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Не назначен")
+            .str.casefold()
+        )
+        procurement_scope = procurement_scope.loc[procurement_values.eq(selected_normalized)].copy()
+
+    sales_summary = pd.DataFrame()
+    supplier_monthly = pd.DataFrame(columns=monthly_columns)
+    if not sales_scope.empty and "product" in sales_scope.columns:
+        portfolio_identity_column = (
+            product_analysis_column
+            if product_analysis_column in sales_scope.columns
+            else "product"
+        )
+        sales_scope["_portfolio_key"] = (
+            sales_scope[portfolio_identity_column]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        sales_scope = sales_scope[sales_scope["_portfolio_key"].ne("")].copy()
+        if not sales_scope.empty:
+            for numeric_column in ("revenue", "cost", "margin", "quantity"):
+                if numeric_column not in sales_scope.columns:
+                    sales_scope[numeric_column] = 0.0
+                sales_scope[numeric_column] = pd.to_numeric(
+                    sales_scope[numeric_column],
+                    errors="coerce",
+                ).fillna(0.0)
+            if "date" not in sales_scope.columns:
+                sales_scope["date"] = pd.NaT
+            sales_scope["date"] = pd.to_datetime(sales_scope["date"], errors="coerce")
+            for text_column in ("item_code", "category", "brand", "supplier"):
+                if text_column not in sales_scope.columns:
+                    sales_scope[text_column] = ""
+
+            sales_summary = (
+                sales_scope.groupby("_portfolio_key", dropna=False)
+                .agg(
+                    product=("product", _first_catalog_text),
+                    item_code=("item_code", _first_catalog_text),
+                    category=("category", _first_catalog_text),
+                    brand=("brand", _first_catalog_text),
+                    supplier=("supplier", _first_catalog_text),
+                    revenue=("revenue", "sum"),
+                    cost=("cost", "sum"),
+                    margin=("margin", "sum"),
+                    quantity=("quantity", "sum"),
+                    sales_lines=("product", "size"),
+                    last_sale_date=("date", "max"),
+                )
+                .reset_index()
+                .rename(columns={"_portfolio_key": "portfolio_key"})
+            )
+            sales_summary["margin_pct"] = (
+                sales_summary["margin"] / sales_summary["revenue"]
+            ).where(sales_summary["revenue"].ne(0)) * 100
+            sales_summary["avg_price"] = (
+                sales_summary["revenue"] / sales_summary["quantity"]
+            ).where(sales_summary["quantity"].ne(0))
+
+            abc_source = sales_summary[
+                [
+                    "portfolio_key",
+                    "product",
+                    "revenue",
+                    "cost",
+                    "margin",
+                    "margin_pct",
+                    "quantity",
+                    "sales_lines",
+                ]
+            ].copy()
+            abc_source = build_abc_analysis(abc_source, "revenue")
+            sales_summary = sales_summary.merge(
+                abc_source[["portfolio_key", "abc_class"]],
+                on="portfolio_key",
+                how="left",
+            )
+
+            return_rows = extract_return_rows(sales_scope)
+            if not return_rows.empty:
+                return_rows["_portfolio_key"] = (
+                    return_rows[portfolio_identity_column]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+                return_summary = (
+                    return_rows.groupby("_portfolio_key", dropna=False)
+                    .agg(
+                        return_revenue=("revenue", lambda values: pd.to_numeric(values, errors="coerce").abs().sum()),
+                        return_lines=("product", "size"),
+                    )
+                    .reset_index()
+                    .rename(columns={"_portfolio_key": "portfolio_key"})
+                )
+                sales_summary = sales_summary.merge(
+                    return_summary,
+                    on="portfolio_key",
+                    how="left",
+                )
+            supplier_monthly = build_monthly_summary(sales_scope)
+
+    if sales_summary.empty:
+        sales_summary = pd.DataFrame(
+            columns=[
+                "portfolio_key",
+                "product",
+                "item_code",
+                "category",
+                "brand",
+                "supplier",
+                "revenue",
+                "cost",
+                "margin",
+                "margin_pct",
+                "quantity",
+                "avg_price",
+                "sales_lines",
+                "last_sale_date",
+                "abc_class",
+                "return_revenue",
+                "return_lines",
+            ]
+        )
+
+    sales_summary["_join_key"] = (
+        sales_summary["product"].fillna("").astype(str).str.strip().str.casefold()
+    )
+    sales_summary = sales_summary[sales_summary["_join_key"].ne("")].copy()
+
+    procurement_columns = [
+        "product",
+        "category",
+        "brand",
+        "supplier",
+        "xyz_class",
+        "stock_on_hand",
+        "stock_value",
+        "available_stock_qty",
+        "stock_coverage_days",
+        "forecast_qty",
+        "forecast_revenue",
+        "recommended_order_qty",
+        "priority",
+        "stock_status",
+    ]
+    for column in procurement_columns:
+        if column not in procurement_scope.columns:
+            procurement_scope[column] = ""
+    procurement_scope = procurement_scope[procurement_columns].copy()
+    procurement_scope["_join_key"] = (
+        procurement_scope["product"].fillna("").astype(str).str.strip().str.casefold()
+    )
+    procurement_scope = (
+        procurement_scope[procurement_scope["_join_key"].ne("")]
+        .drop_duplicates("_join_key", keep="last")
+        .rename(
+            columns={
+                "product": "inventory_product",
+                "category": "inventory_category",
+                "brand": "inventory_brand",
+                "supplier": "inventory_supplier",
+            }
+        )
+    )
+
+    portfolio = sales_summary.merge(procurement_scope, on="_join_key", how="outer")
+    if portfolio.empty:
+        return pd.DataFrame(columns=portfolio_columns), supplier_monthly
+
+    for target_column, inventory_column in (
+        ("product", "inventory_product"),
+        ("category", "inventory_category"),
+        ("brand", "inventory_brand"),
+        ("supplier", "inventory_supplier"),
+    ):
+        if target_column not in portfolio.columns:
+            portfolio[target_column] = ""
+        portfolio[target_column] = portfolio[target_column].fillna("").astype(str).str.strip()
+        inventory_values = portfolio.get(
+            inventory_column,
+            pd.Series("", index=portfolio.index, dtype="object"),
+        ).fillna("").astype(str).str.strip()
+        portfolio[target_column] = portfolio[target_column].where(
+            portfolio[target_column].ne(""),
+            inventory_values,
+        )
+
+    portfolio["portfolio_key"] = (
+        portfolio.get("portfolio_key", pd.Series("", index=portfolio.index, dtype="object"))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    portfolio["portfolio_key"] = portfolio["portfolio_key"].where(
+        portfolio["portfolio_key"].ne(""),
+        portfolio["product"],
+    )
+    for text_column in (
+        "item_code",
+        "category",
+        "brand",
+        "supplier",
+        "abc_class",
+        "xyz_class",
+        "priority",
+        "stock_status",
+    ):
+        if text_column not in portfolio.columns:
+            portfolio[text_column] = ""
+        portfolio[text_column] = portfolio[text_column].fillna("").astype(str).str.strip()
+    portfolio["abc_class"] = portfolio["abc_class"].replace("", "C")
+    portfolio["xyz_class"] = portfolio["xyz_class"].replace("", "Z")
+    portfolio["brand"] = portfolio["brand"].replace("", "Не назначен")
+    portfolio["supplier"] = portfolio["supplier"].replace("", "Не назначен")
+    portfolio["stock_status"] = portfolio["stock_status"].replace("", "Нет данных")
+
+    numeric_columns = [
+        "revenue",
+        "cost",
+        "margin",
+        "margin_pct",
+        "quantity",
+        "avg_price",
+        "sales_lines",
+        "return_revenue",
+        "return_lines",
+        "stock_on_hand",
+        "stock_value",
+        "available_stock_qty",
+        "stock_coverage_days",
+        "forecast_qty",
+        "forecast_revenue",
+        "recommended_order_qty",
+    ]
+    for numeric_column in numeric_columns:
+        if numeric_column not in portfolio.columns:
+            portfolio[numeric_column] = 0.0
+        portfolio[numeric_column] = pd.to_numeric(
+            portfolio[numeric_column],
+            errors="coerce",
+        )
+    for zero_fill_column in (
+        "revenue",
+        "cost",
+        "margin",
+        "quantity",
+        "sales_lines",
+        "return_revenue",
+        "return_lines",
+        "stock_on_hand",
+        "stock_value",
+        "available_stock_qty",
+        "forecast_qty",
+        "forecast_revenue",
+        "recommended_order_qty",
+    ):
+        portfolio[zero_fill_column] = portfolio[zero_fill_column].fillna(0.0)
+    portfolio["margin_pct"] = (
+        portfolio["margin"] / portfolio["revenue"]
+    ).where(portfolio["revenue"].ne(0)) * 100
+    portfolio["avg_price"] = (
+        portfolio["revenue"] / portfolio["quantity"]
+    ).where(portfolio["quantity"].ne(0))
+    portfolio["last_sale_date"] = pd.to_datetime(
+        portfolio.get("last_sale_date"),
+        errors="coerce",
+    )
+
+    portfolio = portfolio.sort_values(
+        ["revenue", "stock_value", "recommended_order_qty"],
+        ascending=[False, False, False],
+        ignore_index=True,
+    )
+    return portfolio[portfolio_columns], supplier_monthly
+
+
 def filter_product_detail_frame(
     frame: pd.DataFrame,
     selected_product: pd.Series,
@@ -7608,6 +7961,593 @@ if active_screen == "Карточка SKU":
             "Карточка SKU",
             "Быстрый drill-down по товару: паспорт, продажи, возвраты, остатки и рекомендация к закупке в одном месте.",
         )
+
+    pending_product_id = st.session_state.pop("sku_portfolio_pending_product_id", "")
+    if pending_product_id:
+        st.session_state["sku_card_mode"] = "Один SKU"
+        st.session_state["product_detail_selector"] = str(pending_product_id)
+
+    with main_col:
+        sku_card_mode = st.radio(
+            "Режим анализа",
+            ["Один SKU", "Портфель поставщика"],
+            horizontal=True,
+            key="sku_card_mode",
+        )
+
+    if sku_card_mode == "Портфель поставщика":
+        with main_col:
+            portfolio_dimension_label = st.radio(
+                "Разрез портфеля",
+                ["Поставщик", "Бренд"],
+                horizontal=True,
+                key="sku_portfolio_dimension",
+                help=(
+                    "Поставщик — юридический контрагент, у которого закупается товар. "
+                    "Бренд — торговая марка или производитель."
+                ),
+            )
+            portfolio_dimension = (
+                "supplier"
+                if portfolio_dimension_label == "Поставщик"
+                else "brand"
+            )
+            portfolio_values: set[str] = set()
+            for portfolio_source in (data, procurement_forecast):
+                if portfolio_dimension not in portfolio_source.columns:
+                    continue
+                portfolio_values.update(
+                    value
+                    for value in (
+                        portfolio_source[portfolio_dimension]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .replace("", "Не назначен")
+                        .tolist()
+                    )
+                    if value
+                )
+            portfolio_options = sorted(
+                portfolio_values,
+                key=lambda value: (value == "Не назначен", value.casefold()),
+            )
+
+            if not portfolio_options:
+                st.info(
+                    f"В текущем срезе пока нет назначений: {portfolio_dimension_label.lower()}. "
+                    "Для уже перенесённых Hettich, Slotex и Nuomi выберите разрез «Бренд»."
+                )
+                st.stop()
+
+            portfolio_selector_col, portfolio_hint_col = st.columns(
+                [1.25, 0.75],
+                gap="medium",
+            )
+            with portfolio_selector_col:
+                selected_portfolio_value = st.selectbox(
+                    portfolio_dimension_label,
+                    portfolio_options,
+                    key=f"sku_portfolio_{portfolio_dimension}_selector",
+                )
+            with portfolio_hint_col:
+                st.caption(
+                    "Портфель учитывает текущий период, салоны и остальные общие фильтры."
+                )
+
+            partner_portfolio, partner_monthly = build_partner_sku_portfolio(
+                data,
+                procurement_forecast,
+                dimension=portfolio_dimension,
+                selected_value=selected_portfolio_value,
+                product_analysis_column=product_analysis_column,
+            )
+            if partner_portfolio.empty:
+                st.warning(
+                    "Для выбранного значения не нашлось SKU в текущем срезе. "
+                    "Проверьте общие фильтры и назначения номенклатуры."
+                )
+                st.stop()
+
+            portfolio_revenue = float(partner_portfolio["revenue"].sum())
+            portfolio_margin = float(partner_portfolio["margin"].sum())
+            portfolio_margin_pct = (
+                portfolio_margin / portfolio_revenue * 100
+                if portfolio_revenue
+                else float("nan")
+            )
+            portfolio_stock_value = float(partner_portfolio["stock_value"].sum())
+            portfolio_order_qty = float(
+                partner_portfolio["recommended_order_qty"].sum()
+            )
+            portfolio_return_revenue = float(
+                partner_portfolio["return_revenue"].sum()
+            )
+            portfolio_reorder_count = int(
+                partner_portfolio["recommended_order_qty"].gt(0).sum()
+            )
+            portfolio_critical_count = int(
+                partner_portfolio["stock_status"]
+                .isin(["Нет остатка", "Риск дефицита"])
+                .sum()
+            )
+
+            st.markdown(
+                f"### {portfolio_dimension_label}: {selected_portfolio_value}"
+            )
+            portfolio_metric_cards = [
+                {
+                    "label": "Выручка портфеля",
+                    "value": format_money(portfolio_revenue),
+                    "delta": f"{format_number(len(partner_portfolio))} SKU",
+                    "tone": "info",
+                },
+                {
+                    "label": "Продано",
+                    "value": format_number(partner_portfolio["quantity"].sum()),
+                    "delta": f"{format_number(partner_portfolio['sales_lines'].sum())} строк продаж",
+                    "tone": "info",
+                },
+                {
+                    "label": "Сумма склада",
+                    "value": format_money(portfolio_stock_value),
+                    "delta": "по загруженным остаткам",
+                    "tone": "info",
+                },
+                {
+                    "label": "К заказу",
+                    "value": format_number(portfolio_order_qty),
+                    "delta": f"{format_number(portfolio_reorder_count)} SKU",
+                    "tone": "danger" if portfolio_reorder_count else "success",
+                },
+                {
+                    "label": "Дефицит",
+                    "value": f"{format_number(portfolio_critical_count)} SKU",
+                    "delta": "нет остатка или риск дефицита",
+                    "tone": "danger" if portfolio_critical_count else "success",
+                },
+                {
+                    "label": "Возвраты",
+                    "value": format_money(portfolio_return_revenue),
+                    "delta": f"{format_number(partner_portfolio['return_lines'].sum())} строк",
+                    "tone": "warning" if portfolio_return_revenue else "success",
+                },
+            ]
+            if margin_visible:
+                portfolio_metric_cards.insert(
+                    1,
+                    {
+                        "label": "Валовая маржа",
+                        "value": format_money(portfolio_margin),
+                        "delta": (
+                            "н/д"
+                            if is_missing(portfolio_margin_pct)
+                            else format_percent(portfolio_margin_pct)
+                        ),
+                        "tone": (
+                            "success"
+                            if not is_missing(portfolio_margin_pct)
+                            and portfolio_margin_pct >= 25
+                            else "warning"
+                        ),
+                    },
+                )
+            render_metric_cards(portfolio_metric_cards)
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Динамика портфеля",
+                    "Продажи всей номенклатуры выбранного поставщика или бренда по месяцам.",
+                )
+                if (
+                    partner_monthly.empty
+                    or partner_monthly[["revenue", "quantity"]].abs().sum().sum() == 0
+                ):
+                    st.info("Недостаточно данных для построения месячной динамики.")
+                else:
+                    portfolio_trend_chart = go.Figure()
+                    portfolio_trend_chart.add_trace(
+                        go.Bar(
+                            x=partner_monthly["month_label"],
+                            y=partner_monthly["revenue"],
+                            name="Выручка",
+                            marker=dict(
+                                color=partner_monthly["revenue"],
+                                colorscale=[
+                                    [0, CHART_SOFT_BLUE],
+                                    [1, PRIMARY_COLOR],
+                                ],
+                                showscale=False,
+                                line=dict(color="rgba(255,255,255,0.5)", width=1),
+                            ),
+                            hovertemplate="%{x}<br>Выручка: %{y:,.0f}<extra></extra>",
+                        )
+                    )
+                    portfolio_trend_chart.add_trace(
+                        go.Scatter(
+                            x=partner_monthly["month_label"],
+                            y=partner_monthly["quantity"],
+                            name="Количество",
+                            mode="lines+markers",
+                            line=dict(color=SECONDARY_COLOR, width=3, shape="spline"),
+                            marker=dict(size=8, color=SECONDARY_COLOR),
+                            yaxis="y2",
+                            hovertemplate="%{x}<br>Количество: %{y:,.2f}<extra></extra>",
+                        )
+                    )
+                    portfolio_trend_chart.update_layout(
+                        xaxis_title="",
+                        yaxis_title="Выручка",
+                        yaxis2=dict(
+                            title="Количество",
+                            overlaying="y",
+                            side="right",
+                            showgrid=False,
+                        ),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="left",
+                            x=0,
+                        ),
+                    )
+                    polish_figure(portfolio_trend_chart, height=360)
+                    st.plotly_chart(
+                        portfolio_trend_chart,
+                        width="stretch",
+                    )
+
+            portfolio_structure_col, portfolio_stock_col = st.columns(
+                2,
+                gap="medium",
+            )
+            with portfolio_structure_col:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Структура ABC",
+                        "Ценность SKU внутри выбранного портфеля по выручке.",
+                    )
+                    portfolio_abc_summary = (
+                        partner_portfolio.groupby("abc_class", as_index=False)
+                        .agg(
+                            sku_count=("product", "nunique"),
+                            revenue=("revenue", "sum"),
+                        )
+                        .sort_values("abc_class")
+                    )
+                    portfolio_abc_chart = px.pie(
+                        portfolio_abc_summary,
+                        names="abc_class",
+                        values="revenue",
+                        hole=0.62,
+                        color="abc_class",
+                        color_discrete_map={
+                            "A": PRIMARY_COLOR,
+                            "B": SECONDARY_COLOR,
+                            "C": CHART_SOFT_AMBER,
+                        },
+                        custom_data=["sku_count"],
+                    )
+                    portfolio_abc_chart.update_traces(
+                        textposition="inside",
+                        textinfo="label+percent",
+                        hovertemplate=(
+                            "Класс %{label}<br>Выручка: %{value:,.0f}"
+                            "<br>SKU: %{customdata[0]:.0f}<extra></extra>"
+                        ),
+                    )
+                    portfolio_abc_chart.update_layout(showlegend=False)
+                    polish_figure(portfolio_abc_chart, height=300)
+                    st.plotly_chart(
+                        portfolio_abc_chart,
+                        width="stretch",
+                    )
+
+            with portfolio_stock_col:
+                with st.container(border=True):
+                    render_panel_header(
+                        "Состояние запасов",
+                        "Количество SKU по текущему статусу остатка.",
+                    )
+                    portfolio_stock_summary = (
+                        partner_portfolio.groupby("stock_status", as_index=False)
+                        .agg(sku_count=("product", "nunique"))
+                        .sort_values("sku_count", ascending=True)
+                    )
+                    portfolio_stock_chart = px.bar(
+                        portfolio_stock_summary,
+                        x="sku_count",
+                        y="stock_status",
+                        orientation="h",
+                        color="stock_status",
+                        color_discrete_map={
+                            "Нет остатка": CHART_DANGER_COLOR,
+                            "Риск дефицита": CHART_ACCENT_COLOR,
+                            "Требуется пополнение": CHART_SOFT_AMBER,
+                            "Запас достаточен": PRIMARY_COLOR,
+                            "Избыточный запас": CHART_INFO_COLOR,
+                            "Нет данных": TEXT_MUTED,
+                        },
+                        text="sku_count",
+                    )
+                    portfolio_stock_chart.update_traces(
+                        texttemplate="%{text:.0f}",
+                        textposition="outside",
+                        hovertemplate="%{y}<br>SKU: %{x:.0f}<extra></extra>",
+                    )
+                    portfolio_stock_chart.update_layout(
+                        showlegend=False,
+                        xaxis_title="SKU",
+                        yaxis_title="",
+                    )
+                    polish_figure(portfolio_stock_chart, height=300)
+                    st.plotly_chart(
+                        portfolio_stock_chart,
+                        width="stretch",
+                    )
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Полный анализ номенклатуры",
+                    "Продажи, маржа, остатки, прогноз и заказ по каждому SKU выбранного портфеля.",
+                )
+                portfolio_filter_col, portfolio_status_col, portfolio_abc_col = st.columns(
+                    [1.1, 0.8, 0.55],
+                    gap="small",
+                )
+                with portfolio_filter_col:
+                    portfolio_search = st.text_input(
+                        "Поиск по SKU",
+                        key=f"sku_portfolio_search_{portfolio_dimension}",
+                        placeholder="Код, товар, категория или бренд",
+                    ).strip()
+                with portfolio_status_col:
+                    portfolio_status_options = sorted(
+                        partner_portfolio["stock_status"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    )
+                    selected_portfolio_statuses = st.multiselect(
+                        "Статус остатка",
+                        portfolio_status_options,
+                        default=portfolio_status_options,
+                        key=f"sku_portfolio_status_{portfolio_dimension}",
+                    )
+                with portfolio_abc_col:
+                    portfolio_abc_options = sorted(
+                        partner_portfolio["abc_class"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    )
+                    selected_portfolio_abc = st.multiselect(
+                        "ABC",
+                        portfolio_abc_options,
+                        default=portfolio_abc_options,
+                        key=f"sku_portfolio_abc_{portfolio_dimension}",
+                    )
+
+                portfolio_view = partner_portfolio.copy()
+                if selected_portfolio_statuses:
+                    portfolio_view = portfolio_view[
+                        portfolio_view["stock_status"].isin(
+                            selected_portfolio_statuses
+                        )
+                    ]
+                else:
+                    portfolio_view = portfolio_view.iloc[0:0].copy()
+                if selected_portfolio_abc:
+                    portfolio_view = portfolio_view[
+                        portfolio_view["abc_class"].isin(selected_portfolio_abc)
+                    ]
+                else:
+                    portfolio_view = portfolio_view.iloc[0:0].copy()
+                if portfolio_search:
+                    portfolio_search_text = portfolio_search.casefold()
+                    portfolio_search_source = (
+                        portfolio_view[
+                            [
+                                "item_code",
+                                "product",
+                                "category",
+                                "brand",
+                                "supplier",
+                            ]
+                        ]
+                        .fillna("")
+                        .astype(str)
+                        .agg(" ".join, axis=1)
+                        .str.casefold()
+                    )
+                    portfolio_view = portfolio_view[
+                        portfolio_search_source.str.contains(
+                            portfolio_search_text,
+                            regex=False,
+                            na=False,
+                        )
+                    ]
+
+                portfolio_table_columns = [
+                    "item_code",
+                    "product",
+                    "category",
+                    "brand",
+                    "supplier",
+                    "abc_class",
+                    "xyz_class",
+                    "revenue",
+                    "cost",
+                    "margin",
+                    "margin_pct",
+                    "quantity",
+                    "avg_price",
+                    "return_revenue",
+                    "stock_on_hand",
+                    "stock_value",
+                    "stock_coverage_days",
+                    "forecast_qty",
+                    "recommended_order_qty",
+                    "priority",
+                    "stock_status",
+                    "last_sale_date",
+                ]
+                portfolio_table_rename = {
+                    "item_code": "Код",
+                    "product": "Номенклатура",
+                    "category": "Категория",
+                    "brand": "Бренд",
+                    "supplier": "Поставщик",
+                    "abc_class": "ABC",
+                    "xyz_class": "XYZ",
+                    "revenue": "Выручка",
+                    "cost": "Себестоимость",
+                    "margin": "Маржа",
+                    "margin_pct": "Маржа, %",
+                    "quantity": "Продано",
+                    "avg_price": "Средняя цена",
+                    "return_revenue": "Возвраты",
+                    "stock_on_hand": "Остаток",
+                    "stock_value": "Сумма остатка",
+                    "stock_coverage_days": "Покрытие, дней",
+                    "forecast_qty": "Прогноз спроса",
+                    "recommended_order_qty": "К заказу",
+                    "priority": "Приоритет",
+                    "stock_status": "Статус остатка",
+                    "last_sale_date": "Последняя продажа",
+                }
+                st.caption(
+                    f"Показано {format_number(len(portfolio_view))} из "
+                    f"{format_number(len(partner_portfolio))} SKU."
+                )
+                st.dataframe(
+                    format_display_frame_for_role(
+                        portfolio_view,
+                        current_user,
+                        rename_map=portfolio_table_rename,
+                        columns=portfolio_table_columns,
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                    height=min(640, max(260, 80 + len(portfolio_view) * 34)),
+                )
+
+            with st.container(border=True):
+                render_panel_header(
+                    "Открыть детальную карточку",
+                    "Выберите SKU из портфеля, чтобы перейти к его полной индивидуальной карточке.",
+                )
+                portfolio_jump_source = (
+                    portfolio_view
+                    if not portfolio_view.empty
+                    else partner_portfolio
+                )
+                portfolio_jump_lookup = {
+                    str(row["portfolio_key"]): (
+                        f"{row['item_code']} · {row['product']}"
+                        if str(row.get("item_code", "")).strip()
+                        else str(row["product"])
+                    )
+                    for row in portfolio_jump_source.to_dict(orient="records")
+                }
+                selected_portfolio_sku_key = st.selectbox(
+                    "SKU",
+                    list(portfolio_jump_lookup),
+                    format_func=lambda key: portfolio_jump_lookup.get(key, key),
+                    key=f"sku_portfolio_jump_{portfolio_dimension}",
+                )
+                full_product_options = build_product_detail_options(product_summary)
+                matching_product_option = pd.DataFrame()
+                if not full_product_options.empty:
+                    selected_portfolio_row = portfolio_jump_source[
+                        portfolio_jump_source["portfolio_key"]
+                        .astype(str)
+                        .eq(str(selected_portfolio_sku_key))
+                    ].iloc[0]
+                    selected_portfolio_product = str(
+                        selected_portfolio_row.get("product", "")
+                    ).strip()
+                    matching_product_option = full_product_options[
+                        full_product_options["group_key"]
+                        .fillna("")
+                        .astype(str)
+                        .str.casefold()
+                        .eq(str(selected_portfolio_sku_key).casefold())
+                    ]
+                    if matching_product_option.empty:
+                        matching_product_option = full_product_options[
+                            full_product_options["product_name"]
+                            .fillna("")
+                            .astype(str)
+                            .str.casefold()
+                            .eq(selected_portfolio_product.casefold())
+                        ]
+                if st.button(
+                    "Открыть карточку выбранного SKU",
+                    type="primary",
+                    width="stretch",
+                    disabled=matching_product_option.empty,
+                    key=f"sku_portfolio_open_{portfolio_dimension}",
+                ):
+                    st.session_state["sku_portfolio_pending_product_id"] = str(
+                        matching_product_option.iloc[0]["option_id"]
+                    )
+                    st.rerun()
+
+            portfolio_summary_export = pd.DataFrame(
+                [
+                    {"Показатель": portfolio_dimension_label, "Значение": selected_portfolio_value},
+                    {"Показатель": "SKU", "Значение": len(partner_portfolio)},
+                    {"Показатель": "Выручка", "Значение": portfolio_revenue},
+                    {"Показатель": "Маржа", "Значение": portfolio_margin},
+                    {"Показатель": "Маржа, %", "Значение": portfolio_margin_pct},
+                    {"Показатель": "Сумма склада", "Значение": portfolio_stock_value},
+                    {"Показатель": "SKU к заказу", "Значение": portfolio_reorder_count},
+                    {"Показатель": "Количество к заказу", "Значение": portfolio_order_qty},
+                    {"Показатель": "Критичных SKU", "Значение": portfolio_critical_count},
+                    {"Показатель": "Возвраты", "Значение": portfolio_return_revenue},
+                ]
+            )
+            safe_portfolio_token = "".join(
+                character
+                if character.isalnum() or character in {"-", "_"}
+                else "_"
+                for character in selected_portfolio_value
+            ).strip("_")[:60] or "portfolio"
+            st.download_button(
+                f"Скачать портфель «{selected_portfolio_value}»",
+                data=to_excel_report_bytes(
+                    {
+                        "Сводка": prepare_excel_report_frame(
+                            portfolio_summary_export,
+                            current_user,
+                        ),
+                        "Номенклатура": prepare_excel_report_frame(
+                            partner_portfolio,
+                            current_user,
+                            portfolio_table_rename,
+                            columns=portfolio_table_columns,
+                        ),
+                        "Динамика": prepare_excel_report_frame(
+                            partner_monthly,
+                            current_user,
+                        ),
+                    },
+                    report_title=(
+                        f"Портфель {portfolio_dimension_label.lower()}: "
+                        f"{selected_portfolio_value}"
+                    ),
+                ),
+                file_name=(
+                    f"{portfolio_dimension}_portfolio_{safe_portfolio_token}.xlsx"
+                ),
+                mime=EXCEL_MIME,
+                width="stretch",
+            )
+        st.stop()
 
     product_detail_options = build_product_detail_options(product_summary)
     if product_detail_options.empty:
