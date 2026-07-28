@@ -3554,7 +3554,7 @@ def render_auth_gate() -> dict[str, str]:
     st.stop()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
 def cached_load_input_file(
     file_bytes: bytes,
     filename: str,
@@ -3571,7 +3571,7 @@ def cached_load_input_file(
     )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
 def cached_prepare_sales_data(
     frame: pd.DataFrame,
     mapping_items: tuple[tuple[str, str | None], ...],
@@ -3581,7 +3581,7 @@ def cached_prepare_sales_data(
     return prepare_sales_data(frame, mapping, supplier_rules=supplier_rule_items)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
 def cached_prepare_inventory_data(
     frame: pd.DataFrame,
     mapping_items: tuple[tuple[str, str | None], ...],
@@ -3590,7 +3590,7 @@ def cached_prepare_inventory_data(
     return prepare_inventory_data(frame, mapping)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
 def cached_load_inventory_input_file(
     file_bytes: bytes,
     filename: str,
@@ -3607,7 +3607,7 @@ def cached_load_inventory_input_file(
     )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=3, ttl=900)
 def cached_load_archive_data(
     selected_salons: tuple[str, ...],
     supplier_rule_items: tuple[tuple[str, str], ...] = (),
@@ -3615,12 +3615,12 @@ def cached_load_archive_data(
     return load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
 def cached_load_supplier_keyword_rules(include_inactive: bool = False) -> pd.DataFrame:
     return load_supplier_keyword_rules(include_inactive=include_inactive)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
 def cached_load_supplier_product_assignments() -> pd.DataFrame:
     return load_supplier_product_assignments()
 
@@ -4163,27 +4163,27 @@ def default_supplier_rules_frame() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["supplier", "keyword"])
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_data(show_spinner=False, max_entries=8, ttl=900)
 def cached_build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
     return build_overview_metrics(frame)
 
 
-@st.cache_data(show_spinner=False, max_entries=48)
+@st.cache_data(show_spinner=False, max_entries=6, ttl=900)
 def cached_build_product_summary(frame: pd.DataFrame, group_column: str = "product") -> pd.DataFrame:
     return build_product_summary(frame, group_column)
 
 
-@st.cache_data(show_spinner=False, max_entries=48)
+@st.cache_data(show_spinner=False, max_entries=6, ttl=900)
 def cached_build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return build_monthly_summary(frame)
 
 
-@st.cache_data(show_spinner=False, max_entries=48)
+@st.cache_data(show_spinner=False, max_entries=8, ttl=900)
 def cached_build_returns_overview(frame: pd.DataFrame) -> dict[str, float]:
     return build_returns_overview(frame)
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_data(show_spinner=False, max_entries=6, ttl=900)
 def cached_build_plan_fact_summary(
     monthly_summary: pd.DataFrame,
     plan_summary: pd.DataFrame,
@@ -4191,7 +4191,7 @@ def cached_build_plan_fact_summary(
     return build_plan_fact_summary(monthly_summary, plan_summary)
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_data(show_spinner=False, max_entries=4, ttl=900)
 def cached_build_procurement_forecast(
     frame: pd.DataFrame,
     *,
@@ -4215,12 +4215,12 @@ def cached_build_procurement_forecast(
     )
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_data(show_spinner=False, max_entries=6, ttl=900)
 def cached_build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, float]:
     return build_procurement_overview(procurement_frame)
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_data(show_spinner=False, max_entries=6, ttl=900)
 def cached_build_procurement_supplier_summary(procurement_frame: pd.DataFrame) -> pd.DataFrame:
     return build_procurement_supplier_summary(procurement_frame)
 
@@ -4750,7 +4750,7 @@ def _style_excel_worksheet(worksheet) -> None:
     worksheet.row_dimensions[1].height = 32
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2, ttl=600)
 def to_excel_report_bytes(
     sheets: dict[str, pd.DataFrame],
     *,
@@ -7278,7 +7278,7 @@ if work_mode in upload_modes:
         if prepared_result is None:
             st.info("Загрузите файл, чтобы открыть обзор.")
             st.stop()
-        data = prepared_result.data.copy()
+        data = prepared_result.data
         source_label = filename
     elif work_mode in {"Новая выгрузка", "Загрузка салона"}:
         if prepared_result is None:
@@ -7297,7 +7297,7 @@ if work_mode in upload_modes:
 
         archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
         manifest_view = archive_result.manifest.copy()
-        data = archive_result.data.copy()
+        data = archive_result.data
 
         for warning in archive_result.warnings:
             st.warning(warning)
@@ -7324,7 +7324,7 @@ if work_mode not in upload_modes:
 
     archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
     manifest_view = archive_result.manifest.copy()
-    data = archive_result.data.copy()
+    data = archive_result.data
 
     for warning in archive_result.warnings:
         st.warning(warning)
@@ -7689,7 +7689,7 @@ if all_salons:
     if len(selected_salons_filter) != len(all_salons):
         filter_badges.append(f"Салоны: {len(selected_salons_filter)} из {len(all_salons)}")
 
-plan_fact_source_data = data.copy()
+plan_fact_source_data = data
 
 if all_categories:
     data = data[data["category"].astype(str).isin(selected_categories)]
@@ -7701,7 +7701,7 @@ if all_suppliers:
     if len(selected_suppliers) != len(all_suppliers):
         filter_badges.append(f"Поставщики: {len(selected_suppliers)} из {len(all_suppliers)}")
 
-procurement_source_data = data.copy()
+procurement_source_data = data
 
 if all_brands:
     data = data[data["brand"].astype(str).isin(selected_brands)]
