@@ -1882,6 +1882,31 @@ def inject_pwa_shell() -> None:
           const parentDoc = parentWindow && parentWindow.document;
           if (!parentDoc) return;
 
+          if (!parentWindow.__artdbAssetRecoveryBound) {
+            parentWindow.__artdbAssetRecoveryBound = true;
+            const recoveryKey = 'artdb-dynamic-import-recovery';
+            const dynamicImportError =
+              /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module/i;
+
+            const recoverFromDynamicImportError = (event) => {
+              const reason = event?.reason || event?.error || event;
+              const message = String(reason?.message || reason || '');
+              if (!dynamicImportError.test(message)) return;
+
+              const now = Date.now();
+              const lastRecovery = Number(parentWindow.sessionStorage.getItem(recoveryKey) || 0);
+              if (now - lastRecovery < 5 * 60 * 1000) return;
+
+              parentWindow.sessionStorage.setItem(recoveryKey, String(now));
+              const recoveryUrl = new URL(parentWindow.location.href);
+              recoveryUrl.searchParams.set('_asset_reload', String(now));
+              parentWindow.location.replace(recoveryUrl.toString());
+            };
+
+            parentWindow.addEventListener('unhandledrejection', recoverFromDynamicImportError);
+            parentWindow.addEventListener('error', recoverFromDynamicImportError, true);
+          }
+
           const ensureLink = (rel, href, attributes = {}) => {
             let node = parentDoc.head.querySelector(`link[rel="${rel}"]`);
             if (!node) {
