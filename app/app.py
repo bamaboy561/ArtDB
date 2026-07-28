@@ -12601,19 +12601,82 @@ if active_screen == "Закупки":
                                 },
                             ]
                         )
-                        st.dataframe(
-                            selected_order_lines.rename(
-                                columns={
-                                    "product": "SKU / Товар",
-                                    "quantity": "Количество",
-                                    "unit_cost": "Цена закупки",
-                                    "comment": "Комментарий",
-                                }
-                            ),
-                            use_container_width=True,
-                            hide_index=True,
-                            height=300,
+                        st.markdown("#### Состав заказа")
+                        order_lines_search_col, order_lines_size_col, order_lines_page_col = st.columns(
+                            [1.35, 0.42, 0.42],
+                            gap="small",
                         )
+                        with order_lines_search_col:
+                            order_lines_search = st.text_input(
+                                "Поиск в составе",
+                                key=f"procurement_order_lines_search_{selected_order_id}",
+                                placeholder="Введите название товара или комментарий",
+                            ).strip()
+                        with order_lines_size_col:
+                            order_lines_page_size = st.selectbox(
+                                "Строк",
+                                options=[10, 25, 50],
+                                index=0,
+                                key=f"procurement_order_lines_page_size_{selected_order_id}",
+                            )
+
+                        selected_order_lines_view = selected_order_lines_display.copy()
+                        if order_lines_search:
+                            order_lines_search_text = order_lines_search.casefold()
+                            order_lines_search_source = (
+                                selected_order_lines_view[["SKU / Товар", "Комментарий"]]
+                                .fillna("")
+                                .astype(str)
+                                .agg(" ".join, axis=1)
+                                .str.casefold()
+                            )
+                            selected_order_lines_view = selected_order_lines_view[
+                                order_lines_search_source.str.contains(
+                                    order_lines_search_text,
+                                    regex=False,
+                                    na=False,
+                                )
+                            ].copy()
+
+                        order_lines_count = len(selected_order_lines_view)
+                        order_lines_page_count = max(
+                            1,
+                            (order_lines_count + order_lines_page_size - 1) // order_lines_page_size,
+                        )
+                        order_lines_page_key = f"procurement_order_lines_page_{selected_order_id}"
+                        if st.session_state.get(order_lines_page_key, 1) > order_lines_page_count:
+                            st.session_state[order_lines_page_key] = 1
+                        with order_lines_page_col:
+                            order_lines_page = st.selectbox(
+                                "Страница",
+                                options=list(range(1, order_lines_page_count + 1)),
+                                key=order_lines_page_key,
+                            )
+
+                        if selected_order_lines_view.empty:
+                            st.info("В составе заказа нет позиций, подходящих под поиск.")
+                        else:
+                            order_lines_start = (order_lines_page - 1) * order_lines_page_size
+                            order_lines_stop = min(
+                                order_lines_start + order_lines_page_size,
+                                order_lines_count,
+                            )
+                            selected_order_lines_page = selected_order_lines_view.iloc[
+                                order_lines_start:order_lines_stop
+                            ]
+                            st.caption(
+                                f"Показано {order_lines_start + 1}-{order_lines_stop} "
+                                f"из {order_lines_count} SKU."
+                            )
+                            st.dataframe(
+                                selected_order_lines_page,
+                                use_container_width=True,
+                                hide_index=True,
+                                height=min(
+                                    460,
+                                    max(220, 72 + len(selected_order_lines_page) * 34),
+                                ),
+                            )
 
                         if can_manage_procurement(current_user):
                             current_status_value = str(selected_order_row["status"]).strip()
