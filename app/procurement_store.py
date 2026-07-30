@@ -365,10 +365,20 @@ def merge_procurement_upload(
     )
 
     existing = load_procurement_items()
+    existing_groups: dict[str, list[dict[str, Any]]] = {}
+    for row in existing.to_dict(orient="records"):
+        product = str(row.get("product", "")).strip()
+        if not product:
+            continue
+        existing_groups.setdefault(product.casefold(), []).append(
+            _normalize_procurement_record(row)
+        )
     existing_map = {
-        str(row.get("product", "")).strip().casefold(): _normalize_procurement_record(row)
-        for row in existing.to_dict(orient="records")
-        if str(row.get("product", "")).strip()
+        product_key: max(
+            records,
+            key=lambda record: str(record.get("updated_at", "")),
+        )
+        for product_key, records in existing_groups.items()
     }
 
     merged_records: list[dict[str, Any]] = []
@@ -380,7 +390,15 @@ def merge_procurement_upload(
 
         product_key = product.casefold()
         uploaded_product_keys.add(product_key)
-        existing_record = existing_map.get(product_key)
+        existing_candidates = existing_groups.get(product_key, [])
+        existing_record = next(
+            (
+                candidate
+                for candidate in existing_candidates
+                if str(candidate.get("product", "")).strip() == product
+            ),
+            existing_map.get(product_key),
+        )
         if existing_record is None:
             existing_record = _normalize_procurement_record({"product": product})
         canonical_product = str(existing_record.get("product", "")).strip() or product
@@ -396,22 +414,34 @@ def merge_procurement_upload(
                 continue
             merged_record[field] = row.get(field)
 
+        if replace_stock_snapshot:
+            for duplicate_record in existing_candidates:
+                duplicate_product = str(
+                    duplicate_record.get("product", "")
+                ).strip()
+                if not duplicate_product or duplicate_product == canonical_product:
+                    continue
+                reset_duplicate = {**duplicate_record}
+                for field in snapshot_fields:
+                    reset_duplicate[field] = 0.0
+                merged_records.append(reset_duplicate)
         merged_records.append(merged_record)
 
     if replace_stock_snapshot:
-        for product_key, existing_record in existing_map.items():
+        for product_key, existing_records in existing_groups.items():
             if product_key in uploaded_product_keys:
                 continue
-            if not any(
-                abs(_safe_signed_float(existing_record.get(field, 0))) > 0
-                for field in snapshot_fields
-            ):
-                continue
+            for existing_record in existing_records:
+                if not any(
+                    abs(_safe_signed_float(existing_record.get(field, 0))) > 0
+                    for field in snapshot_fields
+                ):
+                    continue
 
-            reset_record = {**existing_record}
-            for field in snapshot_fields:
-                reset_record[field] = 0.0
-            merged_records.append(reset_record)
+                reset_record = {**existing_record}
+                for field in snapshot_fields:
+                    reset_record[field] = 0.0
+                merged_records.append(reset_record)
 
     if not merged_records:
         return 0

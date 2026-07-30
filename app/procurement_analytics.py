@@ -144,8 +144,18 @@ def build_procurement_forecast(
     working = frame.copy()
     working["date"] = pd.to_datetime(working["date"], errors="coerce")
     working = working.dropna(subset=["date", "product"]).copy()
+    working["product"] = working["product"].fillna("").astype(str).str.strip()
+    working = working[working["product"].ne("")].copy()
     if working.empty:
         return pd.DataFrame(columns=columns)
+
+    working["_product_key"] = working["product"].str.casefold()
+    canonical_products = (
+        working.sort_values("date")
+        .drop_duplicates("_product_key", keep="last")
+        .set_index("_product_key")["product"]
+    )
+    working["product"] = working["_product_key"].map(canonical_products)
 
     if "month" not in working.columns:
         working["month"] = working["date"].dt.to_period("M").dt.to_timestamp()
@@ -313,7 +323,8 @@ def build_procurement_forecast(
             item_settings[column] = pd.NA
     item_settings["product"] = item_settings["product"].fillna("").astype(str).str.strip()
     item_settings = item_settings[item_settings["product"] != ""].copy()
-    item_settings = item_settings.drop_duplicates(subset=["product"], keep="last")
+    item_settings["_product_key"] = item_settings["product"].str.casefold()
+    item_settings = item_settings.drop_duplicates(subset=["_product_key"], keep="last")
     item_settings["supplier"] = item_settings["supplier"].fillna("").astype(str).str.strip()
     item_settings["brand"] = item_settings["brand"].fillna("").astype(str).str.strip()
     item_settings["notes"] = item_settings["notes"].fillna("").astype(str).str.strip()
@@ -323,7 +334,7 @@ def build_procurement_forecast(
         item_settings[numeric_column] = item_settings[numeric_column].map(_safe_non_negative_number)
     item_settings["lead_time_days"] = item_settings["lead_time_days"].map(_safe_non_negative_int)
 
-    procurement_product_keys = (
+    procurement["_product_key"] = (
         procurement["product"]
         .fillna("")
         .astype(str)
@@ -331,7 +342,7 @@ def build_procurement_forecast(
         .str.casefold()
     )
     inventory_only_settings = item_settings[
-        ~item_settings["product"].str.casefold().isin(procurement_product_keys)
+        ~item_settings["_product_key"].isin(procurement["_product_key"])
     ].copy()
     if not inventory_only_settings.empty:
         inventory_only_records: list[dict[str, object]] = []
@@ -342,6 +353,7 @@ def build_procurement_forecast(
             inventory_only_records.append(
                 {
                     "product": product_name,
+                    "_product_key": product_name.casefold(),
                     "active_months": 0,
                     "history_months_used": history_months_used,
                     "last_month_qty": 0.0,
@@ -367,9 +379,12 @@ def build_procurement_forecast(
                 ignore_index=True,
             )
 
+    settings_columns = [
+        column for column in PROCUREMENT_ITEM_COLUMNS if column != "product"
+    ]
     procurement = procurement.merge(
-        item_settings[PROCUREMENT_ITEM_COLUMNS],
-        on="product",
+        item_settings[["_product_key", *settings_columns]],
+        on="_product_key",
         how="left",
     )
     procurement["supplier"] = procurement["supplier"].fillna("").astype(str).str.strip()
@@ -398,13 +413,20 @@ def build_procurement_forecast(
             inbound_summary[column] = pd.NA
     inbound_summary["product"] = inbound_summary["product"].fillna("").astype(str).str.strip()
     inbound_summary = inbound_summary[inbound_summary["product"] != ""].copy()
+    inbound_summary["_product_key"] = inbound_summary["product"].str.casefold()
     inbound_summary["ordered_in_transit_qty"] = inbound_summary["ordered_in_transit_qty"].map(_safe_non_negative_number)
     inbound_summary["open_order_count"] = pd.to_numeric(inbound_summary["open_order_count"], errors="coerce").fillna(0).astype(int)
-    inbound_summary = inbound_summary.drop_duplicates(subset=["product"], keep="last")
+    inbound_summary = (
+        inbound_summary.groupby("_product_key", as_index=False)
+        .agg(
+            ordered_in_transit_qty=("ordered_in_transit_qty", "sum"),
+            open_order_count=("open_order_count", "sum"),
+        )
+    )
 
     procurement = procurement.merge(
-        inbound_summary[["product", "ordered_in_transit_qty", "open_order_count"]],
-        on="product",
+        inbound_summary[["_product_key", "ordered_in_transit_qty", "open_order_count"]],
+        on="_product_key",
         how="left",
     )
     procurement["ordered_in_transit_qty"] = procurement["ordered_in_transit_qty"].map(_safe_non_negative_number)

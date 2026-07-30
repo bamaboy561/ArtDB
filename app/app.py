@@ -6105,6 +6105,7 @@ def build_financial_inventory_frame(procurement_forecast: pd.DataFrame) -> pd.Da
     inventory = procurement_forecast.copy()
     for column in [
         "stock_on_hand",
+        "stock_value",
         "available_stock_qty",
         "forecast_qty",
         "avg_revenue_per_unit",
@@ -6116,8 +6117,23 @@ def build_financial_inventory_frame(procurement_forecast: pd.DataFrame) -> pd.Da
 
     inventory["avg_unit_cost"] = inventory["avg_revenue_per_unit"] - inventory["avg_margin_per_unit"]
     inventory["avg_unit_cost"] = inventory["avg_unit_cost"].where(inventory["avg_unit_cost"] > 0)
-    inventory["stock_value"] = inventory["stock_on_hand"].fillna(0.0) * inventory["avg_unit_cost"]
-    inventory["available_stock_value"] = inventory["available_stock_qty"].fillna(0.0) * inventory["avg_unit_cost"]
+    uploaded_stock_value = inventory["stock_value"].copy()
+    estimated_stock_value = inventory["stock_on_hand"].fillna(0.0) * inventory["avg_unit_cost"]
+    has_uploaded_stock_value = uploaded_stock_value.ne(0) | inventory["stock_on_hand"].fillna(0.0).eq(0)
+    inventory["stock_value"] = uploaded_stock_value.where(
+        has_uploaded_stock_value,
+        estimated_stock_value,
+    )
+    inventory_unit_cost = (
+        inventory["stock_value"] / inventory["stock_on_hand"]
+    ).where(inventory["stock_on_hand"].ne(0))
+    inventory_unit_cost = inventory_unit_cost.where(
+        inventory_unit_cost.notna(),
+        inventory["avg_unit_cost"],
+    )
+    inventory["available_stock_value"] = (
+        inventory["available_stock_qty"].fillna(0.0) * inventory_unit_cost
+    )
     inventory["monthly_cogs_forecast"] = inventory["forecast_qty"].fillna(0.0) * inventory["avg_unit_cost"]
     inventory = inventory.replace([float("inf"), -float("inf")], pd.NA)
 
