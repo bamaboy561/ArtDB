@@ -39,6 +39,14 @@ def _safe_non_negative_number(value: object) -> float:
     return numeric if numeric >= 0 else 0.0
 
 
+def _safe_signed_number(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return numeric if math.isfinite(numeric) else 0.0
+
+
 def _safe_non_negative_int(value: object) -> int:
     try:
         numeric = int(float(value))
@@ -309,7 +317,9 @@ def build_procurement_forecast(
     item_settings["supplier"] = item_settings["supplier"].fillna("").astype(str).str.strip()
     item_settings["brand"] = item_settings["brand"].fillna("").astype(str).str.strip()
     item_settings["notes"] = item_settings["notes"].fillna("").astype(str).str.strip()
-    for numeric_column in ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple"):
+    for numeric_column in ("stock_on_hand", "stock_value"):
+        item_settings[numeric_column] = item_settings[numeric_column].map(_safe_signed_number)
+    for numeric_column in ("stock_in_transit", "min_order_qty", "order_multiple"):
         item_settings[numeric_column] = item_settings[numeric_column].map(_safe_non_negative_number)
     item_settings["lead_time_days"] = item_settings["lead_time_days"].map(_safe_non_negative_int)
 
@@ -372,7 +382,9 @@ def build_procurement_forecast(
         sales_supplier.loc[missing_procurement_supplier & sales_supplier.ne("")]
     )
     procurement["notes"] = procurement["notes"].fillna("").astype(str).str.strip()
-    for numeric_column in ("stock_on_hand", "stock_value", "stock_in_transit", "min_order_qty", "order_multiple"):
+    for numeric_column in ("stock_on_hand", "stock_value"):
+        procurement[numeric_column] = procurement[numeric_column].map(_safe_signed_number)
+    for numeric_column in ("stock_in_transit", "min_order_qty", "order_multiple"):
         procurement[numeric_column] = procurement[numeric_column].map(_safe_non_negative_number)
     procurement["lead_time_days"] = procurement["lead_time_days"].map(_safe_non_negative_int)
     procurement["lead_time_days"] = procurement["lead_time_days"].where(procurement["lead_time_days"] > 0, safe_lead_time_days)

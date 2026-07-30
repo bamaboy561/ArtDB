@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -170,6 +171,14 @@ def _safe_float(value: Any) -> float:
     return numeric if numeric >= 0 else 0.0
 
 
+def _safe_signed_float(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return numeric if math.isfinite(numeric) else 0.0
+
+
 def _safe_int(value: Any) -> int:
     try:
         numeric = int(float(value))
@@ -183,8 +192,8 @@ def _normalize_procurement_record(record: dict[str, Any]) -> dict[str, Any]:
         "product": str(record.get("product", "")).strip(),
         "supplier": str(record.get("supplier", "")).strip(),
         "brand": str(record.get("brand", "")).strip(),
-        "stock_on_hand": _safe_float(record.get("stock_on_hand", 0)),
-        "stock_value": _safe_float(record.get("stock_value", 0)),
+        "stock_on_hand": _safe_signed_float(record.get("stock_on_hand", 0)),
+        "stock_value": _safe_signed_float(record.get("stock_value", 0)),
         "stock_in_transit": _safe_float(record.get("stock_in_transit", 0)),
         "min_order_qty": _safe_float(record.get("min_order_qty", 0)),
         "order_multiple": _safe_float(record.get("order_multiple", 0)),
@@ -338,6 +347,7 @@ def merge_procurement_upload(
     *,
     updated_by: str,
     override_fields: set[str] | None = None,
+    replace_stock_snapshot: bool = False,
 ) -> int:
     ensure_procurement_store()
     if frame.empty or "product" not in frame.columns:
@@ -350,6 +360,9 @@ def merge_procurement_upload(
     }
     if not safe_override_fields:
         return 0
+    snapshot_fields = safe_override_fields.intersection(
+        {"stock_on_hand", "stock_value", "stock_in_transit"}
+    )
 
     existing = load_procurement_items()
     existing_map = {
@@ -359,23 +372,46 @@ def merge_procurement_upload(
     }
 
     merged_records: list[dict[str, Any]] = []
+    uploaded_product_keys: set[str] = set()
     for row in frame.to_dict(orient="records"):
         product = str(row.get("product", "")).strip()
         if not product:
             continue
 
-        existing_record = existing_map.get(product.casefold(), _normalize_procurement_record({"product": product}))
-        merged_record = {**existing_record, "product": product}
+        product_key = product.casefold()
+        uploaded_product_keys.add(product_key)
+        existing_record = existing_map.get(product_key)
+        if existing_record is None:
+            existing_record = _normalize_procurement_record({"product": product})
+        canonical_product = str(existing_record.get("product", "")).strip() or product
+        merged_record = {**existing_record, "product": canonical_product}
 
         for field in safe_override_fields:
             presence_key = f"__has_{field}"
             if presence_key in row and not bool(row.get(presence_key)):
+                if replace_stock_snapshot and field in snapshot_fields:
+                    merged_record[field] = 0.0
                 continue
             if field not in row:
                 continue
             merged_record[field] = row.get(field)
 
         merged_records.append(merged_record)
+
+    if replace_stock_snapshot:
+        for product_key, existing_record in existing_map.items():
+            if product_key in uploaded_product_keys:
+                continue
+            if not any(
+                abs(_safe_signed_float(existing_record.get(field, 0))) > 0
+                for field in snapshot_fields
+            ):
+                continue
+
+            reset_record = {**existing_record}
+            for field in snapshot_fields:
+                reset_record[field] = 0.0
+            merged_records.append(reset_record)
 
     if not merged_records:
         return 0

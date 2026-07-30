@@ -8082,6 +8082,12 @@ if active_screen == "Карточка SKU":
                 else float("nan")
             )
             portfolio_stock_value = float(partner_portfolio["stock_value"].sum())
+            portfolio_stock_on_hand = float(
+                partner_portfolio["stock_on_hand"].sum()
+            )
+            portfolio_available_stock = float(
+                partner_portfolio["available_stock_qty"].sum()
+            )
             portfolio_order_qty = float(
                 partner_portfolio["recommended_order_qty"].sum()
             )
@@ -8111,6 +8117,18 @@ if active_screen == "Карточка SKU":
                     "label": "Продано",
                     "value": format_number(partner_portfolio["quantity"].sum()),
                     "delta": f"{format_number(partner_portfolio['sales_lines'].sum())} строк продаж",
+                    "tone": "info",
+                },
+                {
+                    "label": "Остаток по файлу",
+                    "value": format_number(portfolio_stock_on_hand),
+                    "delta": "фактическое количество на складе",
+                    "tone": "info",
+                },
+                {
+                    "label": "Доступно с учётом пути",
+                    "value": format_number(portfolio_available_stock),
+                    "delta": "остаток + товар в пути",
                     "tone": "info",
                 },
                 {
@@ -11490,6 +11508,94 @@ if active_screen == "Закупки":
                                             f"К загрузке подготовлено SKU: {format_number(len(prepared_inventory_result.data))}. "
                                             "Обновятся только поля, которые вы сопоставили в файле."
                                         )
+                                        full_inventory_snapshot = st.checkbox(
+                                            "Это полный снимок склада",
+                                            value=True,
+                                            key="procurement_stock_full_snapshot",
+                                            help=(
+                                                "Если включено, у SKU, которых нет в свежем файле, "
+                                                "обнулятся сопоставленные поля остатка, суммы склада "
+                                                "и товара в пути. Поставщик, бренд и настройки закупки сохранятся."
+                                            ),
+                                        )
+                                        uploaded_inventory_keys = set(
+                                            prepared_inventory_result.data["product"]
+                                            .fillna("")
+                                            .astype(str)
+                                            .str.strip()
+                                            .str.casefold()
+                                        )
+                                        blank_stock_count = int(
+                                            (
+                                                ~prepared_inventory_result.data[
+                                                    "__has_stock_on_hand"
+                                                ].fillna(False)
+                                            ).sum()
+                                        )
+                                        if blank_stock_count:
+                                            blank_stock_message = (
+                                                f"У {blank_stock_count} SKU значение остатка пустое. "
+                                            )
+                                            if full_inventory_snapshot:
+                                                st.info(
+                                                    blank_stock_message
+                                                    + "В полном снимке оно будет сохранено как 0."
+                                                )
+                                            else:
+                                                st.warning(
+                                                    blank_stock_message
+                                                    + "При частичном обновлении сохранится прежнее значение."
+                                                )
+                                        reset_snapshot_fields = override_fields.intersection(
+                                            {"stock_on_hand", "stock_value", "stock_in_transit"}
+                                        )
+                                        missing_inventory_count = 0
+                                        if (
+                                            full_inventory_snapshot
+                                            and reset_snapshot_fields
+                                            and not procurement_items.empty
+                                        ):
+                                            existing_inventory_keys = (
+                                                procurement_items["product"]
+                                                .fillna("")
+                                                .astype(str)
+                                                .str.strip()
+                                                .str.casefold()
+                                            )
+                                            has_stored_stock = pd.Series(
+                                                False,
+                                                index=procurement_items.index,
+                                                dtype="bool",
+                                            )
+                                            for snapshot_field in reset_snapshot_fields:
+                                                if snapshot_field in procurement_items.columns:
+                                                    has_stored_stock |= (
+                                                        pd.to_numeric(
+                                                            procurement_items[snapshot_field],
+                                                            errors="coerce",
+                                                        )
+                                                        .fillna(0.0)
+                                                        .ne(0)
+                                                    )
+                                            missing_inventory_count = int(
+                                                (
+                                                    ~existing_inventory_keys.isin(
+                                                        uploaded_inventory_keys
+                                                    )
+                                                    & has_stored_stock
+                                                ).sum()
+                                            )
+                                            if missing_inventory_count:
+                                                st.warning(
+                                                    f"В свежем файле отсутствует {missing_inventory_count} SKU "
+                                                    "с сохранёнными остатками. После сохранения их складские "
+                                                    "показатели будут обнулены."
+                                                )
+                                        elif not full_inventory_snapshot:
+                                            st.info(
+                                                "Частичное обновление: товары, которых нет в файле, "
+                                                "сохранят прежние остатки."
+                                            )
                                         if not is_missing(uploaded_stock_value_total):
                                             st.success(
                                                 "Сумма склада по файлу: "
@@ -11510,8 +11616,63 @@ if active_screen == "Закупки":
                                                 prepared_inventory_result.data,
                                                 updated_by=current_user["username"],
                                                 override_fields=override_fields,
+                                                replace_stock_snapshot=full_inventory_snapshot,
                                             )
-                                            if not is_missing(uploaded_stock_value_total):
+                                            reconciliation_differences: dict[
+                                                str, dict[str, float]
+                                            ] = {}
+                                            if (
+                                                full_inventory_snapshot
+                                                and reset_snapshot_fields
+                                            ):
+                                                refreshed_items = load_procurement_items()
+                                                for snapshot_field in sorted(
+                                                    reset_snapshot_fields
+                                                ):
+                                                    expected_total = float(
+                                                        pd.to_numeric(
+                                                            prepared_inventory_result.data[
+                                                                snapshot_field
+                                                            ],
+                                                            errors="coerce",
+                                                        )
+                                                        .fillna(0.0)
+                                                        .sum()
+                                                    )
+                                                    stored_total = float(
+                                                        pd.to_numeric(
+                                                            refreshed_items[
+                                                                snapshot_field
+                                                            ],
+                                                            errors="coerce",
+                                                        )
+                                                        .fillna(0.0)
+                                                        .sum()
+                                                    )
+                                                    tolerance = max(
+                                                        0.01,
+                                                        abs(expected_total) * 1e-9,
+                                                    )
+                                                    if (
+                                                        abs(
+                                                            stored_total
+                                                            - expected_total
+                                                        )
+                                                        > tolerance
+                                                    ):
+                                                        reconciliation_differences[
+                                                            snapshot_field
+                                                        ] = {
+                                                            "file": expected_total,
+                                                            "database": stored_total,
+                                                        }
+
+                                            if (
+                                                not reconciliation_differences
+                                                and not is_missing(
+                                                    uploaded_stock_value_total
+                                                )
+                                            ):
                                                 save_inventory_snapshot(
                                                     total_value=uploaded_stock_value_total,
                                                     item_count=len(prepared_inventory_result.data),
@@ -11531,18 +11692,46 @@ if active_screen == "Закупки":
                                                         else None
                                                     ),
                                                     "override_fields": sorted(override_fields),
+                                                    "full_inventory_snapshot": bool(
+                                                        full_inventory_snapshot
+                                                    ),
+                                                    "reset_missing_sku_count": int(
+                                                        missing_inventory_count
+                                                    ),
+                                                    "reconciliation_differences": (
+                                                        reconciliation_differences
+                                                    ),
                                                     "categories": selected_categories or [],
                                                     "salons": selected_salons_filter or [],
                                                 },
                                             )
-                                            st.session_state["procurement_flash_message"] = (
-                                                f"Остатки из файла обновлены для {saved_count} SKU."
-                                                + (
-                                                    f" Сумма склада: {format_money(uploaded_stock_value_total)}."
-                                                    if not is_missing(uploaded_stock_value_total)
-                                                    else ""
+                                            if reconciliation_differences:
+                                                st.session_state[
+                                                    "procurement_error_message"
+                                                ] = (
+                                                    "Остатки записаны, но контрольная сверка обнаружила "
+                                                    "расхождение между файлом и базой. Повторите загрузку "
+                                                    "или передайте сообщение администратору."
                                                 )
-                                            )
+                                            else:
+                                                st.session_state[
+                                                    "procurement_flash_message"
+                                                ] = (
+                                                    "Остатки из файла обновлены и сверены с базой. "
+                                                    f"SKU в файле: {len(prepared_inventory_result.data)}."
+                                                    + (
+                                                        f" Обнулено отсутствующих SKU: {missing_inventory_count}."
+                                                        if full_inventory_snapshot
+                                                        else ""
+                                                    )
+                                                    + (
+                                                        f" Сумма склада: {format_money(uploaded_stock_value_total)}."
+                                                        if not is_missing(
+                                                            uploaded_stock_value_total
+                                                        )
+                                                        else ""
+                                                    )
+                                                )
                                             st.rerun()
 
                 with st.expander("Массово назначить бренд", expanded=False):
