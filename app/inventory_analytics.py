@@ -6,7 +6,12 @@ from typing import Iterable
 
 import pandas as pd
 
-from sales_analytics import _normalize_number_string, coerce_numeric, normalize_column_name
+from sales_analytics import (
+    _normalize_number_string,
+    coerce_numeric,
+    infer_supplier_from_text,
+    normalize_column_name,
+)
 
 
 INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -156,7 +161,55 @@ def _looks_like_inventory_header(row: list[object]) -> bool:
     return has_product and has_quantity
 
 
-def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
+def _extract_xls_supplier_hierarchy(
+    file_bytes: bytes,
+    sheet_name: str | int | None,
+) -> dict[int, str]:
+    try:
+        import xlrd
+
+        workbook = xlrd.open_workbook(
+            file_contents=file_bytes,
+            formatting_info=True,
+        )
+        if isinstance(sheet_name, str):
+            worksheet = workbook.sheet_by_name(sheet_name)
+        else:
+            worksheet = workbook.sheet_by_index(int(sheet_name or 0))
+    except Exception:
+        return {}
+
+    supplier_by_row: dict[int, str] = {}
+    current_supplier = ""
+    for row_index in range(worksheet.nrows):
+        cell = worksheet.cell(row_index, 0)
+        label = str(cell.value or "").strip()
+        try:
+            cell_format = workbook.xf_list[cell.xf_index]
+            indent_level = int(cell_format.alignment.indent_level or 0)
+            is_bold = bool(workbook.font_list[cell_format.font_index].bold)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            indent_level = 0
+            is_bold = False
+
+        if indent_level < 4:
+            current_supplier = ""
+            continue
+
+        if indent_level == 4 and is_bold and label:
+            current_supplier = infer_supplier_from_text(label) or label
+
+        if current_supplier:
+            supplier_by_row[row_index] = current_supplier
+
+    return supplier_by_row
+
+
+def _parse_1c_inventory_report(
+    file_bytes: bytes,
+    filename: str,
+    sheet_name: str | int | None = 0,
+) -> pd.DataFrame | None:
     try:
         preview = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet_name, header=None)
     except Exception:
@@ -192,9 +245,26 @@ def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None =
 
     data = preview.iloc[data_start_index:].copy()
     data.columns = headers
-    data = data.dropna(how="all").reset_index(drop=True)
+    data = data.dropna(how="all")
     if data.empty:
         return None
+
+    has_supplier_column = any(
+        normalize_column_name(column) in {"поставщик", "supplier", "vendor"}
+        for column in data.columns
+    )
+    if not has_supplier_column and filename.lower().endswith(".xls"):
+        supplier_by_row = _extract_xls_supplier_hierarchy(
+            file_bytes,
+            sheet_name,
+        )
+        supplier_values = pd.Series(
+            (supplier_by_row.get(int(row_index), "") for row_index in data.index),
+            index=data.index,
+            dtype="object",
+        )
+        if supplier_values.ne("").any():
+            data["Поставщик"] = supplier_values
 
     unit_column = next(
         (
@@ -209,9 +279,9 @@ def _parse_1c_inventory_report(file_bytes: bytes, sheet_name: str | int | None =
         unit_series = data[unit_column].fillna("").astype(str).str.strip()
         filtered = data[unit_series != ""].copy()
         if not filtered.empty:
-            data = filtered.reset_index(drop=True)
+            data = filtered
 
-    return data
+    return data.reset_index(drop=True)
 
 
 def load_inventory_input_file(
@@ -225,7 +295,11 @@ def load_inventory_input_file(
     if filename.lower().endswith(".csv"):
         return pd.read_csv(BytesIO(file_bytes), sep=csv_separator, encoding=csv_encoding)
 
-    parsed_1c_report = _parse_1c_inventory_report(file_bytes, sheet_name=sheet_name)
+    parsed_1c_report = _parse_1c_inventory_report(
+        file_bytes,
+        filename,
+        sheet_name=sheet_name,
+    )
     if parsed_1c_report is not None:
         return parsed_1c_report
 
