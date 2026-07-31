@@ -108,6 +108,10 @@ INVENTORY_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+INVENTORY_SUPPLIER_BRAND_OVERRIDES = {
+    "слорос": "Titus",
+}
+
 
 @dataclass
 class PreparedInventoryData:
@@ -253,6 +257,11 @@ def _parse_1c_inventory_report(
         normalize_column_name(column) in {"поставщик", "supplier", "vendor"}
         for column in data.columns
     )
+    has_brand_column = any(
+        normalize_column_name(column)
+        in {"бренд", "торговая марка", "марка", "производитель", "brand", "manufacturer"}
+        for column in data.columns
+    )
     if not has_supplier_column and filename.lower().endswith(".xls"):
         supplier_by_row = _extract_xls_supplier_hierarchy(
             file_bytes,
@@ -265,6 +274,12 @@ def _parse_1c_inventory_report(
         )
         if supplier_values.ne("").any():
             data["Поставщик"] = supplier_values
+            if not has_brand_column:
+                brand_values = supplier_values.str.casefold().map(
+                    INVENTORY_SUPPLIER_BRAND_OVERRIDES
+                ).fillna("")
+                if brand_values.ne("").any():
+                    data["Бренд"] = brand_values
 
     unit_column = next(
         (
