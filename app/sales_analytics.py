@@ -393,6 +393,23 @@ def _is_warehouse_detail_row(name: str) -> bool:
     return normalized == "склад" or normalized.endswith(" склад") or normalized.startswith("склад ")
 
 
+_1C_DOCUMENT_DETAIL_PREFIXES = (
+    "\u0440\u0435\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u0442\u043e\u0432\u0430\u0440\u043e\u0432 \u0438 \u0443\u0441\u043b\u0443\u0433",
+    "\u0432\u043e\u0437\u0432\u0440\u0430\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432 \u0438 \u0443\u0441\u043b\u0443\u0433 \u043e\u0442 \u043f\u043e\u043a\u0443\u043f\u0430\u0442\u0435\u043b\u044f",
+    "\u0432\u043e\u0437\u0432\u0440\u0430\u0442 \u0442\u043e\u0432\u0430\u0440\u043e\u0432 \u043e\u0442 \u043f\u043e\u043a\u0443\u043f\u0430\u0442\u0435\u043b\u044f",
+    "\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u0438\u0440\u043e\u0432\u043a\u0430 \u0440\u0435\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u0438",
+    "\u043e\u0442\u0447\u0435\u0442 \u043e \u0440\u043e\u0437\u043d\u0438\u0447\u043d\u044b\u0445 \u043f\u0440\u043e\u0434\u0430\u0436\u0430\u0445",
+    "\u043e\u0442\u0447\u0451\u0442 \u043e \u0440\u043e\u0437\u043d\u0438\u0447\u043d\u044b\u0445 \u043f\u0440\u043e\u0434\u0430\u0436\u0430\u0445",
+    "\u0447\u0435\u043a \u043a\u043a\u043c",
+    "\u0447\u0435\u043a \u043a\u043a\u0442",
+)
+
+
+def _is_1c_document_detail_row(name: object) -> bool:
+    normalized = re.sub(r"\s+", " ", str(name or "").strip()).casefold()
+    return normalized.startswith(_1C_DOCUMENT_DETAIL_PREFIXES)
+
+
 def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
     try:
         import xlrd
@@ -494,7 +511,7 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
             group_stack[level] = name
             continue
 
-        if _is_warehouse_detail_row(name):
+        if _is_warehouse_detail_row(name) or _is_1c_document_detail_row(name):
             continue
 
         category_path_parts = [label for depth, label in sorted(group_stack.items()) if depth < max(level, 1)]
@@ -635,7 +652,7 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
             group_stack[level] = name
             continue
 
-        if _is_warehouse_detail_row(name):
+        if _is_warehouse_detail_row(name) or _is_1c_document_detail_row(name):
             continue
 
         category_path_parts = [label for depth, label in sorted(group_stack.items()) if depth < max(level, 1)]
@@ -808,6 +825,15 @@ def prepare_sales_data(
 
     prepared = frame.copy()
     warnings: list[str] = []
+
+    raw_product_all = _series_from_mapping(prepared, resolved_mapping, "product")
+    document_detail_mask = raw_product_all.map(_is_1c_document_detail_row)
+    document_detail_rows = int(document_detail_mask.sum())
+    if document_detail_rows:
+        prepared = prepared.loc[~document_detail_mask].copy()
+        warnings.append(
+            f"\u0418\u0437 \u0430\u043d\u0430\u043b\u0438\u0437\u0430 \u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u044b \u0441\u043b\u0443\u0436\u0435\u0431\u043d\u044b\u0435 \u0441\u0442\u0440\u043e\u043a\u0438 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u043e\u0432 1\u0421: {document_detail_rows}."
+        )
 
     raw_date = _series_from_mapping(prepared, resolved_mapping, "date")
     raw_product = _series_from_mapping(prepared, resolved_mapping, "product")
