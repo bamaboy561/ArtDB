@@ -282,6 +282,93 @@ def _parse_sheet_name(sheet_name: Any) -> str | int | None:
     return int(text) if text.isdigit() else text
 
 
+def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    helper_columns = [
+        "_archive_upload_id",
+        "_archive_uploaded_at",
+        "_archive_report_date",
+    ]
+    required_columns = {"date", "salon", *helper_columns}
+    if data.empty or not required_columns.issubset(data.columns):
+        return data.drop(columns=helper_columns, errors="ignore"), None
+
+    working = data.copy()
+    working["_archive_sales_date"] = pd.to_datetime(
+        working["date"], errors="coerce"
+    ).dt.normalize()
+    working["_archive_uploaded_sort"] = pd.to_datetime(
+        working["_archive_uploaded_at"], errors="coerce", utc=True
+    )
+    working["_archive_report_sort"] = pd.to_datetime(
+        working["_archive_report_date"], errors="coerce"
+    )
+
+    valid_mask = working["_archive_sales_date"].notna()
+    valid = working.loc[valid_mask].copy()
+    invalid = working.loc[~valid_mask].copy()
+    if valid.empty:
+        return working.drop(
+            columns=[*helper_columns, "_archive_sales_date", "_archive_uploaded_sort", "_archive_report_sort"],
+            errors="ignore",
+        ), None
+
+    coverage_columns = [
+        "salon",
+        "_archive_sales_date",
+        "_archive_upload_id",
+        "_archive_uploaded_sort",
+        "_archive_report_sort",
+    ]
+    coverage = valid[coverage_columns].drop_duplicates()
+    overlap_counts = coverage.groupby(
+        ["salon", "_archive_sales_date"], dropna=False
+    ).size()
+    overlapping_days = overlap_counts[overlap_counts > 1]
+    if overlapping_days.empty:
+        return working.drop(
+            columns=[*helper_columns, "_archive_sales_date", "_archive_uploaded_sort", "_archive_report_sort"],
+            errors="ignore",
+        ), None
+
+    winners = (
+        coverage.sort_values(
+            [
+                "salon",
+                "_archive_sales_date",
+                "_archive_uploaded_sort",
+                "_archive_report_sort",
+                "_archive_upload_id",
+            ],
+            kind="stable",
+            na_position="first",
+        )
+        .drop_duplicates(["salon", "_archive_sales_date"], keep="last")
+        [["salon", "_archive_sales_date", "_archive_upload_id"]]
+    )
+    resolved = valid.merge(
+        winners,
+        on=["salon", "_archive_sales_date", "_archive_upload_id"],
+        how="inner",
+        validate="many_to_one",
+    )
+    if not invalid.empty:
+        resolved = pd.concat([resolved, invalid], ignore_index=True, sort=False)
+
+    dropped_rows = len(working) - len(resolved)
+    affected_salons = overlapping_days.index.get_level_values("salon").nunique()
+    clean = resolved.drop(
+        columns=[*helper_columns, "_archive_sales_date", "_archive_uploaded_sort", "_archive_report_sort"],
+        errors="ignore",
+    ).reset_index(drop=True)
+    warning = (
+        "Обнаружены пересекающиеся выгрузки: "
+        f"{len(overlapping_days)} дат в {affected_salons} салонах. "
+        "Для каждой даты использована самая свежая выгрузка; "
+        f"из повторного подсчёта исключено строк: {dropped_rows}."
+    )
+    return clean, warning
+
+
 def register_upload(
     *,
     file_bytes: bytes,
@@ -379,6 +466,9 @@ def load_archive_data(
             frame["salon"] = str(row["salon"])
             frame["report_date"] = pd.to_datetime(str(row["report_date"]), errors="coerce")
             frame["source_filename"] = str(row["source_filename"])
+            frame["_archive_upload_id"] = str(row["upload_id"])
+            frame["_archive_uploaded_at"] = str(row["uploaded_at"])
+            frame["_archive_report_date"] = str(row["report_date"])
             frames.append(frame)
 
             for warning in prepared.warnings:
@@ -390,4 +480,7 @@ def load_archive_data(
         return ArchiveLoadResult(data=pd.DataFrame(), manifest=manifest, warnings=warnings)
 
     data = pd.concat(frames, ignore_index=True)
+    data, overlap_warning = _resolve_archive_date_overlaps(data)
+    if overlap_warning:
+        warnings.append(overlap_warning)
     return ArchiveLoadResult(data=data, manifest=manifest, warnings=warnings)
