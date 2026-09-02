@@ -2764,6 +2764,42 @@ def render_data_quality_report(report, current_user: dict[str, str]) -> None:
         ]
     )
 
+    reconciliation = report.reconciliation_metrics
+    if reconciliation:
+        difference = float(reconciliation.get("difference", 0.0) or 0.0)
+        taxes = float(reconciliation.get("vat", 0.0) or 0.0) + float(
+            reconciliation.get("sales_tax", 0.0) or 0.0
+        )
+        st.markdown("**Сверка суммы с отчетом 1С**")
+        render_snapshot_strip(
+            [
+                {
+                    "label": "Итого в 1С",
+                    "value": format_money(reconciliation.get("source_total", 0.0)),
+                    "hint": "Колонка «Всего»",
+                    "tone": "info",
+                },
+                {
+                    "label": "Принято в анализ",
+                    "value": format_money(reconciliation.get("accepted_total", 0.0)),
+                    "hint": "После очистки служебных строк",
+                    "tone": "success" if abs(difference) <= 0.01 else "danger",
+                },
+                {
+                    "label": "Доход без налогов",
+                    "value": format_money(reconciliation.get("source_income", 0.0)),
+                    "hint": "Колонка «Доход»",
+                    "tone": "info",
+                },
+                {
+                    "label": "НДС и НСП",
+                    "value": format_money(taxes),
+                    "hint": f"Расхождение сверки: {format_money(difference)}",
+                    "tone": "success" if abs(difference) <= 0.01 else "danger",
+                },
+            ]
+        )
+
     if report.issues:
         issue_rows = [
             {

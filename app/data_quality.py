@@ -28,6 +28,7 @@ class DataQualityReport:
     issues: tuple[DataQualityIssue, ...]
     problem_rows: pd.DataFrame
     catalog_metrics: dict[str, float]
+    reconciliation_metrics: dict[str, float]
 
     @property
     def can_save(self) -> bool:
@@ -115,6 +116,7 @@ def analyze_sales_quality(
     raw_rows = int(len(raw_frame))
     prepared_rows = int(len(prepared_frame))
     dropped_rows = max(raw_rows - prepared_rows, 0)
+    reconciliation_metrics: dict[str, float] = {}
 
     if dropped_rows:
         dropped_share = dropped_rows / max(raw_rows, 1) * 100
@@ -214,6 +216,7 @@ def analyze_sales_quality(
             tuple(issues),
             pd.DataFrame(),
             {},
+            reconciliation_metrics,
         )
 
     frame = prepared_frame.copy()
@@ -221,6 +224,30 @@ def analyze_sales_quality(
     for numeric_column in ["quantity", "revenue", "cost", "margin", "margin_pct"]:
         if numeric_column in frame.columns:
             frame[numeric_column] = pd.to_numeric(frame[numeric_column], errors="coerce")
+
+    source_totals = raw_frame.attrs.get("sales_report_totals", {})
+    if isinstance(source_totals, dict) and source_totals.get("total") is not None:
+        source_total = float(source_totals["total"])
+        accepted_total = float(frame["revenue"].sum())
+        difference = accepted_total - source_total
+        reconciliation_metrics = {
+            "source_total": source_total,
+            "accepted_total": accepted_total,
+            "difference": difference,
+            "source_income": float(source_totals.get("income") or 0.0),
+            "vat": float(source_totals.get("vat") or 0.0),
+            "sales_tax": float(source_totals.get("sales_tax") or 0.0),
+        }
+        if abs(difference) > 0.01:
+            issues.append(
+                DataQualityIssue(
+                    "blocker",
+                    "Итог файла не сходится",
+                    f"В строке `Итого` указано {source_total:,.2f}, а в анализ попадает {accepted_total:,.2f}. Разница: {difference:,.2f}.",
+                    1,
+                    "Файл не будет сохранён, пока программа не сможет собрать его без потерь или повторного подсчёта.",
+                )
+            )
 
     future_mask = frame["date"].dt.date > (today + timedelta(days=1))
     future_count = int(future_mask.sum())
@@ -408,6 +435,7 @@ def analyze_sales_quality(
         issues=tuple(issues),
         problem_rows=problem_frame,
         catalog_metrics=catalog_metrics,
+        reconciliation_metrics=reconciliation_metrics,
     )
 
 

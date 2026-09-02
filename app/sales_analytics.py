@@ -472,13 +472,12 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
     vat_index = _find_header_index(header_values, ("сумма ндс", "ндс"))
     sales_tax_index = _find_header_index(header_values, ("сумма нсп", "нсп"))
     total_index = _find_header_index(header_values, ("всего",))
-    sales_total_index = total_index if total_index is not None else revenue_index
-
     report_date = _extract_report_date_from_rows(rows[:header_row_number])
     if report_date is None:
         return None
 
     records: list[dict[str, object]] = []
+    report_totals: dict[str, float | None] = {}
     group_stack: dict[int, str] = {}
     saw_hierarchy = False
     skip_group_names = {"товары", "итого", "всего", "склад"}
@@ -497,6 +496,24 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
         indent = getattr(workbook.xf_list[xf_index].alignment, "indent_level", 0)
         level = max(int(indent // 2), int(outline_level or 0), 0)
         normalized_name = normalize_column_name(name)
+
+        if normalized_name == "итого":
+            report_totals = {
+                "income": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, revenue_index)),
+                "cost": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, cost_index)),
+                "margin": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, margin_index))
+                if margin_index is not None
+                else None,
+                "vat": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, vat_index))
+                if vat_index is not None
+                else None,
+                "sales_tax": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, sales_tax_index))
+                if sales_tax_index is not None
+                else None,
+                "total": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, total_index))
+                if total_index is not None
+                else _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, revenue_index)),
+            }
 
         if quantity is None:
             if level > 0:
@@ -527,7 +544,7 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
                 "Группа": group_name,
                 "Путь категории": category_path,
                 "Количество": quantity,
-                "Доход": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, sales_total_index)),
+                "Доход": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, revenue_index)),
                 "Себестоимость": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, cost_index)),
                 "Прибыль": _coerce_single_numeric(worksheet.cell_value(zero_based_row_number, margin_index))
                 if margin_index is not None
@@ -550,7 +567,10 @@ def _parse_1c_grouped_sales_report_xls(file_bytes: bytes, sheet_name: str | int 
     if not records or not saw_hierarchy:
         return None
 
-    return pd.DataFrame.from_records(records)
+    result = pd.DataFrame.from_records(records)
+    if report_totals:
+        result.attrs["sales_report_totals"] = report_totals
+    return result
 
 
 def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | None = 0) -> pd.DataFrame | None:
@@ -614,13 +634,12 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
     vat_index = _find_header_index(header_values, ("сумма ндс", "ндс"))
     sales_tax_index = _find_header_index(header_values, ("сумма нсп", "нсп"))
     total_index = _find_header_index(header_values, ("всего",))
-    sales_total_index = total_index if total_index is not None else revenue_index
-
     report_date = _extract_report_date_from_rows(rows[:header_row_number])
     if report_date is None:
         return None
 
     records: list[dict[str, object]] = []
+    report_totals: dict[str, float | None] = {}
     group_stack: dict[int, str] = {}
     saw_hierarchy = False
     skip_group_names = {"товары", "итого", "всего"}
@@ -638,6 +657,24 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
         outline_level = worksheet.row_dimensions[row_number].outlineLevel or 0
         level = max(int(indent // 2), int(outline_level), 0)
         normalized_name = normalize_column_name(name)
+
+        if normalized_name == "итого":
+            report_totals = {
+                "income": _coerce_single_numeric(worksheet.cell(row=row_number, column=revenue_index + 1).value),
+                "cost": _coerce_single_numeric(worksheet.cell(row=row_number, column=cost_index + 1).value),
+                "margin": _coerce_single_numeric(worksheet.cell(row=row_number, column=margin_index + 1).value)
+                if margin_index is not None
+                else None,
+                "vat": _coerce_single_numeric(worksheet.cell(row=row_number, column=vat_index + 1).value)
+                if vat_index is not None
+                else None,
+                "sales_tax": _coerce_single_numeric(worksheet.cell(row=row_number, column=sales_tax_index + 1).value)
+                if sales_tax_index is not None
+                else None,
+                "total": _coerce_single_numeric(worksheet.cell(row=row_number, column=total_index + 1).value)
+                if total_index is not None
+                else _coerce_single_numeric(worksheet.cell(row=row_number, column=revenue_index + 1).value),
+            }
 
         if quantity is None:
             if level > 0:
@@ -668,7 +705,7 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
                 "Группа": group_name,
                 "Путь категории": category_path,
                 "Количество": quantity,
-                "Доход": _coerce_single_numeric(worksheet.cell(row=row_number, column=sales_total_index + 1).value),
+                "Доход": _coerce_single_numeric(worksheet.cell(row=row_number, column=revenue_index + 1).value),
                 "Себестоимость": _coerce_single_numeric(worksheet.cell(row=row_number, column=cost_index + 1).value),
                 "Прибыль": _coerce_single_numeric(worksheet.cell(row=row_number, column=margin_index + 1).value)
                 if margin_index is not None
@@ -691,7 +728,10 @@ def _parse_1c_grouped_sales_report(file_bytes: bytes, sheet_name: str | int | No
     if not records or not saw_hierarchy:
         return None
 
-    return pd.DataFrame.from_records(records)
+    result = pd.DataFrame.from_records(records)
+    if report_totals:
+        result.attrs["sales_report_totals"] = report_totals
+    return result
 
 
 def load_input_file(
