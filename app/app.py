@@ -1966,26 +1966,29 @@ def inject_pwa_shell() -> None:
           if (!parentWindow.__artdbAssetRecoveryBound) {
             parentWindow.__artdbAssetRecoveryBound = true;
             const recoveryKey = 'artdb-dynamic-import-recovery';
-            const dynamicImportError =
-              /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module/i;
+            const assetLoadError =
+              /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|unable to preload css|\\/static\\/(?:css|js)\\//i;
 
-            const recoverFromDynamicImportError = (event) => {
+            const recoverFromAssetLoadError = (event) => {
               const reason = event?.reason || event?.error || event;
-              const message = String(reason?.message || reason || '');
-              if (!dynamicImportError.test(message)) return;
+              const assetUrl = event?.target?.href || event?.target?.src || '';
+              const message = `${String(reason?.message || reason || '')} ${assetUrl}`;
+              if (event?.type !== 'vite:preloadError' && !assetLoadError.test(message)) return;
 
               const now = Date.now();
               const lastRecovery = Number(parentWindow.sessionStorage.getItem(recoveryKey) || 0);
-              if (now - lastRecovery < 5 * 60 * 1000) return;
+              if (now - lastRecovery < 60 * 1000) return;
 
+              event?.preventDefault?.();
               parentWindow.sessionStorage.setItem(recoveryKey, String(now));
               const recoveryUrl = new URL(parentWindow.location.href);
               recoveryUrl.searchParams.set('_asset_reload', String(now));
               parentWindow.location.replace(recoveryUrl.toString());
             };
 
-            parentWindow.addEventListener('unhandledrejection', recoverFromDynamicImportError);
-            parentWindow.addEventListener('error', recoverFromDynamicImportError, true);
+            parentWindow.addEventListener('vite:preloadError', recoverFromAssetLoadError);
+            parentWindow.addEventListener('unhandledrejection', recoverFromAssetLoadError);
+            parentWindow.addEventListener('error', recoverFromAssetLoadError, true);
           }
 
           const ensureLink = (rel, href, attributes = {}) => {
