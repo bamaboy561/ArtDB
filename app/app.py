@@ -32,6 +32,7 @@ from auth_store import (
     set_user_password,
     update_user_role,
 )
+from data_center import evaluate_freshness
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
@@ -854,8 +855,80 @@ DASHBOARD_CSS = f"""
         margin-top: 0.32rem;
     }}
 
+    .data-source-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin: 0.55rem 0 0.85rem;
+    }}
+
+    .data-source-card {{
+        min-height: 132px;
+        padding: 0.78rem 0.82rem;
+        border: 1px solid {BORDER_COLOR};
+        border-top: 3px solid {TEXT_MUTED};
+        border-radius: 8px;
+        background: {SURFACE_COLOR};
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.045);
+    }}
+
+    .data-source-card.success {{ border-top-color: {SECONDARY_COLOR}; }}
+    .data-source-card.warning {{ border-top-color: {CHART_ACCENT_COLOR}; }}
+    .data-source-card.danger {{ border-top-color: #dc2626; }}
+    .data-source-card.info {{ border-top-color: {PRIMARY_COLOR}; }}
+
+    .data-source-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+    }}
+
+    .data-source-name {{
+        color: {TEXT_MUTED};
+        font-size: 0.69rem;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }}
+
+    .data-source-state {{
+        padding: 0.18rem 0.42rem;
+        border-radius: 999px;
+        background: #f1f5f9;
+        color: {TEXT_SECONDARY};
+        font-size: 0.66rem;
+        font-weight: 800;
+        white-space: nowrap;
+    }}
+
+    .data-source-card.success .data-source-state {{ background: #ecfdf5; color: #047857; }}
+    .data-source-card.warning .data-source-state {{ background: #fffbeb; color: #b45309; }}
+    .data-source-card.danger .data-source-state {{ background: #fef2f2; color: #b91c1c; }}
+
+    .data-source-value {{
+        color: {PRIMARY_COLOR};
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.14rem;
+        font-weight: 850;
+        line-height: 1.16;
+        margin-top: 0.62rem;
+        overflow-wrap: anywhere;
+    }}
+
+    .data-source-meta {{
+        color: {TEXT_SECONDARY};
+        font-size: 0.76rem;
+        line-height: 1.35;
+        margin-top: 0.32rem;
+    }}
+
     @media (max-width: 1180px) {{
         .insight-compact-list {{
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }}
+
+        .data-source-grid {{
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }}
     }}
@@ -863,6 +936,14 @@ DASHBOARD_CSS = f"""
     @media (max-width: 760px) {{
         .insight-compact-list {{
             grid-template-columns: 1fr;
+        }}
+
+        .data-source-grid {{
+            grid-template-columns: 1fr;
+        }}
+
+        .data-source-card {{
+            min-height: 0;
         }}
     }}
 
@@ -2698,6 +2779,28 @@ def render_spotlight_cards(items: list[dict[str, str]]) -> None:
     render_html_block(f'<div class="spotlight-grid">{"".join(cards_html)}</div>')
 
 
+def render_data_source_cards(items: list[dict[str, str]]) -> None:
+    cards_html: list[str] = []
+    for item in items:
+        tone = str(item.get("tone", "info"))
+        cards_html.append(
+            dedent(
+                f"""
+                <article class="data-source-card {escape(tone)}">
+                    <div class="data-source-head">
+                        <div class="data-source-name">{escape(str(item["label"]))}</div>
+                        <div class="data-source-state">{escape(str(item["status"]))}</div>
+                    </div>
+                    <div class="data-source-value">{escape(str(item["value"]))}</div>
+                    <div class="data-source-meta">{escape(str(item["meta"]))}</div>
+                </article>
+                """
+            ).strip()
+        )
+
+    render_html_block(f'<div class="data-source-grid">{"".join(cards_html)}</div>')
+
+
 def render_snapshot_strip(items: list[dict[str, str]]) -> None:
     cards_html: list[str] = []
     for item in items:
@@ -3003,6 +3106,18 @@ MOBILE_BOTTOM_NAV_ITEMS = (
 def set_mobile_navigation_target(target_screen: str) -> None:
     st.session_state["primary_screen_nav"] = target_screen
     st.session_state["mobile_primary_screen_nav"] = target_screen
+
+
+def open_data_workflow(
+    target_screen: str,
+    target_work_mode: str = "",
+    open_inventory_upload: bool = False,
+) -> None:
+    set_mobile_navigation_target(target_screen)
+    if target_work_mode:
+        st.session_state["main_work_mode"] = target_work_mode
+    if open_inventory_upload:
+        st.session_state["open_inventory_upload"] = True
 
 
 def render_mobile_bottom_navigation(active_screen: str, screen_options: list[str]) -> None:
@@ -11351,7 +11466,10 @@ if active_screen == "Закупки":
                 )
                 st.caption("Редактируются SKU текущего контура. Удобно сначала сузить категории, а потом быстро внести параметры пополнения.")
 
-                with st.expander("Загрузить остатки файлом", expanded=False):
+                with st.expander(
+                    "Загрузить остатки файлом",
+                    expanded=bool(st.session_state.pop("open_inventory_upload", False)),
+                ):
                     st.caption(
                         "Файл может содержать остаток, товар в пути, поставщика и параметры заказа. "
                         "Пустые ячейки не затрут уже сохранённые настройки по SKU."
@@ -13894,82 +14012,19 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
 if active_screen == "Данные":
     visible_mapping = margin_safe_mapping(selected_mapping, current_user)
     main_col = st.container()
-    side_control_col = main_col
     with main_col:
         render_section_intro(
-            "Источники и выгрузки",
-            "Здесь собраны исходные данные, служебная информация по сопоставлению колонок, журнал загрузок и сводка по месяцам. Эта вкладка нужна для проверки качества загрузки и состава данных.",
+            "Центр данных",
+            "Единая точка контроля продаж, остатков, поставщиков и качества справочника SKU.",
         )
         sample_path = Path("sample_sales_data.csv")
-        if sample_path.exists():
-            st.download_button(
-                "Скачать безопасный шаблон CSV",
-                data=sample_path.read_bytes(),
-                file_name=sample_path.name,
-                mime="text/csv",
-                key="download_sales_data_template",
-            )
         data_period_text = format_date_range_values(data["date"].min(), data["date"].max())
         archive_upload_count = len(manifest_view) if manifest_view is not None else 0
         data_salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
         mapping_count = sum(1 for value in visible_mapping.values() if value) if visible_mapping else 0
 
-        render_section_marker(
-            "Паспорт данных",
-            "Как читать эту вкладку",
-            "Сначала проверьте паспорт набора данных, затем исходный файл и сопоставление колонок. После этого журнал загрузок покажет, что уже сохранено в архиве, а сводка по месяцам подтвердит, что периоды сложились корректно.",
-        )
-        render_workspace_band(
-            [
-                {"label": "Источник", "value": source_label, "meta": "Откуда сейчас построен анализ"},
-                {"label": "Период данных", "value": data_period_text, "meta": "Фактический диапазон после фильтров"},
-                {"label": "Строк в анализе", "value": format_number(overview["line_count"]), "meta": "Сколько операций прошло в текущую выборку"},
-                {"label": "Салоны в наборе", "value": format_number(data_salon_count), "meta": "Сколько торговых точек участвует сейчас"},
-                {"label": "Месяцев в выборке", "value": format_number(len(monthly_summary)), "meta": "Сколько периодов попало в итоговую аналитику"},
-                {"label": "Архивных загрузок", "value": format_number(archive_upload_count), "meta": "Сколько файлов уже сохранено в архиве"},
-            ]
-        )
-        render_journey_cards(
-            [
-                {
-                    "title": "Проверьте, что загружено",
-                    "body": "В блоке `Источник данных` теперь показывается только безопасный контекст по загрузке без содержимого файла. Используйте его, чтобы проверить источник, дату и наличие файла в архиве.",
-                    "hint": "Исходная выгрузка больше не открывается прямо в интерфейсе.",
-                },
-                {
-                    "title": "Сверьте поля аналитики",
-                    "body": "В служебной информации видно, какие колонки файла стали датой, товаром, выручкой, себестоимостью и маржой. Это главный контроль качества распознавания 1С.",
-                    "hint": "Особенно важны дата, товар и денежные поля.",
-                },
-                {
-                    "title": "Подтвердите архив и периоды",
-                    "body": "Журнал загрузок показывает, что уже сохранено в системе, а сводка по месяцам подтверждает, что временной ряд сложился корректно и без дыр в данных.",
-                    "hint": "Эта проверка особенно полезна перед управленческими выводами.",
-                },
-            ]
-        )
-        render_snapshot_strip(
-            [
-                {
-                    "label": "Распознано полей",
-                    "value": format_number(mapping_count),
-                    "hint": "Сколько колонок уже привязано к аналитической модели",
-                },
-                {
-                    "label": "Архив выгрузок",
-                    "value": format_number(archive_upload_count),
-                    "hint": "Чем больше корректных файлов, тем сильнее анализ истории",
-                },
-                {
-                    "label": "Глубина периода",
-                    "value": format_number(len(monthly_summary)),
-                    "hint": "Количество месяцев в текущем наборе данных",
-                },
-            ]
-        )
-
         sku_cleanup_queue = build_sku_cleanup_queue(
-            data,
+            filter_source_data,
             procurement_items,
             supplier_product_assignments,
             require_item_code=has_item_codes,
@@ -13987,6 +14042,196 @@ if active_screen == "Данные":
             else 0
             for issue in cleanup_issue_types
         }
+
+        latest_sales_date: object = None
+        if not manifest_view.empty and "report_date" in manifest_view.columns:
+            latest_sales_date = pd.to_datetime(
+                manifest_view["report_date"],
+                errors="coerce",
+            ).max()
+        if pd.isna(latest_sales_date) and "date" in filter_source_data.columns:
+            latest_sales_date = filter_source_data["date"].max()
+        sales_freshness = evaluate_freshness(latest_sales_date)
+        latest_inventory_snapshot = load_latest_inventory_snapshot()
+        stock_updated_at: object = None
+        if latest_inventory_snapshot:
+            stock_updated_at = latest_inventory_snapshot.get("uploaded_at")
+        elif not procurement_items.empty and "updated_at" in procurement_items.columns:
+            stock_updated_at = procurement_items["updated_at"].max()
+        stock_freshness = evaluate_freshness(stock_updated_at)
+
+        supplier_catalog = build_supplier_assignment_catalog(
+            filter_source_data,
+            supplier_product_assignments,
+        )
+        total_sku_count = len(supplier_catalog)
+        missing_supplier_count = (
+            int(supplier_catalog["assignment_status"].eq("Без поставщика").sum())
+            if not supplier_catalog.empty
+            else 0
+        )
+        assigned_supplier_count = max(total_sku_count - missing_supplier_count, 0)
+        supplier_coverage_pct = (
+            assigned_supplier_count / total_sku_count * 100.0
+            if total_sku_count
+            else 0.0
+        )
+        supplier_names = build_supplier_name_options(
+            filter_source_data,
+            procurement_items,
+            supplier_product_assignments,
+        )
+        if total_sku_count == 0:
+            supplier_status = "Нет данных"
+            supplier_tone = "danger"
+        elif supplier_coverage_pct >= 95:
+            supplier_status = "Готово"
+            supplier_tone = "success"
+        elif supplier_coverage_pct >= 75:
+            supplier_status = "Нужно проверить"
+            supplier_tone = "warning"
+        else:
+            supplier_status = "Требует работы"
+            supplier_tone = "danger"
+
+        cleanup_ratio = len(sku_cleanup_queue) / total_sku_count if total_sku_count else 0.0
+        cleanup_status = "В порядке" if sku_cleanup_queue.empty else "Есть задачи"
+        cleanup_tone = (
+            "success"
+            if sku_cleanup_queue.empty
+            else "danger"
+            if cleanup_ratio >= 0.25
+            else "warning"
+        )
+        inventory_item_count = (
+            int(latest_inventory_snapshot.get("item_count", 0) or 0)
+            if latest_inventory_snapshot
+            else len(procurement_items)
+        )
+        inventory_meta = f"SKU в последнем срезе: {format_number(inventory_item_count)}"
+        if latest_inventory_snapshot and margin_visible:
+            inventory_meta += f" · сумма: {format_money(latest_inventory_snapshot.get('total_value', 0.0))}"
+
+        render_data_source_cards(
+            [
+                {
+                    "label": "Продажи",
+                    "status": sales_freshness.label,
+                    "value": sales_freshness.display_date,
+                    "meta": f"Файлов в архиве: {format_number(archive_upload_count)} · строк: {format_number(len(filter_source_data))}",
+                    "tone": sales_freshness.tone,
+                },
+                {
+                    "label": "Остатки",
+                    "status": stock_freshness.label,
+                    "value": stock_freshness.display_date,
+                    "meta": inventory_meta,
+                    "tone": stock_freshness.tone,
+                },
+                {
+                    "label": "Поставщики",
+                    "status": supplier_status,
+                    "value": f"{supplier_coverage_pct:.0f}% SKU",
+                    "meta": f"Назначено: {format_number(assigned_supplier_count)} из {format_number(total_sku_count)} · поставщиков: {format_number(len(supplier_names))}",
+                    "tone": supplier_tone,
+                },
+                {
+                    "label": "Качество SKU",
+                    "status": cleanup_status,
+                    "value": f"{format_number(len(sku_cleanup_queue))} к разбору",
+                    "meta": f"Без поставщика: {format_number(cleanup_counts['Без поставщика'])} · нет в остатках: {format_number(cleanup_counts['Нет в остатках'])}",
+                    "tone": cleanup_tone,
+                },
+            ]
+        )
+
+        with st.container(border=True):
+            render_panel_header(
+                "Быстрые действия",
+                "Загрузки и справочники открываются сразу в нужном разделе.",
+            )
+            action_specs: list[dict[str, object]] = [
+                {
+                    "label": "Загрузить продажи",
+                    "icon": ":material/upload_file:",
+                    "args": (
+                        "Данные",
+                        "Новая выгрузка" if current_user["role"] == "salon" else "Загрузка салона",
+                        False,
+                    ),
+                }
+            ]
+            if can_manage_procurement(current_user):
+                action_specs.append(
+                    {
+                        "label": "Загрузить остатки",
+                        "icon": ":material/inventory_2:",
+                        "args": ("Закупки", "", True),
+                    }
+                )
+            if is_network_role(current_user["role"]):
+                action_specs.append(
+                    {
+                        "label": "Назначить поставщиков",
+                        "icon": ":material/local_shipping:",
+                        "args": ("Поставщики", "", False),
+                    }
+                )
+
+            action_columns = st.columns(len(action_specs) + 1, gap="small")
+            for action_column, action in zip(action_columns, action_specs):
+                with action_column:
+                    st.button(
+                        str(action["label"]),
+                        icon=str(action["icon"]),
+                        key=f"data_center_action_{action['label']}",
+                        use_container_width=True,
+                        on_click=open_data_workflow,
+                        args=action["args"],
+                    )
+            with action_columns[-1]:
+                if st.button(
+                    "Обновить статусы",
+                    icon=":material/refresh:",
+                    key="data_center_refresh",
+                    use_container_width=True,
+                ):
+                    st.cache_data.clear()
+                    st.rerun()
+
+            if sample_path.exists():
+                st.download_button(
+                    "Скачать безопасный шаблон CSV",
+                    data=sample_path.read_bytes(),
+                    file_name=sample_path.name,
+                    mime="text/csv",
+                    key="download_sales_data_template",
+                )
+
+        render_snapshot_strip(
+            [
+                {
+                    "label": "Текущий период",
+                    "value": data_period_text,
+                    "hint": source_label,
+                },
+                {
+                    "label": "Салоны",
+                    "value": format_number(data_salon_count),
+                    "hint": "в текущем наборе",
+                },
+                {
+                    "label": "Месяцы истории",
+                    "value": format_number(len(monthly_summary)),
+                    "hint": "доступно для анализа",
+                },
+                {
+                    "label": "Распознано полей",
+                    "value": format_number(mapping_count),
+                    "hint": "в текущем источнике",
+                },
+            ]
+        )
 
         with st.container(border=True):
             render_panel_header(
@@ -14117,25 +14362,6 @@ if active_screen == "Данные":
 
         with st.container(border=True):
             render_panel_header(
-                "Источник данных",
-                "Просмотр исходной выгрузки отключён. В этом блоке оставлен только безопасный контекст по источнику, чтобы сотрудники не скачивали и не открывали загруженный файл прямо из системы.",
-            )
-            st.info("Предпросмотр исходного файла и скачивание загруженной выгрузки отключены для всех ролей.")
-            if not manifest_view.empty:
-                st.dataframe(
-                    format_display_frame(
-                        manifest_view,
-                        columns=["salon", "report_date", "source_filename", "uploaded_at"],
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=320,
-                )
-            else:
-                st.caption("Когда в архиве появятся сохранённые загрузки, здесь будет видна их краткая история без содержимого файла.")
-
-        with st.container(border=True):
-            render_panel_header(
                 "Как файл распознан",
                 "Показывает, как именно колонки исходного файла были привязаны к полям аналитики. Для салона скрыты поля себестоимости и маржи, но сами расчёты для руководителя не теряются.",
             )
@@ -14237,14 +14463,6 @@ if active_screen == "Данные":
                 mime=EXCEL_MIME,
                 use_container_width=True,
             )
-
-    with side_control_col:
-        st.markdown('<div class="nav-shell">', unsafe_allow_html=True)
-        st.markdown('<div class="nav-title">Действия с данными</div>', unsafe_allow_html=True)
-        st.info("Используйте эту панель для быстрой навигации или действий с архивом.")
-        if st.button("Обновить данные", key="data_refresh_button", use_container_width=True):
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
 if active_screen == "Управление" and can_manage_access(current_user):
     render_admin_tab(current_user, registered_salons)
