@@ -32,7 +32,14 @@ from auth_store import (
     set_user_password,
     update_user_role,
 )
-from data_center import build_sku_change_preview, classify_cleanup_priority, evaluate_freshness
+from data_center import (
+    build_sku_alias_candidates,
+    build_sku_catalog_summary,
+    build_sku_change_preview,
+    build_sku_merge_preview,
+    classify_cleanup_priority,
+    evaluate_freshness,
+)
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
@@ -101,8 +108,12 @@ from salon_data_store import (
     save_salon,
 )
 from sku_catalog_store import (
+    apply_sku_aliases,
     apply_sku_attribute_overrides,
+    archive_sku_alias,
+    load_sku_aliases,
     load_sku_attribute_overrides,
+    upsert_sku_aliases,
     upsert_sku_attribute_overrides,
 )
 from supplier_rules_store import (
@@ -3821,6 +3832,11 @@ def cached_load_sku_attribute_overrides() -> pd.DataFrame:
     return load_sku_attribute_overrides()
 
 
+@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
+def cached_load_sku_aliases() -> pd.DataFrame:
+    return load_sku_aliases()
+
+
 def supplier_rule_items_from_frame(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
     if frame.empty or not {"supplier", "keyword"}.issubset(frame.columns):
         return ()
@@ -7230,6 +7246,7 @@ replace_existing_upload = True
 data = pd.DataFrame()
 plan_fact_source_data = pd.DataFrame()
 procurement_source_data = pd.DataFrame()
+sku_alias_source_data = pd.DataFrame()
 procurement_uses_manager_unfiltered_scope = False
 supplier_keyword_rules = cached_load_supplier_keyword_rules(include_inactive=True)
 active_supplier_keyword_rules = supplier_keyword_rules[
@@ -7238,6 +7255,7 @@ active_supplier_keyword_rules = supplier_keyword_rules[
 supplier_rule_items = supplier_rule_items_from_frame(active_supplier_keyword_rules)
 supplier_product_assignments = cached_load_supplier_product_assignments()
 sku_attribute_overrides = cached_load_sku_attribute_overrides()
+sku_aliases = cached_load_sku_aliases()
 
 if current_user["role"] == "salon":
     if not current_user.get("salon"):
@@ -7582,7 +7600,11 @@ if data.empty:
     st.warning("После применения фильтров не осталось данных.")
     st.stop()
 
-procurement_items = load_procurement_items()
+procurement_items = apply_sku_aliases(
+    load_procurement_items(),
+    sku_aliases,
+    aggregate_inventory=True,
+)
 data = enrich_sales_with_supplier(
     data,
     procurement_items,
@@ -7591,6 +7613,8 @@ data = enrich_sales_with_supplier(
 )
 data = enrich_sales_with_brand(data, procurement_items)
 data = apply_sku_attribute_overrides(data, sku_attribute_overrides)
+sku_alias_source_data = data.copy()
+data = apply_sku_aliases(data, sku_aliases)
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -14076,6 +14100,13 @@ if active_screen == "Данные":
             supplier_product_assignments,
             require_item_code=has_item_codes,
         )
+        sku_alias_catalog = build_sku_catalog_summary(sku_alias_source_data)
+        sku_alias_candidates = build_sku_alias_candidates(sku_alias_source_data, sku_aliases)
+        active_sku_aliases = sku_aliases.copy()
+        if not active_sku_aliases.empty and "is_archived" in active_sku_aliases.columns:
+            active_sku_aliases = active_sku_aliases[
+                ~active_sku_aliases["is_archived"].fillna(False).astype(bool)
+            ].copy()
         cleanup_issue_types = [
             "Без поставщика",
             "Без категории",
@@ -14285,6 +14316,241 @@ if active_screen == "Данные":
                 },
             ]
         )
+
+        with st.container(border=True):
+            render_panel_header(
+                "Объединение дублей SKU",
+                "Связывает разные названия или коды одного товара с основной карточкой. Исходные файлы не меняются, а объединение можно отменить.",
+            )
+            render_snapshot_strip(
+                [
+                    {
+                        "label": "Возможные дубли",
+                        "value": format_number(len(sku_alias_candidates)),
+                        "hint": "совпадения по коду или названию",
+                        "tone": "warning" if not sku_alias_candidates.empty else "success",
+                    },
+                    {
+                        "label": "Активные объединения",
+                        "value": format_number(len(active_sku_aliases)),
+                        "hint": "применяются ко всем отчётам",
+                        "tone": "success",
+                    },
+                    {
+                        "label": "SKU в справочнике",
+                        "value": format_number(len(sku_alias_catalog)),
+                        "hint": "до применения объединений",
+                    },
+                ]
+            )
+
+            if not can_manage_procurement(current_user):
+                st.info("Просмотр доступен, а объединять и отменять объединения может администратор или руководитель.")
+            elif len(sku_alias_catalog) < 2:
+                st.info("Для объединения нужно минимум два разных SKU в истории продаж.")
+            else:
+                suggestion_options: list[int | None] = [None, *sku_alias_candidates.index.tolist()]
+
+                def format_alias_suggestion(option: int | None) -> str:
+                    if option is None:
+                        return "Выбрать товары вручную"
+                    row = sku_alias_candidates.loc[option]
+                    return (
+                        f"{row['source_product']} → {row['canonical_product']} · "
+                        f"{row['reason']}"
+                    )
+
+                selected_suggestion = st.selectbox(
+                    "Подсказка системы",
+                    suggestion_options,
+                    format_func=format_alias_suggestion,
+                    key="sku_alias_suggestion",
+                )
+                suggested_source = ""
+                suggested_canonical = ""
+                if selected_suggestion is not None:
+                    suggestion_row = sku_alias_candidates.loc[selected_suggestion]
+                    suggested_source = str(suggestion_row["source_product_key"])
+                    suggested_canonical = str(suggestion_row["canonical_product_key"])
+
+                alias_product_options = [
+                    str(value)
+                    for value in sku_alias_catalog["product_key"].dropna().astype(str)
+                ]
+                alias_product_options = list(dict.fromkeys(alias_product_options))
+                alias_product_labels = {
+                    str(row["product_key"]): (
+                        f"{row['product']} · код: {row['item_code'] or '—'} · "
+                        f"выручка: {format_money(row['revenue'])}"
+                    )
+                    for row in sku_alias_catalog.to_dict(orient="records")
+                }
+
+                suggestion_state = (suggested_source, suggested_canonical)
+                if st.session_state.get("sku_alias_applied_suggestion") != suggestion_state:
+                    if suggested_source in alias_product_options:
+                        st.session_state["sku_alias_source_choice"] = suggested_source
+                    if suggested_canonical in alias_product_options:
+                        st.session_state["sku_alias_canonical_choice"] = suggested_canonical
+                    st.session_state["sku_alias_applied_suggestion"] = suggestion_state
+
+                alias_source_col, alias_canonical_col = st.columns(2, gap="medium")
+                with alias_source_col:
+                    source_alias_key = st.selectbox(
+                        "Дубль, который присоединяем",
+                        alias_product_options,
+                        format_func=lambda value: alias_product_labels.get(value, value),
+                        key="sku_alias_source_choice",
+                    )
+                canonical_options = [value for value in alias_product_options if value != source_alias_key]
+                with alias_canonical_col:
+                    canonical_alias_key = st.selectbox(
+                        "Основная карточка SKU",
+                        canonical_options,
+                        format_func=lambda value: alias_product_labels.get(value, value),
+                        key="sku_alias_canonical_choice",
+                    )
+
+                if st.button(
+                    "Проверить объединение",
+                    type="primary",
+                    width="stretch",
+                    key="sku_alias_prepare_merge",
+                    disabled=not source_alias_key or not canonical_alias_key,
+                ):
+                    merge_preview = build_sku_merge_preview(
+                        sku_alias_source_data,
+                        source_product_key=source_alias_key,
+                        canonical_product_key=canonical_alias_key,
+                    )
+                    if merge_preview.empty:
+                        st.error("Не удалось подготовить объединение. Выберите два разных SKU.")
+                    else:
+                        st.session_state["sku_alias_pending_merge"] = merge_preview.to_dict(orient="records")
+                        st.rerun()
+
+            pending_alias_records = st.session_state.get("sku_alias_pending_merge") or []
+            if pending_alias_records:
+                pending_alias_merge = pd.DataFrame(pending_alias_records)
+                pending_row = pending_alias_merge.iloc[0]
+                st.warning(
+                    f"Будет присоединено: {pending_row['source_product']} → {pending_row['canonical_product']}. "
+                    f"После объединения: {format_money(pending_row['combined_revenue'])} выручки и "
+                    f"{format_number(pending_row['combined_lines'])} строк продаж."
+                )
+                preview_display = pd.DataFrame(
+                    [
+                        {
+                            "Роль": "Присоединяемый дубль",
+                            "Номенклатура": pending_row["source_product"],
+                            "Ключ SKU": pending_row["source_product_key"],
+                            "Выручка": pending_row["source_revenue"],
+                            "Строк": pending_row["source_lines"],
+                        },
+                        {
+                            "Роль": "Основная карточка",
+                            "Номенклатура": pending_row["canonical_product"],
+                            "Ключ SKU": pending_row["canonical_product_key"],
+                            "Выручка": pending_row["canonical_revenue"],
+                            "Строк": pending_row["canonical_lines"],
+                        },
+                    ]
+                )
+                st.dataframe(preview_display, width="stretch", hide_index=True, height=145)
+                merge_confirm_col, merge_cancel_col = st.columns([1.0, 0.45], gap="small")
+                with merge_confirm_col:
+                    confirm_alias_merge = st.button(
+                        "Объединить SKU",
+                        type="primary",
+                        width="stretch",
+                        key="sku_alias_confirm_merge",
+                    )
+                with merge_cancel_col:
+                    cancel_alias_merge = st.button(
+                        "Отменить",
+                        width="stretch",
+                        key="sku_alias_cancel_merge",
+                    )
+                if cancel_alias_merge:
+                    st.session_state.pop("sku_alias_pending_merge", None)
+                    st.rerun()
+                if confirm_alias_merge:
+                    saved_aliases = upsert_sku_aliases(
+                        pending_alias_merge[
+                            [
+                                "source_product_key",
+                                "source_product",
+                                "canonical_product_key",
+                                "canonical_product",
+                            ]
+                        ],
+                        updated_by=current_user["username"],
+                    )
+                    audit_event(
+                        action="sku.alias_merge",
+                        user_id=current_user["username"],
+                        details={
+                            "source_product_key": str(pending_row["source_product_key"]),
+                            "canonical_product_key": str(pending_row["canonical_product_key"]),
+                            "saved_count": int(saved_aliases),
+                        },
+                    )
+                    st.session_state.pop("sku_alias_pending_merge", None)
+                    st.session_state["data_center_flash_message"] = (
+                        f"SKU «{pending_row['source_product']}» объединён с «{pending_row['canonical_product']}»."
+                    )
+                    st.cache_data.clear()
+                    st.rerun()
+
+            if can_manage_procurement(current_user) and not active_sku_aliases.empty:
+                with st.expander("Действующие объединения и отмена", expanded=False):
+                    active_alias_view = active_sku_aliases.copy()
+                    active_alias_view["Объединение"] = active_alias_view.apply(
+                        lambda row: f"{row['source_product']} → {row['canonical_product']}",
+                        axis=1,
+                    )
+                    st.dataframe(
+                        active_alias_view[["Объединение", "updated_by", "updated_at"]].rename(
+                            columns={"updated_by": "Кто изменил", "updated_at": "Когда"}
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(320, max(110, 76 + len(active_alias_view) * 34)),
+                    )
+                    alias_restore_options = active_sku_aliases["source_product_key"].astype(str).tolist()
+                    alias_restore_labels = {
+                        str(row["source_product_key"]): (
+                            f"{row['source_product']} → {row['canonical_product']}"
+                        )
+                        for row in active_sku_aliases.to_dict(orient="records")
+                    }
+                    with st.form("sku_alias_archive_form"):
+                        alias_to_archive = st.selectbox(
+                            "Какое объединение отменить",
+                            alias_restore_options,
+                            format_func=lambda value: alias_restore_labels.get(value, value),
+                            key="sku_alias_archive_choice",
+                        )
+                        archive_alias_submit = st.form_submit_button(
+                            "Отменить объединение",
+                            width="stretch",
+                        )
+                    if archive_alias_submit:
+                        archived_aliases = archive_sku_alias(
+                            alias_to_archive,
+                            updated_by=current_user["username"],
+                        )
+                        audit_event(
+                            action="sku.alias_archive",
+                            user_id=current_user["username"],
+                            details={
+                                "source_product_key": alias_to_archive,
+                                "archived_count": int(archived_aliases),
+                            },
+                        )
+                        st.session_state["data_center_flash_message"] = "Объединение отменено. SKU снова учитываются раздельно."
+                        st.cache_data.clear()
+                        st.rerun()
 
         with st.container(border=True):
             render_panel_header(

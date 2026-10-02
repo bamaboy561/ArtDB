@@ -10,7 +10,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
-from data_center import build_sku_change_preview, classify_cleanup_priority, evaluate_freshness
+from data_center import (
+    build_sku_alias_candidates,
+    build_sku_change_preview,
+    build_sku_merge_preview,
+    classify_cleanup_priority,
+    evaluate_freshness,
+)
 
 
 class DataCenterFreshnessTests(unittest.TestCase):
@@ -94,6 +100,52 @@ class DataCenterSkuChangePreviewTests(unittest.TestCase):
         self.assertEqual(preview.iloc[0]["after_supplier"], "Hettich")
         self.assertEqual(preview.iloc[0]["after_brand"], "Бренд 2")
         self.assertEqual(preview.iloc[0]["changed_fields"], "supplier, brand")
+
+
+class DataCenterSkuAliasTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sales = pd.DataFrame(
+            [
+                {
+                    "product_key": "OLD-1",
+                    "product": "Петля 110° ",
+                    "item_code": "HT-01",
+                    "category": "Петли",
+                    "brand": "Hettich",
+                    "supplier": "Hettich",
+                    "revenue": 100.0,
+                    "quantity": 1.0,
+                },
+                {
+                    "product_key": "MAIN-1",
+                    "product": "Петля 110",
+                    "item_code": "HT-01",
+                    "category": "Петли",
+                    "brand": "Hettich",
+                    "supplier": "Hettich",
+                    "revenue": 900.0,
+                    "quantity": 9.0,
+                },
+            ]
+        )
+
+    def test_candidate_prefers_higher_revenue_as_canonical(self) -> None:
+        candidates = build_sku_alias_candidates(self.sales)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates.iloc[0]["source_product_key"], "OLD-1")
+        self.assertEqual(candidates.iloc[0]["canonical_product_key"], "MAIN-1")
+        self.assertEqual(candidates.iloc[0]["reason"], "Совпадает код товара")
+
+    def test_merge_preview_preserves_combined_totals(self) -> None:
+        preview = build_sku_merge_preview(
+            self.sales,
+            source_product_key="OLD-1",
+            canonical_product_key="MAIN-1",
+        )
+
+        self.assertEqual(preview.iloc[0]["combined_revenue"], 1000.0)
+        self.assertEqual(preview.iloc[0]["combined_lines"], 2)
 
 
 if __name__ == "__main__":

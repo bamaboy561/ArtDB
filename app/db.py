@@ -182,6 +182,20 @@ CREATE TABLE IF NOT EXISTS sku_attribute_overrides (
 CREATE INDEX IF NOT EXISTS sku_attribute_overrides_active_idx
     ON sku_attribute_overrides (is_archived, LOWER(product));
 
+CREATE TABLE IF NOT EXISTS sku_aliases (
+    source_product_key TEXT PRIMARY KEY,
+    source_product TEXT NOT NULL DEFAULT '',
+    canonical_product_key TEXT NOT NULL,
+    canonical_product TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+    CHECK (LOWER(source_product_key) <> LOWER(canonical_product_key))
+);
+
+CREATE INDEX IF NOT EXISTS sku_aliases_active_idx
+    ON sku_aliases (is_archived, LOWER(canonical_product_key));
+
 CREATE TABLE IF NOT EXISTS procurement_orders (
     order_id TEXT PRIMARY KEY,
     supplier TEXT NOT NULL DEFAULT '',
