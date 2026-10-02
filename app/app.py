@@ -3083,6 +3083,7 @@ def save_upload_with_feedback(
     sheet_name: str | int | None,
     replace_existing: bool,
     actor_username: str = "",
+    parsed_data: pd.DataFrame | None = None,
 ) -> None:
     save_salon(salon_name)
     save_result = register_upload(
@@ -3095,6 +3096,7 @@ def save_upload_with_feedback(
         csv_encoding=csv_encoding,
         sheet_name=sheet_name,
         replace_existing=replace_existing,
+        parsed_data=parsed_data,
     )
     st.cache_data.clear()
     replaced_text = ""
@@ -7348,6 +7350,7 @@ if work_mode in upload_modes:
                             sheet_name=sheet_name,
                             replace_existing=replace_check,
                             actor_username=current_user["username"],
+                            parsed_data=raw_data,
                         )
                         st.rerun()
 

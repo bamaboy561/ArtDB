@@ -33,6 +33,8 @@ MANIFEST_COLUMNS = [
     "sheet_name",
     "mapping_json",
 ]
+# Bump this when load_input_file changes the shape of its parsed output.
+PARSED_CACHE_VERSION = 1
 
 
 @dataclass
@@ -61,6 +63,51 @@ def _slugify(value: str) -> str:
     cleaned = re.sub(r"\s+", "-", value.strip().casefold())
     cleaned = re.sub(r"[^\w\-]+", "", cleaned, flags=re.UNICODE)
     return cleaned or "salon"
+
+
+def _parsed_cache_path(stored_path: Path) -> Path:
+    return stored_path.with_name(
+        f"{stored_path.name}.parsed-v{PARSED_CACHE_VERSION}.parquet"
+    )
+
+
+def _remove_upload_artifacts(stored_path: Path) -> int:
+    removed = 0
+    candidates = [stored_path, *stored_path.parent.glob(f"{stored_path.name}.parsed-v*.parquet")]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            candidate.unlink()
+            removed += 1
+    return removed
+
+
+def _write_parsed_cache(stored_path: Path, frame: pd.DataFrame) -> bool:
+    cache_path = _parsed_cache_path(stored_path)
+    temporary_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    try:
+        frame.to_parquet(temporary_path, index=False)
+        temporary_path.replace(cache_path)
+        for old_cache_path in stored_path.parent.glob(
+            f"{stored_path.name}.parsed-v*.parquet"
+        ):
+            if old_cache_path != cache_path:
+                old_cache_path.unlink(missing_ok=True)
+        return True
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        return False
+
+
+def _read_parsed_cache(stored_path: Path) -> pd.DataFrame | None:
+    cache_path = _parsed_cache_path(stored_path)
+    if not cache_path.exists():
+        return None
+    try:
+        return pd.read_parquet(cache_path)
+    except Exception:
+        cache_path.unlink(missing_ok=True)
+        return None
 
 
 def load_salons() -> list[str]:
@@ -140,9 +187,7 @@ def delete_salon(salon_name: str, *, remove_uploads: bool = False) -> dict[str, 
     if upload_count:
         for path_text in matching_manifest["stored_path"].tolist():
             path = Path(str(path_text))
-            if path.exists() and path.is_file():
-                path.unlink()
-                deleted_files += 1
+            deleted_files += _remove_upload_artifacts(path)
         manifest = manifest.loc[manifest.index.difference(matching_manifest.index)].copy()
         save_manifest(manifest)
 
@@ -380,6 +425,7 @@ def register_upload(
     csv_encoding: str = "utf-8",
     sheet_name: str | int | None = 0,
     replace_existing: bool = True,
+    parsed_data: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     ensure_store()
     save_salon(salon)
@@ -400,12 +446,15 @@ def register_upload(
         duplicates = manifest[duplicate_mask]
         replaced = len(duplicates)
         for path_text in duplicates["stored_path"].tolist():
-            path = Path(path_text)
-            if path.exists():
-                path.unlink()
+            _remove_upload_artifacts(Path(path_text))
         manifest = manifest.loc[~duplicate_mask].copy()
 
     stored_path.write_bytes(file_bytes)
+    cache_written = bool(
+        parsed_data is not None
+        and not parsed_data.empty
+        and _write_parsed_cache(stored_path, parsed_data)
+    )
 
     record = {
         "upload_id": upload_id,
@@ -427,6 +476,7 @@ def register_upload(
     return {
         "record": record,
         "replaced": replaced,
+        "cache_written": cache_written,
     }
 
 
@@ -448,18 +498,22 @@ def load_archive_data(
 
     for row in manifest.to_dict(orient="records"):
         stored_path = Path(str(row["stored_path"]))
-        if not stored_path.exists():
+        cache_path = _parsed_cache_path(stored_path)
+        if not stored_path.exists() and not cache_path.exists():
             warnings.append(f"Не найден архивный файл: {stored_path}")
             continue
 
         try:
-            raw_data = load_input_file(
-                stored_path.read_bytes(),
-                str(row["source_filename"]),
-                csv_separator=str(row["csv_separator"] or ";"),
-                csv_encoding=str(row["csv_encoding"] or "utf-8"),
-                sheet_name=_parse_sheet_name(row["sheet_name"]),
-            )
+            raw_data = _read_parsed_cache(stored_path)
+            if raw_data is None:
+                raw_data = load_input_file(
+                    stored_path.read_bytes(),
+                    str(row["source_filename"]),
+                    csv_separator=str(row["csv_separator"] or ";"),
+                    csv_encoding=str(row["csv_encoding"] or "utf-8"),
+                    sheet_name=_parse_sheet_name(row["sheet_name"]),
+                )
+                _write_parsed_cache(stored_path, raw_data)
             mapping = json.loads(str(row["mapping_json"]))
             prepared = prepare_sales_data(raw_data, mapping, supplier_rules=supplier_rules)
             frame = prepared.data.copy()
