@@ -15,6 +15,12 @@ class FreshnessStatus:
     display_date: str
 
 
+@dataclass(frozen=True)
+class CleanupPriority:
+    label: str
+    rank: int
+
+
 def evaluate_freshness(
     value: Any,
     *,
@@ -50,3 +56,19 @@ def evaluate_freshness(
         age_days=age_days,
         display_date=source_date.strftime("%d.%m.%Y"),
     )
+
+
+def classify_cleanup_priority(
+    issue_count: int,
+    revenue_impact_pct: float,
+) -> CleanupPriority:
+    issues = max(int(issue_count or 0), 0)
+    impact = max(float(revenue_impact_pct or 0.0), 0.0)
+
+    if issues >= 3 or (issues >= 2 and impact >= 5.0):
+        return CleanupPriority(label="Критично", rank=1)
+    if issues >= 2 or impact >= 2.0:
+        return CleanupPriority(label="Высокий", rank=2)
+    if impact >= 0.5:
+        return CleanupPriority(label="Средний", rank=3)
+    return CleanupPriority(label="Низкий", rank=4)

@@ -32,7 +32,7 @@ from auth_store import (
     set_user_password,
     update_user_role,
 )
-from data_center import evaluate_freshness
+from data_center import classify_cleanup_priority, evaluate_freshness
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
@@ -3123,6 +3123,11 @@ def open_data_workflow(
         st.session_state["open_inventory_upload"] = True
 
 
+def open_supplier_cleanup() -> None:
+    set_mobile_navigation_target("Поставщики")
+    st.session_state["supplier_catalog_status_filter"] = "Без поставщика"
+
+
 def render_mobile_bottom_navigation(active_screen: str, screen_options: list[str]) -> None:
     available_items = [item for item in MOBILE_BOTTOM_NAV_ITEMS if item[0] in screen_options]
     if not available_items:
@@ -4166,6 +4171,9 @@ def build_sku_cleanup_queue(
     require_item_code: bool = False,
 ) -> pd.DataFrame:
     columns = [
+        "priority",
+        "priority_rank",
+        "revenue_impact_pct",
         "issue_count",
         "issues",
         "suggested_action",
@@ -4331,7 +4339,25 @@ def build_sku_cleanup_queue(
     if summary.empty:
         return pd.DataFrame(columns=columns)
 
-    summary = summary.sort_values(["issue_count", "revenue"], ascending=[False, False]).reset_index(drop=True)
+    total_revenue_impact = summary["revenue"].abs().sum()
+    summary["revenue_impact_pct"] = (
+        summary["revenue"].abs() / total_revenue_impact * 100.0
+        if total_revenue_impact > 0
+        else 0.0
+    )
+    priority_payload = summary.apply(
+        lambda row: classify_cleanup_priority(
+            int(row.get("issue_count", 0) or 0),
+            float(row.get("revenue_impact_pct", 0.0) or 0.0),
+        ),
+        axis=1,
+    )
+    summary["priority"] = priority_payload.map(lambda priority: priority.label)
+    summary["priority_rank"] = priority_payload.map(lambda priority: priority.rank)
+    summary = summary.sort_values(
+        ["priority_rank", "revenue_impact_pct", "issue_count", "revenue"],
+        ascending=[True, False, False, False],
+    ).reset_index(drop=True)
     return summary[columns]
 
 
@@ -7776,17 +7802,21 @@ for state_key, available_values in (
     ("main_selected_brands", all_brands),
     ("main_selected_managers", all_managers),
 ):
-    if state_key in st.session_state:
+    if available_values and state_key not in st.session_state:
+        st.session_state[state_key] = list(available_values)
+    elif state_key in st.session_state:
         saved_values = st.session_state.get(state_key) or []
         st.session_state[state_key] = [
             value for value in saved_values if value in available_values
         ]
 
 saved_date_range = st.session_state.get("main_selected_dates")
-if saved_date_range:
+if not saved_date_range:
+    st.session_state["main_selected_dates"] = (min_date, max_date)
+else:
     saved_dates = list(saved_date_range) if isinstance(saved_date_range, (list, tuple)) else [saved_date_range]
     if len(saved_dates) != 2 or saved_dates[0] < min_date or saved_dates[1] > max_date:
-        st.session_state.pop("main_selected_dates", None)
+        st.session_state["main_selected_dates"] = (min_date, max_date)
 
 with main_col:
     filter_shell = st.container(border=True)
@@ -7817,7 +7847,6 @@ with main_col:
             with date_col:
                 selected_dates = st.date_input(
                     "Период продаж",
-                    value=(min_date, max_date),
                     min_value=min_date,
                     max_value=max_date,
                     key="main_selected_dates",
@@ -7827,7 +7856,6 @@ with main_col:
                     selected_salons_filter = st.multiselect(
                         "Салоны",
                         all_salons,
-                        default=all_salons,
                         key="main_selected_salons_filter",
                     )
                 else:
@@ -7837,7 +7865,6 @@ with main_col:
                     selected_categories = st.multiselect(
                         "Категории",
                         all_categories,
-                        default=all_categories,
                         key="main_selected_categories",
                     )
                 else:
@@ -7849,7 +7876,6 @@ with main_col:
                     selected_suppliers = st.multiselect(
                         "Поставщики",
                         all_suppliers,
-                        default=all_suppliers,
                         key="main_selected_suppliers",
                     )
                 else:
@@ -7859,7 +7885,6 @@ with main_col:
                     selected_brands = st.multiselect(
                         "Бренды",
                         all_brands,
-                        default=all_brands,
                         key="main_selected_brands",
                     )
                 else:
@@ -7869,7 +7894,6 @@ with main_col:
                     selected_managers = st.multiselect(
                         "Менеджеры",
                         all_managers,
-                        default=all_managers,
                         key="main_selected_managers",
                     )
                 else:
@@ -14045,6 +14069,11 @@ if active_screen == "Данные":
             else 0
             for issue in cleanup_issue_types
         }
+        high_priority_cleanup_count = (
+            int(sku_cleanup_queue["priority_rank"].le(2).sum())
+            if not sku_cleanup_queue.empty and "priority_rank" in sku_cleanup_queue.columns
+            else 0
+        )
 
         latest_sales_date: object = None
         if not manifest_view.empty and "report_date" in manifest_view.columns:
@@ -14103,7 +14132,7 @@ if active_screen == "Данные":
             "success"
             if sku_cleanup_queue.empty
             else "danger"
-            if cleanup_ratio >= 0.25
+            if high_priority_cleanup_count > 0 or cleanup_ratio >= 0.25
             else "warning"
         )
         inventory_item_count = (
@@ -14142,7 +14171,7 @@ if active_screen == "Данные":
                     "label": "Качество SKU",
                     "status": cleanup_status,
                     "value": f"{format_number(len(sku_cleanup_queue))} к разбору",
-                    "meta": f"Без поставщика: {format_number(cleanup_counts['Без поставщика'])} · нет в остатках: {format_number(cleanup_counts['Нет в остатках'])}",
+                    "meta": f"Высокий приоритет: {format_number(high_priority_cleanup_count)} · без поставщика: {format_number(cleanup_counts['Без поставщика'])}",
                     "tone": cleanup_tone,
                 },
             ]
@@ -14251,6 +14280,12 @@ if active_screen == "Данные":
                         "tone": "warning" if not sku_cleanup_queue.empty else "success",
                     },
                     {
+                        "label": "Высокий приоритет",
+                        "value": format_number(high_priority_cleanup_count),
+                        "hint": "сильнее всего влияет на точность анализа",
+                        "tone": "danger" if high_priority_cleanup_count else "success",
+                    },
+                    {
                         "label": "Без поставщика",
                         "value": format_number(cleanup_counts["Без поставщика"]),
                         "hint": "мешает заказам поставщикам",
@@ -14267,13 +14302,64 @@ if active_screen == "Данные":
             if sku_cleanup_queue.empty:
                 st.success("В текущем срезе не найдено проблемных SKU. Справочник выглядит аккуратно.")
             else:
-                cleanup_filter = st.multiselect(
-                    "Какие проблемы показать",
-                    cleanup_issue_types,
-                    default=[issue for issue in cleanup_issue_types if cleanup_counts[issue] > 0],
-                    key="sku_cleanup_issue_filter",
-                )
+                cleanup_action_specs: list[dict[str, object]] = []
+                if can_manage_procurement(current_user) and cleanup_counts["Без поставщика"]:
+                    cleanup_action_specs.append(
+                        {
+                            "label": "Разобрать поставщиков",
+                            "icon": ":material/local_shipping:",
+                            "callback": open_supplier_cleanup,
+                            "args": (),
+                        }
+                    )
+                if can_manage_procurement(current_user) and cleanup_counts["Нет в остатках"]:
+                    cleanup_action_specs.append(
+                        {
+                            "label": "Загрузить остатки",
+                            "icon": ":material/inventory_2:",
+                            "callback": open_data_workflow,
+                            "args": ("Закупки", "", True),
+                        }
+                    )
+
+                if cleanup_action_specs:
+                    cleanup_action_columns = st.columns(len(cleanup_action_specs), gap="small")
+                    for action_column, action in zip(cleanup_action_columns, cleanup_action_specs):
+                        with action_column:
+                            st.button(
+                                str(action["label"]),
+                                icon=str(action["icon"]),
+                                key=f"sku_cleanup_action_{action['label']}",
+                                width="stretch",
+                                on_click=action["callback"],
+                                args=action["args"],
+                            )
+
+                priority_order = ["Критично", "Высокий", "Средний", "Низкий"]
+                available_priorities = [
+                    priority
+                    for priority in priority_order
+                    if sku_cleanup_queue["priority"].eq(priority).any()
+                ]
+                cleanup_priority_col, cleanup_issue_col = st.columns([0.45, 1.0], gap="medium")
+                with cleanup_priority_col:
+                    cleanup_priority_filter = st.selectbox(
+                        "Приоритет",
+                        ["Все приоритеты", *available_priorities],
+                        key="sku_cleanup_priority_filter",
+                    )
+                with cleanup_issue_col:
+                    cleanup_filter = st.multiselect(
+                        "Какие проблемы показать",
+                        cleanup_issue_types,
+                        default=[issue for issue in cleanup_issue_types if cleanup_counts[issue] > 0],
+                        key="sku_cleanup_issue_filter",
+                    )
                 cleanup_view = sku_cleanup_queue.copy()
+                if cleanup_priority_filter != "Все приоритеты":
+                    cleanup_view = cleanup_view[
+                        cleanup_view["priority"].eq(cleanup_priority_filter)
+                    ].copy()
                 if cleanup_filter:
                     issue_mask = pd.Series(False, index=cleanup_view.index)
                     issue_text = cleanup_view["issues"].fillna("").astype(str)
@@ -14282,6 +14368,8 @@ if active_screen == "Данные":
                     cleanup_view = cleanup_view[issue_mask].copy()
 
                 cleanup_rename_map = {
+                    "priority": "Приоритет",
+                    "revenue_impact_pct": "Вклад в очередь, %",
                     "issue_count": "Проблем",
                     "issues": "Что исправить",
                     "suggested_action": "Рекомендованное действие",
@@ -14300,6 +14388,8 @@ if active_screen == "Данные":
                     "stock_in_transit": "В пути",
                 }
                 cleanup_display_columns = [
+                    "priority",
+                    "revenue_impact_pct",
                     "issue_count",
                     "issues",
                     "suggested_action",
@@ -14337,6 +14427,8 @@ if active_screen == "Данные":
                                 current_user,
                                 cleanup_rename_map,
                                 columns=[
+                                    "priority",
+                                    "revenue_impact_pct",
                                     "issue_count",
                                     "issues",
                                     "suggested_action",
