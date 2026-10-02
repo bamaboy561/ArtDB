@@ -32,7 +32,7 @@ from auth_store import (
     set_user_password,
     update_user_role,
 )
-from data_center import classify_cleanup_priority, evaluate_freshness
+from data_center import build_sku_change_preview, classify_cleanup_priority, evaluate_freshness
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
@@ -99,6 +99,11 @@ from salon_data_store import (
     load_salons,
     register_upload,
     save_salon,
+)
+from sku_catalog_store import (
+    apply_sku_attribute_overrides,
+    load_sku_attribute_overrides,
+    upsert_sku_attribute_overrides,
 )
 from supplier_rules_store import (
     KEYWORD_RULE_COLUMNS,
@@ -3811,6 +3816,11 @@ def cached_load_supplier_product_assignments() -> pd.DataFrame:
     return load_supplier_product_assignments()
 
 
+@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
+def cached_load_sku_attribute_overrides() -> pd.DataFrame:
+    return load_sku_attribute_overrides()
+
+
 def supplier_rule_items_from_frame(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
     if frame.empty or not {"supplier", "keyword"}.issubset(frame.columns):
         return ()
@@ -4181,6 +4191,7 @@ def build_sku_cleanup_queue(
         "product",
         "item_code",
         "category",
+        "brand",
         "effective_supplier",
         "sales_supplier",
         "manual_supplier",
@@ -4197,7 +4208,7 @@ def build_sku_cleanup_queue(
     working = data.copy()
     if "product_key" not in working.columns:
         working["product_key"] = working["product"].fillna("").astype(str).str.strip()
-    for column in ("item_code", "category", "supplier"):
+    for column in ("item_code", "category", "brand", "supplier"):
         if column not in working.columns:
             working[column] = ""
     for column in ("revenue", "quantity"):
@@ -4216,6 +4227,7 @@ def build_sku_cleanup_queue(
             product=("product", _first_catalog_text),
             item_code=("item_code", _first_catalog_text),
             category=("category", _most_common_catalog_text),
+            brand=("brand", _most_common_catalog_text),
             sales_supplier=("supplier", _most_common_catalog_text),
             revenue=("revenue", "sum"),
             quantity=("quantity", "sum"),
@@ -4289,7 +4301,7 @@ def build_sku_cleanup_queue(
                     summary = summary.drop(columns=[stock_column])
             summary = summary.drop(columns=["stock_lookup_key"], errors="ignore")
 
-    for column in ("sales_supplier", "manual_supplier", "stock_supplier", "category", "item_code", "product"):
+    for column in ("sales_supplier", "manual_supplier", "stock_supplier", "category", "brand", "item_code", "product"):
         summary[column] = summary[column].fillna("").astype(str).str.strip()
     for column in ("stock_on_hand", "stock_in_transit"):
         summary[column] = pd.to_numeric(summary[column], errors="coerce").fillna(0.0)
@@ -4318,6 +4330,9 @@ def build_sku_cleanup_queue(
         if _catalog_missing_text(row.get("category"), empty_labels={"Без категории", "Не указана"}):
             issues.append("Без категории")
             actions.append("Уточнить категорию")
+        if _catalog_missing_text(row.get("brand"), empty_labels={"Не назначен", "Не указан"}):
+            issues.append("Без бренда")
+            actions.append("Уточнить бренд")
         if require_item_code and _catalog_missing_text(row.get("item_code")):
             issues.append("Без кода товара")
             actions.append("Добавить артикул/код")
@@ -7222,6 +7237,7 @@ active_supplier_keyword_rules = supplier_keyword_rules[
 ].copy() if not supplier_keyword_rules.empty else pd.DataFrame()
 supplier_rule_items = supplier_rule_items_from_frame(active_supplier_keyword_rules)
 supplier_product_assignments = cached_load_supplier_product_assignments()
+sku_attribute_overrides = cached_load_sku_attribute_overrides()
 
 if current_user["role"] == "salon":
     if not current_user.get("salon"):
@@ -7574,6 +7590,7 @@ data = enrich_sales_with_supplier(
     supplier_product_assignments=supplier_product_assignments,
 )
 data = enrich_sales_with_brand(data, procurement_items)
+data = apply_sku_attribute_overrides(data, sku_attribute_overrides)
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -14044,6 +14061,9 @@ if active_screen == "Данные":
             "Центр данных",
             "Единая точка контроля продаж, остатков, поставщиков и качества справочника SKU.",
         )
+        data_center_flash_message = st.session_state.pop("data_center_flash_message", "")
+        if data_center_flash_message:
+            st.success(data_center_flash_message)
         sample_path = Path("sample_sales_data.csv")
         data_period_text = format_date_range_values(data["date"].min(), data["date"].max())
         archive_upload_count = len(manifest_view) if manifest_view is not None else 0
@@ -14059,6 +14079,7 @@ if active_screen == "Данные":
         cleanup_issue_types = [
             "Без поставщика",
             "Без категории",
+            "Без бренда",
             "Без кода товара",
             "Нет в остатках",
             "Нулевой остаток",
@@ -14367,6 +14388,256 @@ if active_screen == "Данные":
                         issue_mask = issue_mask | issue_text.str.contains(issue, regex=False)
                     cleanup_view = cleanup_view[issue_mask].copy()
 
+                if can_manage_procurement(current_user) and not cleanup_view.empty:
+                    with st.expander("Массово исправить выбранные SKU", expanded=False):
+                        st.caption(
+                            "Отметьте позиции в таблице. Общие значения применяются ко всем отмеченным строкам, "
+                            "а индивидуальные можно изменить прямо в таблице. Сначала появится предпросмотр."
+                        )
+                        cleanup_editor_source = cleanup_view.head(150)[
+                            [
+                                "product_key",
+                                "product",
+                                "effective_supplier",
+                                "category",
+                                "brand",
+                                "item_code",
+                                "issues",
+                                "revenue_impact_pct",
+                            ]
+                        ].copy()
+                        cleanup_editor_source.insert(0, "select", False)
+                        cleanup_editor_source = cleanup_editor_source.rename(
+                            columns={
+                                "effective_supplier": "current_supplier",
+                                "category": "current_category",
+                                "brand": "current_brand",
+                                "item_code": "current_item_code",
+                            }
+                        )
+                        for field in ("supplier", "category", "brand", "item_code"):
+                            current_column = f"current_{field}"
+                            cleanup_editor_source[current_column] = (
+                                cleanup_editor_source[current_column].fillna("").astype(str).str.strip()
+                            )
+                            cleanup_editor_source[f"new_{field}"] = cleanup_editor_source[current_column]
+
+                        def cleanup_option_values(column: str, extra_frames: list[pd.DataFrame]) -> list[str]:
+                            values: set[str] = set()
+                            for source_frame in [cleanup_view, *extra_frames]:
+                                if source_frame is None or source_frame.empty or column not in source_frame.columns:
+                                    continue
+                                values.update(
+                                    value
+                                    for value in source_frame[column].fillna("").astype(str).str.strip().tolist()
+                                    if value and value.casefold() not in {"не назначен", "не указана", "без категории"}
+                                )
+                            return sorted(values, key=str.casefold)
+
+                        supplier_choices = cleanup_option_values(
+                            "supplier",
+                            [
+                                procurement_items,
+                                supplier_product_assignments,
+                                cleanup_view.rename(columns={"effective_supplier": "supplier"}),
+                            ],
+                        )
+                        category_choices = cleanup_option_values("category", [filter_source_data])
+                        brand_choices = cleanup_option_values("brand", [filter_source_data, procurement_items])
+
+                        with st.form("sku_cleanup_bulk_edit_form", clear_on_submit=False):
+                            bulk_supplier_col, bulk_category_col, bulk_brand_col = st.columns(3, gap="small")
+                            with bulk_supplier_col:
+                                bulk_supplier_choice = st.selectbox(
+                                    "Общий поставщик",
+                                    ["Не менять", *supplier_choices],
+                                    key="sku_cleanup_bulk_supplier",
+                                    accept_new_options=True,
+                                )
+                            with bulk_category_col:
+                                bulk_category_choice = st.selectbox(
+                                    "Общая категория",
+                                    ["Не менять", *category_choices],
+                                    key="sku_cleanup_bulk_category",
+                                    accept_new_options=True,
+                                )
+                            with bulk_brand_col:
+                                bulk_brand_choice = st.selectbox(
+                                    "Общий бренд",
+                                    ["Не менять", *brand_choices],
+                                    key="sku_cleanup_bulk_brand",
+                                    accept_new_options=True,
+                                )
+
+                            edited_cleanup_rows = st.data_editor(
+                                cleanup_editor_source,
+                                width="stretch",
+                                hide_index=True,
+                                height=min(560, max(280, 112 + len(cleanup_editor_source) * 34)),
+                                disabled=[
+                                    "product_key",
+                                    "product",
+                                    "current_supplier",
+                                    "current_category",
+                                    "current_brand",
+                                    "current_item_code",
+                                    "issues",
+                                    "revenue_impact_pct",
+                                ],
+                                key="sku_cleanup_bulk_editor",
+                                column_order=[
+                                    "select",
+                                    "product",
+                                    "issues",
+                                    "new_supplier",
+                                    "new_category",
+                                    "new_brand",
+                                    "new_item_code",
+                                    "revenue_impact_pct",
+                                ],
+                                column_config={
+                                    "select": st.column_config.CheckboxColumn("Выбрать", default=False, width="small"),
+                                    "product": st.column_config.TextColumn("Номенклатура", width="large"),
+                                    "issues": st.column_config.TextColumn("Проблемы", width="medium"),
+                                    "new_supplier": st.column_config.TextColumn("Новый поставщик", width="medium"),
+                                    "new_category": st.column_config.TextColumn("Новая категория", width="medium"),
+                                    "new_brand": st.column_config.TextColumn("Новый бренд", width="medium"),
+                                    "new_item_code": st.column_config.TextColumn("Новый код", width="medium"),
+                                    "revenue_impact_pct": st.column_config.NumberColumn(
+                                        "Влияние, %",
+                                        format="%.2f%%",
+                                        width="small",
+                                    ),
+                                },
+                            )
+                            prepare_cleanup_changes = st.form_submit_button(
+                                "Проверить изменения",
+                                type="primary",
+                                width="stretch",
+                            )
+
+                        if prepare_cleanup_changes:
+                            pending_changes = build_sku_change_preview(
+                                edited_cleanup_rows,
+                                bulk_supplier="" if bulk_supplier_choice == "Не менять" else bulk_supplier_choice,
+                                bulk_category="" if bulk_category_choice == "Не менять" else bulk_category_choice,
+                                bulk_brand="" if bulk_brand_choice == "Не менять" else bulk_brand_choice,
+                            )
+                            if pending_changes.empty:
+                                st.warning("Отметьте хотя бы одну строку и измените в ней поставщика или атрибут SKU.")
+                            else:
+                                st.session_state["sku_cleanup_pending_changes"] = pending_changes.to_dict(orient="records")
+                                st.rerun()
+
+                pending_cleanup_records = st.session_state.get("sku_cleanup_pending_changes") or []
+                if pending_cleanup_records:
+                    pending_cleanup_changes = pd.DataFrame(pending_cleanup_records)
+                    with st.container(border=True):
+                        render_panel_header(
+                            "Предпросмотр массовых изменений",
+                            "Проверьте значения. Аналитика будет пересчитана только после подтверждения.",
+                        )
+                        preview_frame = pending_cleanup_changes.copy()
+                        preview_frame["Поставщик"] = preview_frame.apply(
+                            lambda row: f"{row['before_supplier'] or '—'} → {row['after_supplier'] or '—'}",
+                            axis=1,
+                        )
+                        preview_frame["Категория"] = preview_frame.apply(
+                            lambda row: f"{row['before_category'] or '—'} → {row['after_category'] or '—'}",
+                            axis=1,
+                        )
+                        preview_frame["Бренд"] = preview_frame.apply(
+                            lambda row: f"{row['before_brand'] or '—'} → {row['after_brand'] or '—'}",
+                            axis=1,
+                        )
+                        preview_frame["Код товара"] = preview_frame.apply(
+                            lambda row: f"{row['before_item_code'] or '—'} → {row['after_item_code'] or '—'}",
+                            axis=1,
+                        )
+                        st.dataframe(
+                            preview_frame.rename(
+                                columns={
+                                    "product": "Номенклатура",
+                                    "changed_fields": "Изменяемые поля",
+                                }
+                            )[["Номенклатура", "Изменяемые поля", "Поставщик", "Категория", "Бренд", "Код товара"]],
+                            width="stretch",
+                            hide_index=True,
+                            height=min(420, max(160, 76 + len(preview_frame) * 34)),
+                        )
+                        confirm_col, cancel_col = st.columns([1.0, 0.45], gap="small")
+                        with confirm_col:
+                            apply_cleanup_changes = st.button(
+                                f"Применить изменений: {len(pending_cleanup_changes)}",
+                                type="primary",
+                                width="stretch",
+                                key="sku_cleanup_confirm_changes",
+                            )
+                        with cancel_col:
+                            cancel_cleanup_changes = st.button(
+                                "Отменить",
+                                width="stretch",
+                                key="sku_cleanup_cancel_changes",
+                            )
+
+                        if cancel_cleanup_changes:
+                            st.session_state.pop("sku_cleanup_pending_changes", None)
+                            st.rerun()
+
+                        if apply_cleanup_changes:
+                            supplier_changes = pending_cleanup_changes[
+                                pending_cleanup_changes["before_supplier"].fillna("").astype(str).str.casefold()
+                                != pending_cleanup_changes["after_supplier"].fillna("").astype(str).str.casefold()
+                            ].copy()
+                            supplier_changes = supplier_changes[
+                                supplier_changes["after_supplier"].fillna("").astype(str).str.strip().ne("")
+                            ]
+                            supplier_saved = 0
+                            if not supplier_changes.empty:
+                                supplier_saved = upsert_supplier_product_assignments(
+                                    supplier_changes.rename(columns={"after_supplier": "supplier"})[
+                                        ["product_key", "product", "supplier"]
+                                    ],
+                                    updated_by=current_user["username"],
+                                )
+
+                            attribute_changes = pending_cleanup_changes[
+                                pending_cleanup_changes["changed_fields"].fillna("").astype(str).str.contains(
+                                    "category|brand|item_code",
+                                    regex=True,
+                                )
+                            ].copy()
+                            attributes_saved = 0
+                            if not attribute_changes.empty:
+                                attributes_saved = upsert_sku_attribute_overrides(
+                                    attribute_changes.rename(
+                                        columns={
+                                            "after_category": "category",
+                                            "after_brand": "brand",
+                                            "after_item_code": "item_code",
+                                        }
+                                    )[["product_key", "product", "category", "brand", "item_code"]],
+                                    updated_by=current_user["username"],
+                                )
+
+                            audit_event(
+                                action="sku.bulk_attributes_update",
+                                user_id=current_user["username"],
+                                details={
+                                    "changed_count": int(len(pending_cleanup_changes)),
+                                    "supplier_saved": int(supplier_saved),
+                                    "attributes_saved": int(attributes_saved),
+                                    "product_keys": pending_cleanup_changes["product_key"].astype(str).head(50).tolist(),
+                                },
+                            )
+                            st.session_state.pop("sku_cleanup_pending_changes", None)
+                            st.session_state["data_center_flash_message"] = (
+                                f"Исправления сохранены: {len(pending_cleanup_changes)} SKU. "
+                                "Показатели и очередь качества пересчитаны."
+                            )
+                            st.cache_data.clear()
+                            st.rerun()
+
                 cleanup_rename_map = {
                     "priority": "Приоритет",
                     "revenue_impact_pct": "Вклад в очередь, %",
@@ -14377,6 +14648,7 @@ if active_screen == "Данные":
                     "product": "Номенклатура",
                     "item_code": "Код товара",
                     "category": "Категория",
+                    "brand": "Бренд",
                     "effective_supplier": "Поставщик",
                     "sales_supplier": "Поставщик из продаж",
                     "manual_supplier": "Ручной поставщик",
@@ -14396,6 +14668,7 @@ if active_screen == "Данные":
                     "product",
                     "item_code",
                     "category",
+                    "brand",
                     "effective_supplier",
                     "revenue",
                     "quantity",
@@ -14436,6 +14709,7 @@ if active_screen == "Данные":
                                     "product",
                                     "item_code",
                                     "category",
+                                    "brand",
                                     "effective_supplier",
                                     "sales_supplier",
                                     "manual_supplier",

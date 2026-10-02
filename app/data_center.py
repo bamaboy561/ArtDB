@@ -72,3 +72,72 @@ def classify_cleanup_priority(
     if impact >= 0.5:
         return CleanupPriority(label="Средний", rank=3)
     return CleanupPriority(label="Низкий", rank=4)
+
+
+def _clean_catalog_value(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.casefold() in {"nan", "none", "не назначен", "не указана", "без категории"} else text
+
+
+def build_sku_change_preview(
+    edited_rows: pd.DataFrame,
+    *,
+    bulk_supplier: str = "",
+    bulk_category: str = "",
+    bulk_brand: str = "",
+) -> pd.DataFrame:
+    columns = [
+        "product_key",
+        "product",
+        "changed_fields",
+        "before_supplier",
+        "after_supplier",
+        "before_category",
+        "after_category",
+        "before_brand",
+        "after_brand",
+        "before_item_code",
+        "after_item_code",
+    ]
+    if edited_rows.empty or "select" not in edited_rows.columns:
+        return pd.DataFrame(columns=columns)
+
+    selected = edited_rows[edited_rows["select"].fillna(False).astype(bool)].copy()
+    if selected.empty:
+        return pd.DataFrame(columns=columns)
+
+    bulk_values = {
+        "supplier": _clean_catalog_value(bulk_supplier),
+        "category": _clean_catalog_value(bulk_category),
+        "brand": _clean_catalog_value(bulk_brand),
+    }
+    records: list[dict[str, str]] = []
+    for row in selected.to_dict(orient="records"):
+        before = {
+            field: _clean_catalog_value(row.get(f"current_{field}"))
+            for field in ("supplier", "category", "brand", "item_code")
+        }
+        after = {
+            field: bulk_values.get(field) or _clean_catalog_value(row.get(f"new_{field}")) or before[field]
+            for field in ("supplier", "category", "brand", "item_code")
+        }
+        changed = [
+            field
+            for field in ("supplier", "category", "brand", "item_code")
+            if before[field].casefold() != after[field].casefold()
+        ]
+        if not changed:
+            continue
+        records.append(
+            {
+                "product_key": _clean_catalog_value(row.get("product_key")),
+                "product": _clean_catalog_value(row.get("product")),
+                "changed_fields": ", ".join(changed),
+                **{f"before_{field}": before[field] for field in before},
+                **{f"after_{field}": after[field] for field in after},
+            }
+        )
+
+    return pd.DataFrame(records, columns=columns)

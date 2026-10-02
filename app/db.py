@@ -168,6 +168,20 @@ CREATE TABLE IF NOT EXISTS supplier_product_assignments (
 CREATE INDEX IF NOT EXISTS supplier_product_assignments_supplier_idx
     ON supplier_product_assignments (LOWER(supplier));
 
+CREATE TABLE IF NOT EXISTS sku_attribute_overrides (
+    product_key TEXT PRIMARY KEY,
+    product TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    brand TEXT NOT NULL DEFAULT '',
+    item_code TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_archived BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS sku_attribute_overrides_active_idx
+    ON sku_attribute_overrides (is_archived, LOWER(product));
+
 CREATE TABLE IF NOT EXISTS procurement_orders (
     order_id TEXT PRIMARY KEY,
     supplier TEXT NOT NULL DEFAULT '',
