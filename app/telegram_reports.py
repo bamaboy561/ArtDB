@@ -217,7 +217,7 @@ def send_telegram_message(text: str) -> None:
     payload = parse.urlencode(
         {
             "chat_id": chat_id,
-            "text": text,
+            "text": _normalize_telegram_html(text),
             "parse_mode": "HTML",
             "disable_web_page_preview": "true",
         }
@@ -227,6 +227,23 @@ def send_telegram_message(text: str) -> None:
         payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+
+
+def _normalize_telegram_html(value: object) -> str:
+    """Escape arbitrary text while preserving the HTML tags used by ArtDB reports."""
+    token_pattern = re.compile(
+        r"(</?b>|&(?:lt|gt|amp|quot|apos|#\d+|#x[0-9a-fA-F]+);)",
+        flags=re.IGNORECASE,
+    )
+    safe_parts: list[str] = []
+    for part in token_pattern.split(str(value)):
+        if not part:
+            continue
+        if token_pattern.fullmatch(part):
+            safe_parts.append(part)
+        else:
+            safe_parts.append(escape(part, quote=False))
+    return "".join(safe_parts)
 
 
 def _encode_multipart_formdata(
@@ -268,7 +285,7 @@ def send_telegram_document(report_file: TelegramReportFile) -> None:
     _, chat_id = _get_telegram_credentials()
     fields = {
         "chat_id": chat_id,
-        "caption": report_file.caption[:1024],
+        "caption": _normalize_telegram_html(report_file.caption)[:1024],
         "parse_mode": "HTML",
     }
     payload, boundary = _encode_multipart_formdata(
@@ -408,7 +425,7 @@ def build_daily_summary() -> str:
                 f"Маржа: {format_money_plain(overview.get('total_margin'))}",
                 f"Маржа %: {format_percent_plain(overview.get('margin_pct'))}",
                 f"Количество: {format_number_plain(overview.get('total_quantity'))}",
-                f"Риск по марже (<15%): {risk_count}",
+                f"Риск по марже (&lt;15%): {risk_count}",
             ]
         )
 

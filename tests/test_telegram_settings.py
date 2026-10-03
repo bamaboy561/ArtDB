@@ -5,13 +5,14 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from telegram_reports import discover_telegram_chats
+from telegram_reports import discover_telegram_chats, send_telegram_message
 from telegram_settings_store import load_environment_telegram_settings
 
 
@@ -83,6 +84,23 @@ class TelegramChatDiscoveryTests(unittest.TestCase):
         labels = {item["chat_id"]: item["label"] for item in chats}
         self.assertEqual(labels["123"], "Sultan")
         self.assertEqual(labels["-100555"], "ArtDB reports")
+
+
+class TelegramMessageSafetyTests(unittest.TestCase):
+    def test_message_escapes_unsupported_html_without_losing_bold_text(self) -> None:
+        with (
+            patch("telegram_reports._get_telegram_credentials", return_value=("token", "123")),
+            patch("telegram_reports._telegram_api_request", return_value={"ok": True}) as api_request,
+        ):
+            send_telegram_message("<b>Риски</b> (<15%): A&B; товар &lt;b&gt;SKU&lt;/b&gt;")
+
+        payload = api_request.call_args.args[1]
+        fields = parse_qs(payload.decode("utf-8"))
+        self.assertEqual(
+            fields["text"],
+            ["<b>Риски</b> (&lt;15%): A&amp;B; товар &lt;b&gt;SKU&lt;/b&gt;"],
+        )
+        self.assertEqual(fields["parse_mode"], ["HTML"])
 
 
 if __name__ == "__main__":
