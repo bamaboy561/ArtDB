@@ -18,14 +18,16 @@ from db import (
     log_audit_event,
     set_service_state,
 )
+from procurement_store import load_procurement_items
 from salon_data_store import load_archive_data, load_salons
+from sales_analytics import infer_supplier_from_text
 from sku_catalog_store import (
     apply_sku_aliases,
     apply_sku_attribute_overrides,
     load_sku_aliases,
     load_sku_attribute_overrides,
 )
-from supplier_rules_store import load_supplier_keyword_rules
+from supplier_rules_store import load_supplier_keyword_rules, load_supplier_product_assignments
 from telegram_reports import (
     TARGETED_TELEGRAM_REPORT_LABELS,
     answer_telegram_callback,
@@ -46,6 +48,7 @@ _DATE_PATTERN = re.compile(r"(?<!\d)(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})(?!\d
 MAIN_MENU_MARKUP: dict[str, object] = {
     "keyboard": [
         [{"text": "Сводка"}, {"text": "Категории"}],
+        [{"text": "Бренды"}, {"text": "Поставщики"}],
         [{"text": "Портфель SKU"}, {"text": "Карточка SKU"}],
         [{"text": "Меню"}, {"text": "Помощь"}],
     ],
@@ -58,9 +61,12 @@ class ChatState:
     report_kind: str = ""
     category: str | None = None
     product_key: str | None = None
+    brand: str | None = None
+    supplier: str | None = None
     awaiting: str = ""
     sku_options: list[tuple[str, str]] = field(default_factory=list)
     category_options: list[str] = field(default_factory=list)
+    catalog_options: list[str] = field(default_factory=list)
     requested_period: tuple[date, date] | None = None
 
 
@@ -144,8 +150,103 @@ def load_bot_sales_data() -> pd.DataFrame:
     data = archive_result.data.copy()
     if data.empty:
         return data
+    aliases = load_sku_aliases()
+    procurement_items = apply_sku_aliases(
+        load_procurement_items(),
+        aliases,
+        aggregate_inventory=True,
+    )
+    data = _enrich_sales_catalog(
+        data,
+        procurement_items=procurement_items,
+        supplier_product_assignments=load_supplier_product_assignments(),
+        supplier_rules=_supplier_rules(),
+    )
     data = apply_sku_attribute_overrides(data, load_sku_attribute_overrides())
-    return apply_sku_aliases(data, load_sku_aliases())
+    return apply_sku_aliases(data, aliases)
+
+
+def _enrich_sales_catalog(
+    data: pd.DataFrame,
+    *,
+    procurement_items: pd.DataFrame,
+    supplier_product_assignments: pd.DataFrame,
+    supplier_rules: tuple[tuple[str, str], ...] = (),
+) -> pd.DataFrame:
+    if data.empty:
+        return data
+
+    enriched = data.copy()
+    for column in ("supplier", "brand"):
+        enriched[column] = (
+            enriched.get(column, pd.Series("", index=enriched.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    if not procurement_items.empty and "product" in procurement_items.columns:
+        catalog = procurement_items.copy()
+        catalog["_lookup_key"] = catalog["product"].fillna("").astype(str).str.strip().str.casefold()
+        catalog = catalog[catalog["_lookup_key"].ne("")]
+        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+        product_key_lookup = (
+            enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+            if "product_key" in enriched.columns
+            else product_lookup
+        )
+        for column in ("supplier", "brand"):
+            if column not in catalog.columns:
+                continue
+            source = catalog[["_lookup_key", column]].copy()
+            source[column] = source[column].fillna("").astype(str).str.strip()
+            source = source[source[column].ne("")].drop_duplicates("_lookup_key", keep="last")
+            lookup = source.set_index("_lookup_key")[column].to_dict()
+            mapped = product_lookup.map(lookup).fillna(product_key_lookup.map(lookup))
+            current = enriched[column].fillna("").astype(str).str.strip()
+            missing = current.eq("") | current.str.casefold().eq("не назначен")
+            fill_mask = missing & mapped.fillna("").astype(str).str.strip().ne("")
+            enriched.loc[fill_mask, column] = mapped.loc[fill_mask].astype(str).str.strip()
+
+    supplier_text = enriched["supplier"].fillna("").astype(str).str.strip()
+    missing_supplier = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
+    searchable_columns = [
+        column for column in ("product", "product_key", "item_code", "category") if column in enriched.columns
+    ]
+    if supplier_rules and searchable_columns and missing_supplier.any():
+        combined_text = (
+            enriched.loc[missing_supplier, searchable_columns]
+            .fillna("")
+            .astype(str)
+            .agg(" ".join, axis=1)
+        )
+        inferred = combined_text.map(lambda value: infer_supplier_from_text(value, supplier_rules))
+        inferred_mask = inferred.fillna("").astype(str).str.strip().ne("")
+        enriched.loc[inferred.index[inferred_mask], "supplier"] = inferred.loc[inferred_mask].astype(str).str.strip()
+
+    if (
+        not supplier_product_assignments.empty
+        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
+    ):
+        assignments = supplier_product_assignments.copy()
+        assignments["_lookup_key"] = (
+            assignments["product_key"].fillna("").astype(str).str.strip().str.casefold()
+        )
+        assignments["supplier"] = assignments["supplier"].fillna("").astype(str).str.strip()
+        assignments = assignments[
+            assignments["_lookup_key"].ne("") & assignments["supplier"].ne("")
+        ].drop_duplicates("_lookup_key", keep="last")
+        assignment_lookup = assignments.set_index("_lookup_key")["supplier"].to_dict()
+        identity_column = "product_key" if "product_key" in enriched.columns else "product"
+        identity_lookup = enriched[identity_column].fillna("").astype(str).str.strip().str.casefold()
+        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+        assigned = identity_lookup.map(assignment_lookup).fillna(product_lookup.map(assignment_lookup))
+        assigned_mask = assigned.fillna("").astype(str).str.strip().ne("")
+        enriched.loc[assigned_mask, "supplier"] = assigned.loc[assigned_mask].astype(str).str.strip()
+
+    enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+    enriched["brand"] = enriched["brand"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+    return enriched
 
 
 def _short_text(value: object, limit: int = 54) -> str:
@@ -231,11 +332,14 @@ class TelegramReportMenu:
                     "Используйте кнопки меню или команды:",
                     "• /summary - управленческая сводка",
                     "• /categories - категории",
+                    "• /brand НАЗВАНИЕ - отчёт по бренду",
+                    "• /supplier НАЗВАНИЕ - отчёт по поставщику",
                     "• /portfolio - портфель SKU",
                     "• /sku АРТИКУЛ - карточка товара",
                     "",
                     "Для точного периода добавьте две даты:",
                     "/summary 01.09.2026 30.09.2026",
+                    "/supplier Hettich 01.09.2026 30.09.2026",
                     "/sku A-123 01.09.2026 30.09.2026",
                 ]
             ),
@@ -260,6 +364,8 @@ class TelegramReportMenu:
         button_kinds = {
             "Сводка": "summary",
             "Категории": "categories",
+            "Бренды": "brand",
+            "Поставщики": "supplier",
             "Портфель SKU": "portfolio",
             "Карточка SKU": "sku",
         }
@@ -278,10 +384,21 @@ class TelegramReportMenu:
             state.report_kind = report_kind
             state.category = None
             state.product_key = None
+            state.brand = None
+            state.supplier = None
             if explicit_period:
                 self._run_report(chat_id, sender_id, *explicit_period)
             else:
                 self._show_period_menu(chat_id)
+            return
+
+        if command in {"/brand", "/supplier"}:
+            self._handle_catalog_command(
+                chat_id,
+                sender_id,
+                arguments,
+                report_kind=command.removeprefix("/"),
+            )
             return
 
         if command == "/sku":
@@ -293,6 +410,18 @@ class TelegramReportMenu:
             selected = self._find_sku(
                 chat_id,
                 text,
+                show_period=requested_period is None,
+            )
+            if selected and requested_period:
+                state.requested_period = None
+                self._run_report(chat_id, sender_id, *requested_period)
+            return
+        if state.awaiting in {"brand_query", "supplier_query"}:
+            requested_period = state.requested_period
+            selected = self._find_catalog_value(
+                chat_id,
+                text,
+                report_kind=state.awaiting.removesuffix("_query"),
                 show_period=requested_period is None,
             )
             if selected and requested_period:
@@ -324,9 +453,12 @@ class TelegramReportMenu:
         state.report_kind = report_kind
         state.category = None
         state.product_key = None
+        state.brand = None
+        state.supplier = None
         state.awaiting = ""
         state.sku_options = []
         state.category_options = []
+        state.catalog_options = []
         state.requested_period = None
         if report_kind == "sku":
             state.awaiting = "sku_query"
@@ -334,6 +466,9 @@ class TelegramReportMenu:
                 "<b>Карточка SKU</b>\nОтправьте артикул или часть названия товара одним сообщением.",
                 chat_id=chat_id,
             )
+            return
+        if report_kind in {"brand", "supplier"}:
+            self._show_catalog_options(chat_id, report_kind=report_kind)
             return
         self._show_period_menu(chat_id)
 
@@ -359,6 +494,10 @@ class TelegramReportMenu:
         scope_text = f"\nКатегория: {state.category}" if state.category else ""
         if state.product_key:
             scope_text += f"\nSKU: {state.product_key}"
+        if state.brand:
+            scope_text += f"\nБренд: {state.brand}"
+        if state.supplier:
+            scope_text += f"\nПоставщик: {state.supplier}"
         send_telegram_message(
             f"<b>{report_label}</b>{scope_text}\nВыберите период:",
             chat_id=chat_id,
@@ -423,6 +562,27 @@ class TelegramReportMenu:
                 self._show_period_menu(chat_id)
             return
 
+        if callback_data.startswith("catalog:"):
+            option_index = int(callback_data.partition(":")[2])
+            if option_index >= len(state.catalog_options):
+                raise ValueError("Список устарел. Откройте меню ещё раз.")
+            selected_value = state.catalog_options[option_index]
+            if state.report_kind == "brand":
+                state.brand = selected_value
+            elif state.report_kind == "supplier":
+                state.supplier = selected_value
+            else:
+                self._send_main_menu(chat_id)
+                return
+            state.awaiting = ""
+            if state.requested_period:
+                requested_period = state.requested_period
+                state.requested_period = None
+                self._run_report(chat_id, sender_id, *requested_period)
+            else:
+                self._show_period_menu(chat_id)
+            return
+
         self._send_main_menu(chat_id)
 
     def _show_category_options(self, chat_id: str) -> None:
@@ -456,6 +616,8 @@ class TelegramReportMenu:
         state = self._state(chat_id)
         state.report_kind = "sku"
         state.category = None
+        state.brand = None
+        state.supplier = None
         explicit_period = parse_date_range(arguments)
         state.requested_period = explicit_period
         query = _DATE_PATTERN.sub(" ", arguments)
@@ -471,6 +633,121 @@ class TelegramReportMenu:
         if selected and explicit_period:
             state.requested_period = None
             self._run_report(chat_id, sender_id, *explicit_period)
+
+    def _handle_catalog_command(
+        self,
+        chat_id: str,
+        sender_id: str,
+        arguments: str,
+        *,
+        report_kind: str,
+    ) -> None:
+        state = self._state(chat_id)
+        state.report_kind = report_kind
+        state.category = None
+        state.product_key = None
+        state.brand = None
+        state.supplier = None
+        explicit_period = parse_date_range(arguments)
+        state.requested_period = explicit_period
+        query = _DATE_PATTERN.sub(" ", arguments)
+        query = re.sub(r"\s+", " ", query).strip()
+        if not query:
+            self._show_catalog_options(chat_id, report_kind=report_kind)
+            return
+        selected = self._find_catalog_value(
+            chat_id,
+            query,
+            report_kind=report_kind,
+            show_period=explicit_period is None,
+        )
+        if selected and explicit_period:
+            state.requested_period = None
+            self._run_report(chat_id, sender_id, *explicit_period)
+
+    def _catalog_values(self, report_kind: str) -> list[str]:
+        column = "brand" if report_kind == "brand" else "supplier"
+        data = self._load_data()
+        if data.empty or column not in data.columns:
+            return []
+        return sorted(
+            {
+                _clean_catalog_value(value) or "Не назначен"
+                for value in data[column].tolist()
+            },
+            key=lambda value: (value.casefold() == "не назначен", value.casefold()),
+        )
+
+    def _show_catalog_options(self, chat_id: str, *, report_kind: str) -> None:
+        values = self._catalog_values(report_kind)
+        label = "бренд" if report_kind == "brand" else "поставщика"
+        if not values:
+            raise ValueError(f"В данных пока нет значений для выбора: {label}.")
+        state = self._state(chat_id)
+        state.report_kind = report_kind
+        state.awaiting = f"{report_kind}_query"
+        state.catalog_options = values[:30]
+        keyboard = [
+            [{"text": _short_text(value), "callback_data": f"catalog:{index}"}]
+            for index, value in enumerate(state.catalog_options)
+        ]
+        extra_hint = "\nПоказаны первые 30 вариантов." if len(values) > 30 else ""
+        send_telegram_message(
+            f"<b>Выберите {label}</b>\nНажмите кнопку или отправьте часть названия сообщением.{extra_hint}",
+            chat_id=chat_id,
+            reply_markup={"inline_keyboard": keyboard},
+        )
+
+    def _find_catalog_value(
+        self,
+        chat_id: str,
+        query: str,
+        *,
+        report_kind: str,
+        show_period: bool = True,
+    ) -> bool:
+        values = self._catalog_values(report_kind)
+        normalized_query = query.strip().casefold()
+        matches = [value for value in values if normalized_query in value.casefold()]
+        matches.sort(
+            key=lambda value: (
+                normalized_query != value.casefold(),
+                not value.casefold().startswith(normalized_query),
+                value.casefold(),
+            )
+        )
+        state = self._state(chat_id)
+        state.report_kind = report_kind
+        state.catalog_options = matches[:8]
+        state.awaiting = ""
+        if not state.catalog_options:
+            state.awaiting = f"{report_kind}_query"
+            label = "Бренд" if report_kind == "brand" else "Поставщик"
+            send_telegram_message(
+                f"{label} не найден. Отправьте часть названия ещё раз.",
+                chat_id=chat_id,
+            )
+            return False
+        if len(state.catalog_options) == 1:
+            selected_value = state.catalog_options[0]
+            if report_kind == "brand":
+                state.brand = selected_value
+            else:
+                state.supplier = selected_value
+            if show_period:
+                self._show_period_menu(chat_id)
+            return True
+
+        keyboard = [
+            [{"text": _short_text(value), "callback_data": f"catalog:{index}"}]
+            for index, value in enumerate(state.catalog_options)
+        ]
+        send_telegram_message(
+            "<b>Найдено несколько вариантов</b>\nВыберите нужный:",
+            chat_id=chat_id,
+            reply_markup={"inline_keyboard": keyboard},
+        )
+        return False
 
     def _find_sku(self, chat_id: str, query: str, *, show_period: bool = True) -> bool:
         data = self._load_data()
@@ -559,6 +836,8 @@ class TelegramReportMenu:
                 date_to=end_date,
                 category=state.category,
                 product_key=state.product_key,
+                brand=state.brand,
+                supplier=state.supplier,
                 with_file=True,
                 chat_id=chat_id,
             )
@@ -573,6 +852,8 @@ class TelegramReportMenu:
                         "date_to": end_date.isoformat(),
                         "category": state.category or "",
                         "product_key": state.product_key or "",
+                        "brand": state.brand or "",
+                        "supplier": state.supplier or "",
                         "sent_files": sent_files,
                     },
                 )

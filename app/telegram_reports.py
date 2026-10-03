@@ -49,6 +49,8 @@ class TelegramReportFile:
 TARGETED_TELEGRAM_REPORT_LABELS = {
     "summary": "Управленческая сводка",
     "categories": "Отчёт по категориям",
+    "brand": "Отчёт по бренду",
+    "supplier": "Отчёт по поставщику",
     "portfolio": "Портфель SKU",
     "sku": "Карточка SKU / артикула",
 }
@@ -293,6 +295,8 @@ def configure_telegram_commands() -> None:
         {"command": "menu", "description": "Открыть меню отчётов"},
         {"command": "summary", "description": "Управленческая сводка"},
         {"command": "categories", "description": "Отчёт по категориям"},
+        {"command": "brand", "description": "Отчёт по бренду"},
+        {"command": "supplier", "description": "Отчёт по поставщику"},
         {"command": "portfolio", "description": "Портфель SKU"},
         {"command": "sku", "description": "Карточка SKU или артикула"},
         {"command": "help", "description": "Помощь по командам"},
@@ -819,6 +823,8 @@ def _filter_targeted_sales_data(
     date_to: date,
     category: str | None = None,
     product_key: str | None = None,
+    brand: str | None = None,
+    supplier: str | None = None,
 ) -> pd.DataFrame:
     if data.empty or "date" not in data.columns:
         return pd.DataFrame(columns=data.columns)
@@ -846,6 +852,14 @@ def _filter_targeted_sales_data(
         filtered = filtered[
             filtered[identity_column].fillna("").astype(str).str.strip() == str(product_key).strip()
         ]
+
+    for column, selected_value in (("brand", brand), ("supplier", supplier)):
+        if not selected_value:
+            continue
+        if column not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        normalized = filtered[column].fillna("").astype(str).str.strip().replace("", "Не назначен")
+        filtered = filtered[normalized.str.casefold() == str(selected_value).strip().casefold()]
 
     return filtered.reset_index(drop=True)
 
@@ -890,12 +904,19 @@ def build_targeted_telegram_report(
     date_to: date,
     category: str | None = None,
     product_key: str | None = None,
+    brand: str | None = None,
+    supplier: str | None = None,
     include_file_note: bool = True,
+    procurement_forecast: pd.DataFrame | None = None,
 ) -> tuple[str, TelegramReportFile]:
     if report_kind not in TARGETED_TELEGRAM_REPORT_LABELS:
         raise ValueError("Выбран неизвестный тип Telegram-отчёта.")
     if report_kind == "sku" and not product_key:
         raise ValueError("Для карточки SKU выберите товар или артикул.")
+    if report_kind == "brand" and not brand:
+        raise ValueError("Для отчёта выберите бренд.")
+    if report_kind == "supplier" and not supplier:
+        raise ValueError("Для отчёта выберите поставщика.")
 
     start_date = pd.Timestamp(date_from).date()
     end_date = pd.Timestamp(date_to).date()
@@ -905,6 +926,8 @@ def build_targeted_telegram_report(
         date_to=end_date,
         category=category,
         product_key=product_key,
+        brand=brand,
+        supplier=supplier,
     )
     if filtered.empty:
         raise ValueError("За выбранный период и срез нет данных для отчёта.")
@@ -925,10 +948,40 @@ def build_targeted_telegram_report(
         date_to=previous_end,
         category=category,
         product_key=product_key,
+        brand=brand,
+        supplier=supplier,
     )
     previous_overview = build_overview_metrics(previous) if not previous.empty else {}
     revenue_change = _percentage_change(overview.get("total_revenue"), previous_overview.get("total_revenue"))
     margin_change = _percentage_change(overview.get("total_margin"), previous_overview.get("total_margin"))
+
+    scope_forecast = pd.DataFrame()
+    scope_procurement_overview: dict[str, float] = {}
+    scope_risks: dict[str, object] = {}
+    if report_kind in {"brand", "supplier"}:
+        forecast_source = (
+            procurement_forecast.copy()
+            if procurement_forecast is not None
+            else build_default_procurement_forecast(data)
+        )
+        scope_column = "brand" if report_kind == "brand" else "supplier"
+        scope_value = brand if report_kind == "brand" else supplier
+        if not forecast_source.empty and scope_column in forecast_source.columns:
+            normalized_scope = (
+                forecast_source[scope_column]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", "Не назначен")
+            )
+            scope_forecast = forecast_source[
+                normalized_scope.str.casefold() == str(scope_value).strip().casefold()
+            ].copy()
+        scope_procurement_overview = build_procurement_overview(scope_forecast)
+        scope_risks = build_procurement_stock_risk_frames(
+            scope_forecast,
+            total_window_days=max((end_date - start_date).days + 1, 30),
+        )
 
     report_label = TARGETED_TELEGRAM_REPORT_LABELS[report_kind]
     period_label = f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
@@ -938,6 +991,10 @@ def build_targeted_telegram_report(
     ]
     if category:
         message_lines.append(f"Категория: {escape(_short_label(category))}")
+    if brand:
+        message_lines.append(f"Бренд: {escape(_short_label(brand))}")
+    if supplier:
+        message_lines.append(f"Поставщик: {escape(_short_label(supplier))}")
 
     sku_label = ""
     if report_kind == "sku":
@@ -980,6 +1037,35 @@ def build_targeted_telegram_report(
                 f"{position}. {escape(_short_label(row.get('group_name')))}: "
                 f"{format_money_plain(row.get('revenue'))}; ABC {escape(str(row.get('abc_class', 'н/д')))}"
             )
+    elif report_kind in {"brand", "supplier"}:
+        shortage_frame = scope_risks.get("shortage", pd.DataFrame())
+        overstock_frame = scope_risks.get("overstock", pd.DataFrame())
+        stock_value = pd.to_numeric(
+            scope_forecast.get("stock_value", pd.Series(dtype="float64")),
+            errors="coerce",
+        ).fillna(0).sum()
+        stock_on_hand = pd.to_numeric(
+            scope_forecast.get("stock_on_hand", pd.Series(dtype="float64")),
+            errors="coerce",
+        ).fillna(0).sum()
+        message_lines.extend(
+            [
+                "",
+                "<b>Текущий склад и закупки</b>",
+                f"• Остаток: {format_number_plain(stock_on_hand)} шт. на {format_money_plain(stock_value)}",
+                f"• В пути: {format_number_plain(scope_procurement_overview.get('ordered_in_transit_qty_total'))} шт.",
+                f"• К заказу: {format_number_plain(scope_procurement_overview.get('recommended_order_qty_total'))} шт. "
+                f"по {format_number_plain(scope_procurement_overview.get('reorder_sku_count'))} SKU",
+                f"• Дефицит: {len(shortage_frame)} SKU; излишек: {len(overstock_frame)} SKU",
+                "",
+                "<b>SKU-лидеры по продажам</b>",
+            ]
+        )
+        for position, (_, row) in enumerate(portfolio_summary.head(5).iterrows(), start=1):
+            message_lines.append(
+                f"{position}. {escape(_short_label(row.get('group_name')))}: "
+                f"{format_money_plain(row.get('revenue'))}; маржа {format_percent_plain(row.get('margin_pct'))}"
+            )
     else:
         message_lines.extend(["", "<b>Динамика по месяцам</b>"])
         for _, row in monthly_summary.tail(4).iterrows():
@@ -997,6 +1083,8 @@ def build_targeted_telegram_report(
             {"Показатель": "Период с", "Значение": start_date.isoformat(), "Единица": ""},
             {"Показатель": "Период по", "Значение": end_date.isoformat(), "Единица": ""},
             {"Показатель": "Категория", "Значение": category or "Все категории", "Единица": ""},
+            {"Показатель": "Бренд", "Значение": brand or "Все бренды", "Единица": ""},
+            {"Показатель": "Поставщик", "Значение": supplier or "Все поставщики", "Единица": ""},
             {"Показатель": "SKU / артикул", "Значение": sku_label or "Все SKU", "Единица": ""},
             {"Показатель": "Выручка", "Значение": overview.get("total_revenue"), "Единица": "сом"},
             {"Показатель": "Валовая прибыль", "Значение": overview.get("total_margin"), "Единица": "сом"},
@@ -1005,6 +1093,19 @@ def build_targeted_telegram_report(
             {"Показатель": "SKU", "Значение": overview.get("product_count"), "Единица": ""},
             {"Показатель": "Изменение выручки", "Значение": revenue_change, "Единица": "%"},
             {"Показатель": "Изменение прибыли", "Значение": margin_change, "Единица": "%"},
+            {
+                "Показатель": "Стоимость текущего остатка",
+                "Значение": pd.to_numeric(
+                    scope_forecast.get("stock_value", pd.Series(dtype="float64")),
+                    errors="coerce",
+                ).fillna(0).sum(),
+                "Единица": "сом",
+            },
+            {
+                "Показатель": "Рекомендовано к заказу",
+                "Значение": scope_procurement_overview.get("recommended_order_qty_total", 0),
+                "Единица": "шт.",
+            },
         ]
     )
     monthly_sheet = _prepare_excel_frame(
@@ -1064,6 +1165,64 @@ def build_targeted_telegram_report(
             "cum_share_pct": "Накопительная доля, %",
         },
     )
+    procurement_columns = [
+        "product",
+        "category",
+        "supplier",
+        "brand",
+        "abc_class",
+        "xyz_class",
+        "priority",
+        "stock_status",
+        "stock_on_hand",
+        "stock_value",
+        "stock_in_transit",
+        "available_stock_qty",
+        "stock_coverage_days",
+        "forecast_qty",
+        "recommended_order_qty",
+        "last_sale_date",
+        "days_since_last_sale",
+    ]
+    procurement_rename_map = {
+        "product": "SKU / Товар",
+        "category": "Категория",
+        "supplier": "Поставщик",
+        "brand": "Бренд",
+        "abc_class": "ABC",
+        "xyz_class": "XYZ",
+        "priority": "Приоритет",
+        "stock_status": "Статус остатка",
+        "stock_on_hand": "Остаток",
+        "stock_value": "Стоимость остатка",
+        "stock_in_transit": "В пути",
+        "available_stock_qty": "Доступно",
+        "stock_coverage_days": "Покрытие, дней",
+        "forecast_qty": "Прогноз спроса, шт.",
+        "recommended_order_qty": "К заказу, шт.",
+        "last_sale_date": "Последняя продажа",
+        "days_since_last_sale": "Дней без продаж",
+    }
+    procurement_sheet = _prepare_excel_frame(
+        scope_forecast,
+        procurement_columns,
+        procurement_rename_map,
+    )
+    reorder_sheet = _prepare_excel_frame(
+        scope_risks.get("reorder", pd.DataFrame()),
+        procurement_columns,
+        procurement_rename_map,
+    )
+    shortage_sheet = _prepare_excel_frame(
+        scope_risks.get("shortage", pd.DataFrame()),
+        procurement_columns,
+        procurement_rename_map,
+    )
+    overstock_sheet = _prepare_excel_frame(
+        scope_risks.get("overstock", pd.DataFrame()),
+        procurement_columns,
+        procurement_rename_map,
+    )
 
     sheets: dict[str, pd.DataFrame] = {"Сводка": summary_sheet}
     if report_kind == "categories":
@@ -1103,10 +1262,58 @@ def build_targeted_telegram_report(
             },
         )
         sheets.update({"Карточка SKU": portfolio_sheet, "Динамика SKU": monthly_sheet, "Продажи SKU": detail_sheet})
+    elif report_kind in {"brand", "supplier"}:
+        detail_sheet = _prepare_excel_frame(
+            filtered.sort_values("date", ascending=False),
+            [
+                "date",
+                "salon",
+                "item_code",
+                "product",
+                "category",
+                "brand",
+                "supplier",
+                "manager",
+                "quantity",
+                "revenue",
+                "cost",
+                "margin",
+                "margin_pct",
+            ],
+            {
+                "date": "Дата",
+                "salon": "Салон",
+                "item_code": "Артикул",
+                "product": "Товар",
+                "category": "Категория",
+                "brand": "Бренд",
+                "supplier": "Поставщик",
+                "manager": "Менеджер",
+                "quantity": "Количество",
+                "revenue": "Выручка",
+                "cost": "Себестоимость",
+                "margin": "Валовая прибыль",
+                "margin_pct": "Маржинальность, %",
+            },
+        )
+        sheets.update(
+            {
+                "Портфель SKU": portfolio_sheet,
+                "Динамика": monthly_sheet,
+                "Остатки и прогноз": procurement_sheet,
+                "К заказу": reorder_sheet,
+                "Дефицит": shortage_sheet,
+                "Излишки": overstock_sheet,
+                "Продажи": detail_sheet,
+            }
+        )
     else:
         sheets.update({"Динамика": monthly_sheet, "Категории": category_sheet, "Портфель SKU": portfolio_sheet})
 
-    filename = f"artdb_{report_kind}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx"
+    scope_filename = brand or supplier or ""
+    safe_scope_filename = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", scope_filename).strip("_")[:40]
+    scope_suffix = f"_{safe_scope_filename}" if safe_scope_filename else ""
+    filename = f"artdb_{report_kind}{scope_suffix}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx"
     report_file = TelegramReportFile(
         filename=filename,
         content=_export_excel_workbook(sheets),
@@ -1124,6 +1331,8 @@ def send_targeted_telegram_report(
     date_to: date,
     category: str | None = None,
     product_key: str | None = None,
+    brand: str | None = None,
+    supplier: str | None = None,
     with_file: bool = True,
     chat_id: str | None = None,
 ) -> int:
@@ -1134,6 +1343,8 @@ def send_targeted_telegram_report(
         date_to=date_to,
         category=category,
         product_key=product_key,
+        brand=brand,
+        supplier=supplier,
         include_file_note=with_file,
     )
     send_telegram_message(message, chat_id=chat_id)

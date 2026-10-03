@@ -131,6 +131,7 @@ class TargetedTelegramReportTests(unittest.TestCase):
                     "product_key": "A-1",
                     "product": "Плита Дуб",
                     "category": "ЛДСП",
+                    "brand": "Egger",
                     "supplier": "Slotex",
                     "manager": "Айбек",
                     "quantity": 1.0,
@@ -146,6 +147,7 @@ class TargetedTelegramReportTests(unittest.TestCase):
                     "product_key": "A-1",
                     "product": "Плита Дуб",
                     "category": "ЛДСП",
+                    "brand": "Egger",
                     "supplier": "Slotex",
                     "manager": "Айбек",
                     "quantity": 2.0,
@@ -161,6 +163,7 @@ class TargetedTelegramReportTests(unittest.TestCase):
                     "product_key": "B-2",
                     "product": "Петля <15 мм",
                     "category": "Фурнитура",
+                    "brand": "Hettich",
                     "supplier": "Hettich",
                     "manager": "Бек",
                     "quantity": 4.0,
@@ -225,6 +228,55 @@ class TargetedTelegramReportTests(unittest.TestCase):
         )
 
         self.assertNotIn("Excel-файле", message)
+
+    def test_supplier_report_includes_inventory_and_reorder_sheets(self) -> None:
+        forecast = pd.DataFrame(
+            [
+                {
+                    "product": "Плита Дуб",
+                    "category": "ЛДСП",
+                    "supplier": "Slotex",
+                    "brand": "Egger",
+                    "abc_class": "A",
+                    "xyz_class": "X",
+                    "priority": "Критичный",
+                    "stock_status": "Риск дефицита",
+                    "forecast_qty": 10.0,
+                    "stock_on_hand": 2.0,
+                    "stock_value": 500.0,
+                    "manual_stock_in_transit": 0.0,
+                    "ordered_in_transit_qty": 1.0,
+                    "stock_in_transit": 1.0,
+                    "available_stock_qty": 3.0,
+                    "stock_coverage_days": 12.0,
+                    "coverage_requirement_qty": 10.0,
+                    "gross_requirement_qty": 12.0,
+                    "net_requirement_qty": 9.0,
+                    "recommended_order_qty": 9.0,
+                    "lead_time_days": 14,
+                    "last_sale_date": pd.Timestamp("2026-07-05"),
+                    "days_since_last_sale": 2,
+                    "forecast_revenue": 1500.0,
+                }
+            ]
+        )
+
+        message, report_file = build_targeted_telegram_report(
+            self.sales,
+            report_kind="supplier",
+            date_from=date(2026, 7, 1),
+            date_to=date(2026, 7, 31),
+            supplier="Slotex",
+            procurement_forecast=forecast,
+        )
+
+        self.assertIn("Поставщик: Slotex", message)
+        self.assertIn("500 сом", message)
+        workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
+        self.assertIn("Остатки и прогноз", workbook.sheetnames)
+        self.assertIn("К заказу", workbook.sheetnames)
+        self.assertEqual(len(list(workbook["К заказу"].iter_rows(values_only=True))), 2)
+        workbook.close()
 
 
 if __name__ == "__main__":

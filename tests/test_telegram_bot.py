@@ -13,7 +13,12 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from telegram_bot import TelegramReportMenu, parse_date_range, resolve_report_period
+from telegram_bot import (
+    TelegramReportMenu,
+    _enrich_sales_catalog,
+    parse_date_range,
+    resolve_report_period,
+)
 
 
 def message_update(text: str, *, chat_id: int = 123, sender_id: int = 77) -> dict[str, object]:
@@ -75,6 +80,8 @@ class TelegramBotMenuTests(unittest.TestCase):
                     "product_key": "A-1",
                     "product": "Плита Дуб",
                     "category": "ЛДСП",
+                    "brand": "Egger",
+                    "supplier": "Slotex",
                     "quantity": 2.0,
                     "revenue": 300.0,
                     "cost": 180.0,
@@ -93,6 +100,8 @@ class TelegramBotMenuTests(unittest.TestCase):
         button_labels = [button["text"] for row in reply_markup["keyboard"] for button in row]
         self.assertIn("Сводка", button_labels)
         self.assertIn("Карточка SKU", button_labels)
+        self.assertIn("Бренды", button_labels)
+        self.assertIn("Поставщики", button_labels)
 
     def test_unauthorized_chat_is_ignored(self) -> None:
         menu = TelegramReportMenu(data_loader=lambda: self.sales)
@@ -118,6 +127,39 @@ class TelegramBotMenuTests(unittest.TestCase):
         self.assertEqual(send_report.call_args.kwargs["date_from"], date(2026, 9, 1))
         self.assertEqual(send_report.call_args.kwargs["date_to"], date(2026, 9, 30))
         self.assertEqual(send_report.call_args.kwargs["chat_id"], "123")
+
+    def test_supplier_command_runs_report_for_selected_supplier(self) -> None:
+        menu = TelegramReportMenu(data_loader=lambda: self.sales)
+        with (
+            patch("telegram_bot.send_telegram_message"),
+            patch("telegram_bot.send_targeted_telegram_report", return_value=1) as send_report,
+            patch("telegram_bot.log_audit_event"),
+        ):
+            menu.handle_update(
+                message_update("/supplier Slotex 01.09.2026 30.09.2026"),
+                allowed_chat_id="123",
+            )
+
+        self.assertEqual(send_report.call_args.kwargs["report_kind"], "supplier")
+        self.assertEqual(send_report.call_args.kwargs["supplier"], "Slotex")
+        self.assertIsNone(send_report.call_args.kwargs["brand"])
+
+    def test_manual_supplier_assignment_overrides_imported_supplier(self) -> None:
+        catalog = pd.DataFrame(
+            [{"product": "Плита Дуб", "supplier": "Old", "brand": "Egger"}]
+        )
+        assignments = pd.DataFrame(
+            [{"product_key": "A-1", "product": "Плита Дуб", "supplier": "Slotex"}]
+        )
+
+        enriched = _enrich_sales_catalog(
+            self.sales,
+            procurement_items=catalog,
+            supplier_product_assignments=assignments,
+        )
+
+        self.assertEqual(enriched.iloc[0]["supplier"], "Slotex")
+        self.assertEqual(enriched.iloc[0]["brand"], "Egger")
 
     def test_selected_sku_keeps_dates_from_command(self) -> None:
         sales = pd.concat(

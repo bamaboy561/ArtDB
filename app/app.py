@@ -8212,6 +8212,21 @@ with st.sidebar:
                 else:
                     telegram_sku_options = []
 
+                telegram_scope_options: list[str] = []
+                telegram_scope_column = ""
+                telegram_scope_label = ""
+                if telegram_report_kind in {"brand", "supplier"}:
+                    telegram_scope_column = "brand" if telegram_report_kind == "brand" else "supplier"
+                    telegram_scope_label = "Бренд" if telegram_report_kind == "brand" else "Поставщик"
+                    if telegram_scope_column in data.columns:
+                        telegram_scope_options = sorted(
+                            {
+                                str(value).strip() or "Не назначен"
+                                for value in data[telegram_scope_column].fillna("").tolist()
+                            },
+                            key=lambda value: (value.casefold() == "не назначен", value.casefold()),
+                        )
+
                 with st.form("telegram_target_report_form", clear_on_submit=False):
                     telegram_period = st.date_input(
                         "Период отчёта",
@@ -8229,6 +8244,13 @@ with st.sidebar:
                             key="telegram_target_sku",
                             placeholder="Выберите товар из результатов поиска",
                         )
+                    telegram_scope_value = None
+                    if telegram_report_kind in {"brand", "supplier"}:
+                        telegram_scope_value = st.selectbox(
+                            telegram_scope_label,
+                            options=telegram_scope_options,
+                            placeholder=f"Выберите: {telegram_scope_label.casefold()}",
+                        )
                     telegram_attach_excel = st.checkbox(
                         "Приложить Excel с детализацией",
                         value=True,
@@ -8236,7 +8258,11 @@ with st.sidebar:
                     telegram_report_submitted = st.form_submit_button(
                         "Сформировать и отправить",
                         width="stretch",
-                        disabled=not telegram_ready or (telegram_report_kind == "sku" and not telegram_sku_options),
+                        disabled=(
+                            not telegram_ready
+                            or (telegram_report_kind == "sku" and not telegram_sku_options)
+                            or (telegram_report_kind in {"brand", "supplier"} and not telegram_scope_options)
+                        ),
                     )
 
                 if telegram_report_submitted:
@@ -8252,6 +8278,8 @@ with st.sidebar:
                                     date_to=telegram_period[1],
                                     category=telegram_category or None,
                                     product_key=telegram_product_key,
+                                    brand=telegram_scope_value if telegram_report_kind == "brand" else None,
+                                    supplier=telegram_scope_value if telegram_report_kind == "supplier" else None,
                                     with_file=telegram_attach_excel,
                                 )
                             audit_event(
@@ -8263,6 +8291,8 @@ with st.sidebar:
                                     "date_to": telegram_period[1].isoformat(),
                                     "category": telegram_category or "",
                                     "product_key": telegram_product_key or "",
+                                    "brand": telegram_scope_value if telegram_report_kind == "brand" else "",
+                                    "supplier": telegram_scope_value if telegram_report_kind == "supplier" else "",
                                     "sent_files": int(sent_files),
                                 },
                             )

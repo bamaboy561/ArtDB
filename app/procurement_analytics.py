@@ -568,6 +568,7 @@ def build_procurement_stock_risk_frames(
         "forecast_qty",
         "avg_daily_qty",
         "stock_on_hand",
+        "stock_value",
         "manual_stock_in_transit",
         "ordered_in_transit_qty",
         "stock_in_transit",
