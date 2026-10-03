@@ -27,8 +27,10 @@ class DataQualityReport:
     dropped_rows: int
     issues: tuple[DataQualityIssue, ...]
     problem_rows: pd.DataFrame
+    processing_metrics: dict[str, object]
     catalog_metrics: dict[str, float]
-    reconciliation_metrics: dict[str, float]
+    reconciliation_metrics: dict[str, object]
+    archive_metrics: dict[str, object]
 
     @property
     def can_save(self) -> bool:
@@ -109,6 +111,9 @@ def analyze_sales_quality(
     expected_report_date: date | None = None,
     include_margin_checks: bool = True,
     today: date | None = None,
+    archive_manifest: pd.DataFrame | None = None,
+    salon_name: str = "",
+    replace_existing: bool = True,
 ) -> DataQualityReport:
     today = today or date.today()
     issues: list[DataQualityIssue] = []
@@ -116,7 +121,20 @@ def analyze_sales_quality(
     raw_rows = int(len(raw_frame))
     prepared_rows = int(len(prepared_frame))
     dropped_rows = max(raw_rows - prepared_rows, 0)
-    reconciliation_metrics: dict[str, float] = {}
+    reconciliation_metrics: dict[str, object] = {}
+    processing_metrics: dict[str, object] = {
+        "duplicate_rows": 0,
+        "period_start": None,
+        "period_end": None,
+        "period_days": 0,
+        "unassigned_supplier_rows": 0,
+        "unassigned_supplier_products": 0,
+    }
+    archive_metrics: dict[str, object] = {
+        "matching_uploads": 0,
+        "overlapping_uploads": 0,
+        "will_replace": False,
+    }
 
     if dropped_rows:
         dropped_share = dropped_rows / max(raw_rows, 1) * 100
@@ -215,8 +233,10 @@ def analyze_sales_quality(
             dropped_rows,
             tuple(issues),
             pd.DataFrame(),
+            processing_metrics,
             {},
             reconciliation_metrics,
+            archive_metrics,
         )
 
     frame = prepared_frame.copy()
@@ -225,27 +245,109 @@ def analyze_sales_quality(
         if numeric_column in frame.columns:
             frame[numeric_column] = pd.to_numeric(frame[numeric_column], errors="coerce")
 
+    valid_dates = frame["date"].dropna()
+    if not valid_dates.empty:
+        processing_metrics.update(
+            {
+                "period_start": valid_dates.min().date(),
+                "period_end": valid_dates.max().date(),
+                "period_days": int(valid_dates.dt.date.nunique()),
+            }
+        )
+
     source_totals = raw_frame.attrs.get("sales_report_totals", {})
-    if isinstance(source_totals, dict) and source_totals.get("total") is not None:
-        source_total = float(source_totals["total"])
-        accepted_total = float(frame["revenue"].sum())
+    accepted_total = float(frame["revenue"].sum())
+    has_report_total = isinstance(source_totals, dict) and source_totals.get("total") is not None
+    has_mapped_revenue = mapping.get("revenue") and mapping.get("revenue") in raw_frame.columns
+    if has_report_total or has_mapped_revenue:
+        source_total = float(source_totals["total"]) if has_report_total else float(raw_revenue.dropna().sum())
         difference = accepted_total - source_total
+        tolerance = max(0.01, abs(source_total) * 0.000001)
         reconciliation_metrics = {
             "source_total": source_total,
             "accepted_total": accepted_total,
             "difference": difference,
-            "source_income": float(source_totals.get("income") or 0.0),
-            "vat": float(source_totals.get("vat") or 0.0),
-            "sales_tax": float(source_totals.get("sales_tax") or 0.0),
+            "source_income": float(source_totals.get("income") or 0.0) if isinstance(source_totals, dict) else 0.0,
+            "vat": float(source_totals.get("vat") or 0.0) if isinstance(source_totals, dict) else 0.0,
+            "sales_tax": float(source_totals.get("sales_tax") or 0.0) if isinstance(source_totals, dict) else 0.0,
+            "source_kind": "report_total" if has_report_total else "mapped_column",
         }
-        if abs(difference) > 0.01:
+        if abs(difference) > tolerance:
+            severity = "blocker" if has_report_total else "warning"
+            source_description = "строке `Итого`" if has_report_total else "исходной колонке выручки"
             issues.append(
                 DataQualityIssue(
-                    "blocker",
-                    "Итог файла не сходится",
-                    f"В строке `Итого` указано {source_total:,.2f}, а в анализ попадает {accepted_total:,.2f}. Разница: {difference:,.2f}.",
+                    severity,
+                    "Итог файла не сходится" if has_report_total else "Сумма изменилась после очистки",
+                    f"В {source_description} сумма равна {source_total:,.2f}, а в анализ попадает {accepted_total:,.2f}. Разница: {difference:,.2f}.",
                     1,
-                    "Файл не будет сохранён, пока программа не сможет собрать его без потерь или повторного подсчёта.",
+                    (
+                        "Файл не будет сохранён, пока программа не сможет собрать его без потерь или повторного подсчёта."
+                        if has_report_total
+                        else "Проверьте исключённые служебные и пустые строки перед подтверждением загрузки."
+                    ),
+                )
+            )
+
+    if archive_manifest is not None and not archive_manifest.empty and salon_name.strip():
+        manifest = archive_manifest.copy()
+        salon_values = manifest.get("salon", pd.Series("", index=manifest.index)).fillna("").astype(str)
+        salon_mask = salon_values.str.strip().str.casefold().eq(salon_name.strip().casefold())
+        manifest_dates = pd.to_datetime(
+            manifest.get("report_date", pd.Series(pd.NaT, index=manifest.index)),
+            errors="coerce",
+        ).dt.date
+        if expected_report_date is not None:
+            matching_mask = salon_mask & manifest_dates.eq(expected_report_date)
+        else:
+            matching_mask = pd.Series(False, index=manifest.index)
+        matching_uploads = int(matching_mask.sum())
+
+        period_start = processing_metrics.get("period_start")
+        period_end = processing_metrics.get("period_end")
+        if isinstance(period_start, date) and isinstance(period_end, date):
+            overlapping_mask = salon_mask & manifest_dates.ge(period_start) & manifest_dates.le(period_end)
+            overlapping_uploads = int(overlapping_mask.sum())
+        else:
+            overlapping_uploads = 0
+
+        archive_metrics.update(
+            {
+                "matching_uploads": matching_uploads,
+                "overlapping_uploads": overlapping_uploads,
+                "will_replace": bool(matching_uploads and replace_existing),
+            }
+        )
+
+        if matching_uploads and expected_report_date is not None:
+            replacement_text = (
+                "При сохранении предыдущий файл за эту дату будет заменён."
+                if replace_existing
+                else "Сохранение без замены создаст конфликт даты в архиве."
+            )
+            issues.append(
+                DataQualityIssue(
+                    "warning" if replace_existing else "blocker",
+                    "За эту дату уже есть файл",
+                    f"В архиве салона найдено загрузок за {expected_report_date.strftime('%d.%m.%Y')}: {matching_uploads}. {replacement_text}",
+                    matching_uploads,
+                    (
+                        "Подтвердите, что выбран правильный салон и дата отчёта."
+                        if replace_existing
+                        else "Включите замену существующего файла или выберите другую дату отчёта."
+                    ),
+                )
+            )
+
+        other_overlaps = max(overlapping_uploads - matching_uploads, 0)
+        if other_overlaps and int(processing_metrics.get("period_days", 0)) > 1:
+            issues.append(
+                DataQualityIssue(
+                    "warning",
+                    "Период пересекается с архивом",
+                    f"Внутри периода файла уже есть других архивных загрузок: {other_overlaps}.",
+                    other_overlaps,
+                    "Проверьте, что это не повторная месячная выгрузка поверх ежедневных отчётов.",
                 )
             )
 
@@ -376,13 +478,14 @@ def analyze_sales_quality(
     duplicate_columns = [column for column in ["date", duplicate_product_column, "manager", "quantity", "revenue"] if column in frame.columns]
     if duplicate_columns:
         duplicate_mask = frame.duplicated(subset=duplicate_columns, keep=False)
-        duplicate_count = int(duplicate_mask.sum())
+        duplicate_count = int(frame.duplicated(subset=duplicate_columns, keep="first").sum())
+        processing_metrics["duplicate_rows"] = duplicate_count
         if duplicate_count:
             issues.append(
                 DataQualityIssue(
-                    "info",
+                    "warning",
                     "Есть похожие дубли",
-                    f"Повторяющихся строк по дате, товару, менеджеру, количеству и выручке: {duplicate_count}.",
+                    f"Лишних повторов по дате, товару, менеджеру, количеству и выручке: {duplicate_count}.",
                     duplicate_count,
                     "Если выгрузка уже агрегирована, это нормально; если это строки чеков, стоит проверить повторы.",
                 )
@@ -401,6 +504,30 @@ def analyze_sales_quality(
         "matched_catalog_products": float(len(product_keys & catalog_keys)) if catalog_keys else 0.0,
         "new_products": float(len(product_keys - catalog_keys)) if catalog_keys else float(len(product_keys)),
     }
+
+    suppliers = frame.get("supplier", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    missing_supplier_mask = suppliers.eq("") | suppliers.str.casefold().eq("не назначен")
+    missing_supplier_rows = int(missing_supplier_mask.sum())
+    missing_supplier_products = int(
+        frame.loc[missing_supplier_mask, duplicate_product_column]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .nunique()
+    )
+    processing_metrics["unassigned_supplier_rows"] = missing_supplier_rows
+    processing_metrics["unassigned_supplier_products"] = missing_supplier_products
+    if missing_supplier_rows:
+        issues.append(
+            DataQualityIssue(
+                "warning",
+                "Не всем товарам назначен поставщик",
+                f"Без поставщика: {missing_supplier_products} SKU в {missing_supplier_rows} строках продаж.",
+                missing_supplier_products,
+                "Продажи сохранятся, но аналитика поставщиков и автозаказ будут неполными.",
+            )
+        )
     if not catalog_keys:
         issues.append(
             DataQualityIssue(
@@ -434,8 +561,10 @@ def analyze_sales_quality(
         dropped_rows=dropped_rows,
         issues=tuple(issues),
         problem_rows=problem_frame,
+        processing_metrics=processing_metrics,
         catalog_metrics=catalog_metrics,
         reconciliation_metrics=reconciliation_metrics,
+        archive_metrics=archive_metrics,
     )
 
 

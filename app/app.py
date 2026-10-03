@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import date
 from html import escape
@@ -2892,35 +2893,78 @@ def render_data_quality_report(report, current_user: dict[str, str]) -> None:
         taxes = float(reconciliation.get("vat", 0.0) or 0.0) + float(
             reconciliation.get("sales_tax", 0.0) or 0.0
         )
-        st.markdown("**Сверка суммы с отчетом 1С**")
-        render_snapshot_strip(
-            [
-                {
-                    "label": "Итого в 1С",
-                    "value": format_money(reconciliation.get("source_total", 0.0)),
-                    "hint": "Колонка «Всего»",
-                    "tone": "info",
-                },
-                {
-                    "label": "Принято в анализ",
-                    "value": format_money(reconciliation.get("accepted_total", 0.0)),
-                    "hint": "После очистки служебных строк",
-                    "tone": "success" if abs(difference) <= 0.01 else "danger",
-                },
-                {
-                    "label": "Доход без налогов",
-                    "value": format_money(reconciliation.get("source_income", 0.0)),
-                    "hint": "Колонка «Доход»",
-                    "tone": "info",
-                },
+        source_kind = str(reconciliation.get("source_kind", "report_total"))
+        st.markdown("**Сверка суммы до и после очистки**")
+        reconciliation_cards = [
+            {
+                "label": "Итого в 1С" if source_kind == "report_total" else "Сумма в исходном файле",
+                "value": format_money(reconciliation.get("source_total", 0.0)),
+                "hint": "Строка «Итого»" if source_kind == "report_total" else "Выбранная колонка выручки",
+                "tone": "info",
+            },
+            {
+                "label": "Принято в анализ",
+                "value": format_money(reconciliation.get("accepted_total", 0.0)),
+                "hint": "После очистки служебных строк",
+                "tone": "success" if abs(difference) <= 0.01 else "danger",
+            },
+            {
+                "label": "Расхождение",
+                "value": format_money(difference),
+                "hint": "Должно быть равно нулю",
+                "tone": "success" if abs(difference) <= 0.01 else "danger",
+            },
+        ]
+        if source_kind == "report_total":
+            reconciliation_cards.append(
                 {
                     "label": "НДС и НСП",
                     "value": format_money(taxes),
-                    "hint": f"Расхождение сверки: {format_money(difference)}",
-                    "tone": "success" if abs(difference) <= 0.01 else "danger",
-                },
-            ]
+                    "hint": f"Доход без налогов: {format_money(reconciliation.get('source_income', 0.0))}",
+                    "tone": "info",
+                }
+            )
+        render_snapshot_strip(reconciliation_cards)
+
+    processing = report.processing_metrics
+    archive = report.archive_metrics
+    period_start = processing.get("period_start")
+    period_end = processing.get("period_end")
+    period_text = "Не определён"
+    if isinstance(period_start, date) and isinstance(period_end, date):
+        period_text = (
+            period_start.strftime("%d.%m.%Y")
+            if period_start == period_end
+            else f"{period_start.strftime('%d.%m.%Y')} - {period_end.strftime('%d.%m.%Y')}"
         )
+    render_snapshot_strip(
+        [
+            {
+                "label": "Период файла",
+                "value": period_text,
+                "hint": f"Дней с продажами: {format_number(processing.get('period_days', 0))}",
+                "tone": "info",
+            },
+            {
+                "label": "Похожие дубли",
+                "value": format_number(processing.get("duplicate_rows", 0)),
+                "hint": "Лишние повторяющиеся строки",
+                "tone": "success" if not processing.get("duplicate_rows") else "warning",
+            },
+            {
+                "label": "Без поставщика",
+                "value": format_number(processing.get("unassigned_supplier_products", 0)),
+                "hint": "SKU требуют назначения",
+                "tone": "success" if not processing.get("unassigned_supplier_products") else "warning",
+            },
+            {
+                "label": "Совпадения в архиве",
+                "value": format_number(archive.get("matching_uploads", 0)),
+                "hint": "Файлов за выбранную дату",
+                "tone": "success" if not archive.get("matching_uploads") else "warning",
+            },
+        ]
+    )
 
     if report.issues:
         issue_rows = [
@@ -2947,6 +2991,65 @@ def render_data_quality_report(report, current_user: dict[str, str]) -> None:
                 hide_index=True,
                 height=280,
             )
+
+
+def build_data_quality_protocol_sheets(
+    report,
+    current_user: dict[str, str],
+    *,
+    filename: str,
+    salon_name: str,
+    report_date: date | None,
+) -> dict[str, pd.DataFrame]:
+    status_label = {"ok": "Готов", "warning": "Требует подтверждения", "blocked": "Заблокирован"}.get(
+        report.status,
+        report.status,
+    )
+    processing = report.processing_metrics
+    archive = report.archive_metrics
+    reconciliation = report.reconciliation_metrics
+    summary_rows = [
+        {"Показатель": "Статус", "Значение": status_label},
+        {"Показатель": "Индекс качества", "Значение": report.score},
+        {"Показатель": "Файл", "Значение": filename},
+        {"Показатель": "Салон", "Значение": salon_name or "Разовый анализ"},
+        {"Показатель": "Дата сохранения", "Значение": report_date.strftime("%d.%m.%Y") if report_date else "Не сохраняется"},
+        {"Показатель": "Строк в исходном файле", "Значение": report.raw_rows},
+        {"Показатель": "Строк принято", "Значение": report.prepared_rows},
+        {"Показатель": "Строк исключено", "Значение": report.dropped_rows},
+        {"Показатель": "Похожих дублей", "Значение": processing.get("duplicate_rows", 0)},
+        {"Показатель": "SKU без поставщика", "Значение": processing.get("unassigned_supplier_products", 0)},
+        {"Показатель": "Файлов за выбранную дату", "Значение": archive.get("matching_uploads", 0)},
+    ]
+    if reconciliation:
+        summary_rows.extend(
+            [
+                {"Показатель": "Сумма в источнике", "Значение": reconciliation.get("source_total", 0.0)},
+                {"Показатель": "Сумма принята", "Значение": reconciliation.get("accepted_total", 0.0)},
+                {"Показатель": "Расхождение", "Значение": reconciliation.get("difference", 0.0)},
+            ]
+        )
+
+    issue_rows = [
+        {
+            "Уровень": {"blocker": "Критично", "warning": "Проверить", "info": "Инфо"}.get(
+                issue.severity,
+                issue.severity,
+            ),
+            "Проблема": issue.title,
+            "Строк": issue.count,
+            "Что значит": issue.detail,
+            "Что сделать": issue.action,
+        }
+        for issue in report.issues
+    ]
+    sheets = {
+        "Протокол": pd.DataFrame(summary_rows),
+        "Проверки": pd.DataFrame(issue_rows),
+    }
+    if not report.problem_rows.empty:
+        sheets["Проблемные строки"] = format_display_frame_for_role(report.problem_rows, current_user)
+    return sheets
 
 
 SCREEN_NAV_LABELS = {
@@ -3223,6 +3326,7 @@ def save_upload_with_feedback(
     replace_existing: bool,
     actor_username: str = "",
     parsed_data: pd.DataFrame | None = None,
+    quality_summary: dict[str, object] | None = None,
 ) -> None:
     save_salon(salon_name)
     save_result = register_upload(
@@ -3257,6 +3361,7 @@ def save_upload_with_feedback(
             "replace_existing": replace_existing,
             "replaced_count": int(save_result["replaced"]),
             "upload_id": str(save_result["record"].get("upload_id", "")),
+            "quality_protocol": quality_summary or {},
         },
     )
 
@@ -7461,14 +7566,37 @@ if work_mode in upload_modes:
                 if work_mode in {"Новая выгрузка", "Загрузка салона"} and current_file_report_date == date.today():
                     current_file_report_date = auto_detected_report_date
 
-            quality_expected_date = current_file_report_date if work_mode in {"Новая выгрузка", "Загрузка салона"} else None
+            upload_fingerprint = hashlib.sha256(file_bytes).hexdigest()[:12]
+            if work_mode in {"Новая выгрузка", "Загрузка салона"}:
+                upload_context_key = f"{work_mode}:{selected_salon_name}:{upload_fingerprint}"
+                if st.session_state.get("quality_upload_context") != upload_context_key:
+                    st.session_state["quality_upload_context"] = upload_context_key
+                    st.session_state["final_save_date"] = current_file_report_date
+                    st.session_state["final_save_replace"] = replace_existing_upload
+                quality_expected_date = st.session_state.get("final_save_date", current_file_report_date)
+                quality_replace_existing = bool(
+                    st.session_state.get("final_save_replace", replace_existing_upload)
+                )
+            else:
+                quality_expected_date = None
+                quality_replace_existing = False
+            quality_procurement_items = load_procurement_items()
+            quality_prepared_data = enrich_sales_with_supplier(
+                prepared_result.data,
+                quality_procurement_items,
+                supplier_rule_items=supplier_rule_items,
+                supplier_product_assignments=supplier_product_assignments,
+            )
             quality_report = analyze_sales_quality(
                 raw_data,
-                prepared_result.data,
+                quality_prepared_data,
                 selected_mapping,
-                procurement_items=load_procurement_items(),
+                procurement_items=quality_procurement_items,
                 expected_report_date=quality_expected_date,
                 include_margin_checks=can_view_margin(current_user),
+                archive_manifest=manifest_view,
+                salon_name=selected_salon_name,
+                replace_existing=quality_replace_existing,
             )
             with st.container(border=True):
                 render_panel_header(
@@ -7476,6 +7604,24 @@ if work_mode in upload_modes:
                     "Проверяем даты, товары, выручку, количество, дубли и связь со справочником перед сохранением.",
                 )
                 render_data_quality_report(quality_report, current_user)
+                quality_protocol_sheets = build_data_quality_protocol_sheets(
+                    quality_report,
+                    current_user,
+                    filename=filename,
+                    salon_name=selected_salon_name,
+                    report_date=quality_expected_date,
+                )
+                st.download_button(
+                    "Скачать протокол проверки",
+                    data=to_excel_report_bytes(
+                        quality_protocol_sheets,
+                        report_title=f"Контроль загрузки: {filename}",
+                    ),
+                    file_name=f"data_quality_{upload_fingerprint}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"download_quality_protocol_{upload_fingerprint}",
+                    use_container_width=True,
+                )
 
             if work_mode in {"Новая выгрузка", "Загрузка салона"}:
                 render_panel_header(
@@ -7490,11 +7636,10 @@ if work_mode in upload_modes:
                 else:
                     settings_left, settings_right = st.columns([1.25, 0.95], gap="medium")
                     with settings_left:
-                        target_date = st.date_input("Дата отчёта", value=current_file_report_date, key="final_save_date")
+                        target_date = st.date_input("Дата отчёта", key="final_save_date")
                     with settings_right:
                         replace_check = st.checkbox(
                             "Заменить существующий файл за эту дату",
-                            value=replace_existing_upload,
                             key="final_save_replace",
                         )
 
@@ -7506,9 +7651,19 @@ if work_mode in upload_modes:
                         st.caption(f"Строк после подготовки: {format_number(len(prepared_result.data))}")
                         st.caption(f"Распознано полей: {sum(1 for value in selected_mapping.values() if value)}")
 
-                    save_disabled = quality_report is not None and not quality_report.can_save
-                    if save_disabled:
+                    quality_confirmed = quality_report.status != "warning"
+                    if quality_report.status == "warning":
+                        quality_confirmed = st.checkbox(
+                            "Я проверил предупреждения, суммы, дату и подтверждаю сохранение файла",
+                            value=False,
+                            key=f"quality_confirm_{upload_fingerprint}_{target_date.isoformat()}",
+                        )
+
+                    save_disabled = not quality_report.can_save or not quality_confirmed
+                    if not quality_report.can_save:
                         st.error("Сохранение отключено до исправления критичных ошибок качества данных.")
+                    elif not quality_confirmed:
+                        st.info("Подтвердите протокол проверки, чтобы сохранить файл с предупреждениями.")
 
                     if st.button(
                         "🚀 Сохранить в архив",
@@ -7529,6 +7684,25 @@ if work_mode in upload_modes:
                             replace_existing=replace_check,
                             actor_username=current_user["username"],
                             parsed_data=raw_data,
+                            quality_summary={
+                                "status": quality_report.status,
+                                "score": int(quality_report.score),
+                                "raw_rows": int(quality_report.raw_rows),
+                                "prepared_rows": int(quality_report.prepared_rows),
+                                "dropped_rows": int(quality_report.dropped_rows),
+                                "duplicate_rows": int(quality_report.processing_metrics.get("duplicate_rows", 0)),
+                                "unassigned_supplier_products": int(
+                                    quality_report.processing_metrics.get("unassigned_supplier_products", 0)
+                                ),
+                                "matching_archive_uploads": int(
+                                    quality_report.archive_metrics.get("matching_uploads", 0)
+                                ),
+                                "revenue_difference": float(
+                                    quality_report.reconciliation_metrics.get("difference", 0.0) or 0.0
+                                ),
+                                "warnings_confirmed": bool(quality_confirmed),
+                                "issues": [issue.title for issue in quality_report.issues],
+                            },
                         )
                         st.rerun()
 
