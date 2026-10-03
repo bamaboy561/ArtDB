@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -127,11 +127,12 @@ from supplier_rules_store import (
     upsert_supplier_product_assignments,
 )
 from telegram_reports import (
+    TARGETED_TELEGRAM_REPORT_LABELS,
     build_supplier_order_file,
     discover_telegram_chats,
     get_telegram_bot_profile,
+    send_targeted_telegram_report,
     send_telegram_message,
-    send_telegram_report_pack,
     telegram_is_configured,
 )
 from telegram_scheduler import start_telegram_scheduler
@@ -8112,23 +8113,161 @@ with st.sidebar:
             telegram_ready = telegram_is_configured() if not telegram_settings_error else False
             if not telegram_ready:
                 st.info("Для отправки нужен токен бота и выбранный Chat ID.")
-            if st.button(
-                "Отправить отчёт в Telegram",
-                key="telegram_send_report_button",
-                use_container_width=True,
-                disabled=not telegram_ready,
-            ):
-                try:
-                    with st.spinner("Отправляю отчёт в Telegram..."):
-                        sent_files = send_telegram_report_pack(with_files=True)
-                    audit_event(
-                        action="telegram.report_send",
-                        user_id=current_user["username"],
-                        details={"sent_files": int(sent_files)},
+
+            st.markdown("**Конструктор отчёта**")
+            st.caption("Выберите период и нужный срез. В Telegram придёт краткая сводка и один Excel-файл.")
+            telegram_report_kind = st.selectbox(
+                "Вид отчёта",
+                options=list(TARGETED_TELEGRAM_REPORT_LABELS),
+                format_func=lambda value: TARGETED_TELEGRAM_REPORT_LABELS[value],
+                key="telegram_target_report_kind",
+            )
+
+            telegram_category_values = []
+            if "category" in data.columns:
+                telegram_category_values = sorted(
+                    {
+                        value
+                        for value in data["category"].dropna().astype(str).str.strip().tolist()
+                        if value
+                    }
+                )
+            telegram_category = st.selectbox(
+                "Категория",
+                options=["", *telegram_category_values],
+                format_func=lambda value: value or "Все категории",
+                key="telegram_target_category",
+            )
+
+            telegram_dates = pd.to_datetime(data.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
+            if telegram_dates.empty:
+                st.warning("В данных нет корректных дат для формирования Telegram-отчёта.")
+            else:
+                telegram_min_date = telegram_dates.min().date()
+                telegram_max_date = telegram_dates.max().date()
+                telegram_default_start = max(telegram_min_date, telegram_max_date - timedelta(days=29))
+
+                telegram_sku_labels: dict[str, str] = {}
+                if telegram_report_kind == "sku":
+                    telegram_sku_source = data.copy()
+                    if telegram_category and "category" in telegram_sku_source.columns:
+                        telegram_sku_source = telegram_sku_source[
+                            telegram_sku_source["category"].fillna("").astype(str).str.strip() == telegram_category
+                        ]
+                    telegram_identity_column = (
+                        "product_key" if "product_key" in telegram_sku_source.columns else "product"
                     )
-                    st.success(f"Отчёт отправлен. Файлов: {sent_files}.")
-                except Exception as error:
-                    st.error(f"Не удалось отправить отчёт: {error}")
+                    telegram_sku_columns = [
+                        column
+                        for column in [telegram_identity_column, "item_code", "product"]
+                        if column in telegram_sku_source.columns
+                    ]
+                    telegram_sku_rows = (
+                        telegram_sku_source[telegram_sku_columns]
+                        .dropna(subset=[telegram_identity_column])
+                        .drop_duplicates(subset=[telegram_identity_column])
+                    )
+                    for _, telegram_sku_row in telegram_sku_rows.iterrows():
+                        telegram_sku_key = str(telegram_sku_row.get(telegram_identity_column, "")).strip()
+                        if not telegram_sku_key:
+                            continue
+                        telegram_sku_code_value = telegram_sku_row.get("item_code", "")
+                        telegram_sku_name_value = telegram_sku_row.get("product", "")
+                        telegram_sku_code = (
+                            "" if pd.isna(telegram_sku_code_value) else str(telegram_sku_code_value).strip()
+                        )
+                        telegram_sku_name = (
+                            "" if pd.isna(telegram_sku_name_value) else str(telegram_sku_name_value).strip()
+                        )
+                        telegram_sku_label_parts = []
+                        if telegram_sku_code:
+                            telegram_sku_label_parts.append(telegram_sku_code)
+                        if telegram_sku_name and telegram_sku_name.casefold() != telegram_sku_code.casefold():
+                            telegram_sku_label_parts.append(telegram_sku_name)
+                        telegram_sku_labels[telegram_sku_key] = " · ".join(telegram_sku_label_parts) or telegram_sku_key
+
+                    telegram_sku_search = st.text_input(
+                        "Поиск SKU / артикула",
+                        placeholder="Введите артикул или часть названия",
+                        key="telegram_target_sku_search",
+                    ).strip().casefold()
+                    telegram_sku_options = sorted(
+                        [
+                            sku_key
+                            for sku_key, sku_label in telegram_sku_labels.items()
+                            if not telegram_sku_search
+                            or telegram_sku_search in sku_key.casefold()
+                            or telegram_sku_search in sku_label.casefold()
+                        ],
+                        key=lambda sku_key: telegram_sku_labels[sku_key].casefold(),
+                    )[:200]
+                    if not telegram_sku_search and len(telegram_sku_labels) > 200:
+                        st.caption("Показаны первые 200 SKU. Используйте поиск, чтобы найти нужный артикул.")
+                    if st.session_state.get("telegram_target_sku") not in telegram_sku_options:
+                        st.session_state.pop("telegram_target_sku", None)
+                else:
+                    telegram_sku_options = []
+
+                with st.form("telegram_target_report_form", clear_on_submit=False):
+                    telegram_period = st.date_input(
+                        "Период отчёта",
+                        value=(telegram_default_start, telegram_max_date),
+                        min_value=telegram_min_date,
+                        max_value=telegram_max_date,
+                        format="DD.MM.YYYY",
+                    )
+                    telegram_product_key = None
+                    if telegram_report_kind == "sku":
+                        telegram_product_key = st.selectbox(
+                            "SKU / артикул",
+                            options=telegram_sku_options,
+                            format_func=lambda value: telegram_sku_labels.get(value, value),
+                            key="telegram_target_sku",
+                            placeholder="Выберите товар из результатов поиска",
+                        )
+                    telegram_attach_excel = st.checkbox(
+                        "Приложить Excel с детализацией",
+                        value=True,
+                    )
+                    telegram_report_submitted = st.form_submit_button(
+                        "Сформировать и отправить",
+                        width="stretch",
+                        disabled=not telegram_ready or (telegram_report_kind == "sku" and not telegram_sku_options),
+                    )
+
+                if telegram_report_submitted:
+                    if not isinstance(telegram_period, (tuple, list)) or len(telegram_period) != 2:
+                        st.error("Укажите обе даты периода: начало и окончание.")
+                    else:
+                        try:
+                            with st.spinner("Формирую точечный отчёт и отправляю в Telegram..."):
+                                sent_files = send_targeted_telegram_report(
+                                    data,
+                                    report_kind=telegram_report_kind,
+                                    date_from=telegram_period[0],
+                                    date_to=telegram_period[1],
+                                    category=telegram_category or None,
+                                    product_key=telegram_product_key,
+                                    with_file=telegram_attach_excel,
+                                )
+                            audit_event(
+                                action="telegram.targeted_report_send",
+                                user_id=current_user["username"],
+                                details={
+                                    "report_kind": telegram_report_kind,
+                                    "date_from": telegram_period[0].isoformat(),
+                                    "date_to": telegram_period[1].isoformat(),
+                                    "category": telegram_category or "",
+                                    "product_key": telegram_product_key or "",
+                                    "sent_files": int(sent_files),
+                                },
+                            )
+                            if sent_files:
+                                st.success("Отчёт и Excel-файл отправлены в Telegram.")
+                            else:
+                                st.success("Краткий отчёт отправлен в Telegram.")
+                        except Exception as error:
+                            st.error(f"Не удалось отправить отчёт: {error}")
 
 filter_source_data = data.copy()
 valid_filter_dates = filter_source_data["date"].dropna()

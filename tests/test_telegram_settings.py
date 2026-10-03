@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import os
+from datetime import date
+from io import BytesIO
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs
 
+import pandas as pd
+from openpyxl import load_workbook
+
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from telegram_reports import discover_telegram_chats, send_telegram_message
+from telegram_reports import build_targeted_telegram_report, discover_telegram_chats, send_telegram_message
 from telegram_settings_store import load_environment_telegram_settings
 
 
@@ -101,6 +106,113 @@ class TelegramMessageSafetyTests(unittest.TestCase):
             ["<b>Риски</b> (&lt;15%): A&amp;B; товар &lt;b&gt;SKU&lt;/b&gt;"],
         )
         self.assertEqual(fields["parse_mode"], ["HTML"])
+
+
+class TargetedTelegramReportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sales = pd.DataFrame(
+            [
+                {
+                    "date": pd.Timestamp("2026-06-15"),
+                    "salon": "Artisan",
+                    "item_code": "A-1",
+                    "product_key": "A-1",
+                    "product": "Плита Дуб",
+                    "category": "ЛДСП",
+                    "supplier": "Slotex",
+                    "manager": "Айбек",
+                    "quantity": 1.0,
+                    "revenue": 100.0,
+                    "cost": 60.0,
+                    "margin": 40.0,
+                    "margin_pct": 40.0,
+                },
+                {
+                    "date": pd.Timestamp("2026-07-05"),
+                    "salon": "Artisan",
+                    "item_code": "A-1",
+                    "product_key": "A-1",
+                    "product": "Плита Дуб",
+                    "category": "ЛДСП",
+                    "supplier": "Slotex",
+                    "manager": "Айбек",
+                    "quantity": 2.0,
+                    "revenue": 300.0,
+                    "cost": 180.0,
+                    "margin": 120.0,
+                    "margin_pct": 40.0,
+                },
+                {
+                    "date": pd.Timestamp("2026-07-06"),
+                    "salon": "Artisan",
+                    "item_code": "B-2",
+                    "product_key": "B-2",
+                    "product": "Петля <15 мм",
+                    "category": "Фурнитура",
+                    "supplier": "Hettich",
+                    "manager": "Бек",
+                    "quantity": 4.0,
+                    "revenue": 200.0,
+                    "cost": 140.0,
+                    "margin": 60.0,
+                    "margin_pct": 30.0,
+                },
+            ]
+        )
+
+    def test_category_report_respects_period_and_category(self) -> None:
+        message, report_file = build_targeted_telegram_report(
+            self.sales,
+            report_kind="portfolio",
+            date_from=date(2026, 7, 1),
+            date_to=date(2026, 7, 31),
+            category="ЛДСП",
+        )
+
+        self.assertIn("Портфель SKU", message)
+        self.assertIn("Категория: ЛДСП", message)
+        self.assertIn("300 сом", message)
+        workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
+        self.assertEqual(workbook.sheetnames[:3], ["Сводка", "Портфель SKU", "Динамика"])
+        portfolio_rows = list(workbook["Портфель SKU"].iter_rows(values_only=True))
+        self.assertEqual(len(portfolio_rows), 2)
+        self.assertIn("A-1", portfolio_rows[1])
+        workbook.close()
+
+        styled_workbook = load_workbook(BytesIO(report_file.content), read_only=False, data_only=True)
+        portfolio_sheet = styled_workbook["Портфель SKU"]
+        self.assertEqual(portfolio_sheet.freeze_panes, "A2")
+        self.assertEqual(portfolio_sheet["A1"].fill.fgColor.rgb, "00003461")
+        self.assertTrue(bool(portfolio_sheet.auto_filter.ref))
+        styled_workbook.close()
+
+    def test_sku_report_contains_only_selected_article_sales(self) -> None:
+        message, report_file = build_targeted_telegram_report(
+            self.sales,
+            report_kind="sku",
+            date_from=date(2026, 7, 1),
+            date_to=date(2026, 7, 31),
+            product_key="B-2",
+        )
+
+        self.assertIn("B-2", message)
+        workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
+        detail_rows = list(workbook["Продажи SKU"].iter_rows(values_only=True))
+        self.assertEqual(len(detail_rows), 2)
+        self.assertIn("B-2", detail_rows[1])
+        self.assertNotIn("A-1", detail_rows[1])
+        workbook.close()
+
+    def test_message_does_not_promise_excel_when_file_is_disabled(self) -> None:
+        message, _ = build_targeted_telegram_report(
+            self.sales,
+            report_kind="summary",
+            date_from=date(2026, 7, 1),
+            date_to=date(2026, 7, 31),
+            include_file_note=False,
+        )
+
+        self.assertNotIn("Excel-файле", message)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from html import escape
 from io import BytesIO
 import json
@@ -13,6 +13,7 @@ from urllib import error as urlerror, parse, request
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from procurement_analytics import (
     build_procurement_forecast,
@@ -28,6 +29,7 @@ from procurement_order_store import (
 from procurement_store import load_procurement_items
 from salon_data_store import load_archive_data, load_manifest, load_salons
 from sales_analytics import (
+    build_abc_analysis,
     build_monthly_summary,
     build_overview_metrics,
     build_product_summary,
@@ -42,6 +44,14 @@ class TelegramReportFile:
     content: bytes
     caption: str = ""
     content_type: str = "text/csv"
+
+
+TARGETED_TELEGRAM_REPORT_LABELS = {
+    "summary": "Управленческая сводка",
+    "categories": "Отчёт по категориям",
+    "portfolio": "Портфель SKU",
+    "sku": "Карточка SKU / артикула",
+}
 
 
 PROCUREMENT_ORDER_COLUMNS = [
@@ -359,6 +369,13 @@ def _export_excel_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
             worksheet = writer.sheets[sheet_name]
             worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            worksheet.sheet_view.showGridLines = False
+            worksheet.row_dimensions[1].height = 26
+            for header_cell in worksheet[1]:
+                header_cell.fill = PatternFill("solid", fgColor="003461")
+                header_cell.font = Font(color="FFFFFF", bold=True)
+                header_cell.alignment = Alignment(vertical="center", wrap_text=True)
             for column_cells in worksheet.columns:
                 header = str(column_cells[0].value or "")
                 max_length = min(
@@ -366,6 +383,19 @@ def _export_excel_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
                     42,
                 )
                 worksheet.column_dimensions[column_cells[0].column_letter].width = max_length + 2
+                header_lower = header.casefold()
+                for cell in column_cells[1:]:
+                    cell.alignment = Alignment(vertical="top", wrap_text=len(str(cell.value or "")) > 36)
+                    if isinstance(cell.value, (int, float)):
+                        if "%" in header:
+                            cell.number_format = "0.0"
+                        elif any(
+                            marker in header_lower
+                            for marker in ("выруч", "себесто", "прибыл", "марж", "сумм")
+                        ):
+                            cell.number_format = '#,##0.00'
+                        else:
+                            cell.number_format = '#,##0.##'
     return buffer.getvalue()
 
 
@@ -706,6 +736,336 @@ def _export_frame(frame: pd.DataFrame, columns: list[str], rename_map: dict[str,
         if pd.api.types.is_datetime64_any_dtype(export_frame[column]):
             export_frame[column] = pd.to_datetime(export_frame[column], errors="coerce").dt.strftime("%Y-%m-%d")
     return to_csv_bytes(export_frame.rename(columns=rename_map))
+
+
+def _filter_targeted_sales_data(
+    data: pd.DataFrame,
+    *,
+    date_from: date,
+    date_to: date,
+    category: str | None = None,
+    product_key: str | None = None,
+) -> pd.DataFrame:
+    if data.empty or "date" not in data.columns:
+        return pd.DataFrame(columns=data.columns)
+
+    start_date = pd.Timestamp(date_from).date()
+    end_date = pd.Timestamp(date_to).date()
+    if start_date > end_date:
+        raise ValueError("Дата начала отчёта не может быть позже даты окончания.")
+
+    filtered = data.copy()
+    parsed_dates = pd.to_datetime(filtered["date"], errors="coerce")
+    date_values = parsed_dates.dt.date
+    filtered = filtered[(date_values >= start_date) & (date_values <= end_date)].copy()
+    filtered["date"] = parsed_dates.loc[filtered.index]
+
+    if category:
+        if "category" not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        filtered = filtered[filtered["category"].fillna("").astype(str).str.strip() == str(category).strip()]
+
+    if product_key:
+        identity_column = "product_key" if "product_key" in filtered.columns else "product"
+        if identity_column not in filtered.columns:
+            return filtered.iloc[0:0].copy()
+        filtered = filtered[
+            filtered[identity_column].fillna("").astype(str).str.strip() == str(product_key).strip()
+        ]
+
+    return filtered.reset_index(drop=True)
+
+
+def _first_text(frame: pd.DataFrame, column: str) -> str:
+    if column not in frame.columns:
+        return ""
+    for value in frame[column].dropna().astype(str):
+        text = value.strip()
+        if text:
+            return text
+    return ""
+
+
+def _percentage_change(current: object, previous: object) -> float | None:
+    current_value = pd.to_numeric(current, errors="coerce")
+    previous_value = pd.to_numeric(previous, errors="coerce")
+    if pd.isna(current_value) or pd.isna(previous_value) or float(previous_value) == 0:
+        return None
+    return (float(current_value) / float(previous_value) - 1) * 100
+
+
+def _format_change_plain(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "н/д"
+    return f"{float(value):+.1f}%"
+
+
+def _short_label(value: object, max_length: int = 76) -> str:
+    text = "" if value is None or (not isinstance(value, str) and pd.isna(value)) else str(value)
+    text = re.sub(r"\s+", " ", text).strip() or "Не указано"
+    if len(text) <= max_length:
+        return text
+    return f"{text[:max_length - 1].rstrip()}…"
+
+
+def build_targeted_telegram_report(
+    data: pd.DataFrame,
+    *,
+    report_kind: str,
+    date_from: date,
+    date_to: date,
+    category: str | None = None,
+    product_key: str | None = None,
+    include_file_note: bool = True,
+) -> tuple[str, TelegramReportFile]:
+    if report_kind not in TARGETED_TELEGRAM_REPORT_LABELS:
+        raise ValueError("Выбран неизвестный тип Telegram-отчёта.")
+    if report_kind == "sku" and not product_key:
+        raise ValueError("Для карточки SKU выберите товар или артикул.")
+
+    start_date = pd.Timestamp(date_from).date()
+    end_date = pd.Timestamp(date_to).date()
+    filtered = _filter_targeted_sales_data(
+        data,
+        date_from=start_date,
+        date_to=end_date,
+        category=category,
+        product_key=product_key,
+    )
+    if filtered.empty:
+        raise ValueError("За выбранный период и срез нет данных для отчёта.")
+
+    product_group_column = "product_key" if "product_key" in filtered.columns else "product"
+    overview = build_overview_metrics(filtered)
+    monthly_summary = build_monthly_summary(filtered)
+    category_summary = build_product_summary(filtered, "category")
+    product_summary = build_product_summary(filtered, product_group_column)
+    portfolio_summary = build_abc_analysis(product_summary, "revenue")
+
+    period_days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=period_days - 1)
+    previous = _filter_targeted_sales_data(
+        data,
+        date_from=previous_start,
+        date_to=previous_end,
+        category=category,
+        product_key=product_key,
+    )
+    previous_overview = build_overview_metrics(previous) if not previous.empty else {}
+    revenue_change = _percentage_change(overview.get("total_revenue"), previous_overview.get("total_revenue"))
+    margin_change = _percentage_change(overview.get("total_margin"), previous_overview.get("total_margin"))
+
+    report_label = TARGETED_TELEGRAM_REPORT_LABELS[report_kind]
+    period_label = f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
+    message_lines = [
+        f"<b>ArtDB: {escape(report_label)}</b>",
+        f"Период: {period_label}",
+    ]
+    if category:
+        message_lines.append(f"Категория: {escape(_short_label(category))}")
+
+    sku_label = ""
+    if report_kind == "sku":
+        sku_label = _short_label(product_summary.iloc[0].get("group_name", product_key))
+        message_lines.append(f"SKU: {escape(sku_label)}")
+        item_code = _first_text(filtered, "item_code")
+        if item_code and item_code.casefold() not in sku_label.casefold():
+            message_lines.append(f"Артикул: {escape(item_code)}")
+        supplier = _first_text(filtered, "supplier")
+        if supplier:
+            message_lines.append(f"Поставщик: {escape(_short_label(supplier))}")
+
+    message_lines.extend(
+        [
+            "",
+            "<b>Ключевые показатели</b>",
+            f"• Выручка: {format_money_plain(overview.get('total_revenue'))}",
+            f"• Валовая прибыль: {format_money_plain(overview.get('total_margin'))}",
+            f"• Маржинальность: {format_percent_plain(overview.get('margin_pct'))}",
+            f"• Количество: {format_number_plain(overview.get('total_quantity'))}",
+            f"• SKU: {format_number_plain(overview.get('product_count'))}",
+            f"• Строк продаж: {format_number_plain(overview.get('line_count'))}",
+            "",
+            f"К предыдущим {period_days} дн.: выручка {_format_change_plain(revenue_change)}, "
+            f"прибыль {_format_change_plain(margin_change)}.",
+        ]
+    )
+
+    if report_kind in {"summary", "categories"}:
+        message_lines.extend(["", "<b>Категории-лидеры</b>"])
+        for position, (_, row) in enumerate(category_summary.head(5).iterrows(), start=1):
+            message_lines.append(
+                f"{position}. {escape(_short_label(row.get('group_name')))}: "
+                f"{format_money_plain(row.get('revenue'))}; маржа {format_percent_plain(row.get('margin_pct'))}"
+            )
+    elif report_kind == "portfolio":
+        message_lines.extend(["", "<b>SKU-лидеры портфеля</b>"])
+        for position, (_, row) in enumerate(portfolio_summary.head(5).iterrows(), start=1):
+            message_lines.append(
+                f"{position}. {escape(_short_label(row.get('group_name')))}: "
+                f"{format_money_plain(row.get('revenue'))}; ABC {escape(str(row.get('abc_class', 'н/д')))}"
+            )
+    else:
+        message_lines.extend(["", "<b>Динамика по месяцам</b>"])
+        for _, row in monthly_summary.tail(4).iterrows():
+            message_lines.append(
+                f"• {escape(str(row.get('month_label', 'н/д')))}: "
+                f"{format_money_plain(row.get('revenue'))}; {format_number_plain(row.get('quantity'))} шт."
+            )
+
+    if include_file_note:
+        message_lines.extend(["", "Детализация приложена в одном Excel-файле."])
+
+    summary_sheet = pd.DataFrame(
+        [
+            {"Показатель": "Тип отчёта", "Значение": report_label, "Единица": ""},
+            {"Показатель": "Период с", "Значение": start_date.isoformat(), "Единица": ""},
+            {"Показатель": "Период по", "Значение": end_date.isoformat(), "Единица": ""},
+            {"Показатель": "Категория", "Значение": category or "Все категории", "Единица": ""},
+            {"Показатель": "SKU / артикул", "Значение": sku_label or "Все SKU", "Единица": ""},
+            {"Показатель": "Выручка", "Значение": overview.get("total_revenue"), "Единица": "сом"},
+            {"Показатель": "Валовая прибыль", "Значение": overview.get("total_margin"), "Единица": "сом"},
+            {"Показатель": "Маржинальность", "Значение": overview.get("margin_pct"), "Единица": "%"},
+            {"Показатель": "Количество", "Значение": overview.get("total_quantity"), "Единица": "шт."},
+            {"Показатель": "SKU", "Значение": overview.get("product_count"), "Единица": ""},
+            {"Показатель": "Изменение выручки", "Значение": revenue_change, "Единица": "%"},
+            {"Показатель": "Изменение прибыли", "Значение": margin_change, "Единица": "%"},
+        ]
+    )
+    monthly_sheet = _prepare_excel_frame(
+        monthly_summary,
+        ["month_label", "revenue", "cost", "margin", "quantity", "product_count", "revenue_change_pct"],
+        {
+            "month_label": "Месяц",
+            "revenue": "Выручка",
+            "cost": "Себестоимость",
+            "margin": "Валовая прибыль",
+            "quantity": "Количество",
+            "product_count": "SKU",
+            "revenue_change_pct": "Изменение выручки, %",
+        },
+    )
+    category_sheet = _prepare_excel_frame(
+        category_summary,
+        ["group_name", "revenue", "cost", "margin", "margin_pct", "quantity", "sales_lines"],
+        {
+            "group_name": "Категория",
+            "revenue": "Выручка",
+            "cost": "Себестоимость",
+            "margin": "Валовая прибыль",
+            "margin_pct": "Маржинальность, %",
+            "quantity": "Количество",
+            "sales_lines": "Строк продаж",
+        },
+    )
+    portfolio_sheet = _prepare_excel_frame(
+        portfolio_summary,
+        [
+            "item_code",
+            "group_name",
+            "product_name",
+            "revenue",
+            "cost",
+            "margin",
+            "margin_pct",
+            "quantity",
+            "sales_lines",
+            "abc_class",
+            "share_pct",
+            "cum_share_pct",
+        ],
+        {
+            "item_code": "Артикул",
+            "group_name": "SKU / товар",
+            "product_name": "Наименование",
+            "revenue": "Выручка",
+            "cost": "Себестоимость",
+            "margin": "Валовая прибыль",
+            "margin_pct": "Маржинальность, %",
+            "quantity": "Количество",
+            "sales_lines": "Строк продаж",
+            "abc_class": "ABC",
+            "share_pct": "Доля выручки, %",
+            "cum_share_pct": "Накопительная доля, %",
+        },
+    )
+
+    sheets: dict[str, pd.DataFrame] = {"Сводка": summary_sheet}
+    if report_kind == "categories":
+        sheets.update({"Категории": category_sheet, "Портфель SKU": portfolio_sheet, "Динамика": monthly_sheet})
+    elif report_kind == "portfolio":
+        sheets.update({"Портфель SKU": portfolio_sheet, "Динамика": monthly_sheet, "Категории": category_sheet})
+    elif report_kind == "sku":
+        detail_sheet = _prepare_excel_frame(
+            filtered.sort_values("date", ascending=False),
+            [
+                "date",
+                "salon",
+                "item_code",
+                "product",
+                "category",
+                "supplier",
+                "manager",
+                "quantity",
+                "revenue",
+                "cost",
+                "margin",
+                "margin_pct",
+            ],
+            {
+                "date": "Дата",
+                "salon": "Салон",
+                "item_code": "Артикул",
+                "product": "Товар",
+                "category": "Категория",
+                "supplier": "Поставщик",
+                "manager": "Менеджер",
+                "quantity": "Количество",
+                "revenue": "Выручка",
+                "cost": "Себестоимость",
+                "margin": "Валовая прибыль",
+                "margin_pct": "Маржинальность, %",
+            },
+        )
+        sheets.update({"Карточка SKU": portfolio_sheet, "Динамика SKU": monthly_sheet, "Продажи SKU": detail_sheet})
+    else:
+        sheets.update({"Динамика": monthly_sheet, "Категории": category_sheet, "Портфель SKU": portfolio_sheet})
+
+    filename = f"artdb_{report_kind}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx"
+    report_file = TelegramReportFile(
+        filename=filename,
+        content=_export_excel_workbook(sheets),
+        caption=f"{report_label}. Период: {period_label}",
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    return "\n".join(message_lines), report_file
+
+
+def send_targeted_telegram_report(
+    data: pd.DataFrame,
+    *,
+    report_kind: str,
+    date_from: date,
+    date_to: date,
+    category: str | None = None,
+    product_key: str | None = None,
+    with_file: bool = True,
+) -> int:
+    message, report_file = build_targeted_telegram_report(
+        data,
+        report_kind=report_kind,
+        date_from=date_from,
+        date_to=date_to,
+        category=category,
+        product_key=product_key,
+        include_file_note=with_file,
+    )
+    send_telegram_message(message)
+    if not with_file:
+        return 0
+    send_telegram_document(report_file)
+    return 1
 
 
 def build_telegram_report_files() -> list[TelegramReportFile]:
