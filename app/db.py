@@ -91,6 +91,18 @@ CREATE TABLE IF NOT EXISTS service_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS telegram_settings (
+    settings_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (settings_id = 1),
+    bot_token_encrypted BYTEA,
+    chat_id TEXT NOT NULL DEFAULT '',
+    daily_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    report_hour SMALLINT NOT NULL DEFAULT 9 CHECK (report_hour BETWEEN 0 AND 23),
+    report_minute SMALLINT NOT NULL DEFAULT 0 CHECK (report_minute BETWEEN 0 AND 59),
+    send_report_files BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS monthly_plans (
     plan_id BIGSERIAL PRIMARY KEY,
     plan_month DATE NOT NULL,

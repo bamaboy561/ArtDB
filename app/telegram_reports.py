@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 from typing import Iterable
-from urllib import parse, request
+from urllib import error as urlerror, parse, request
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,6 +33,7 @@ from sales_analytics import (
     build_product_summary,
     to_csv_bytes,
 )
+from telegram_settings_store import load_telegram_settings
 
 
 @dataclass(frozen=True)
@@ -116,23 +117,99 @@ def telegram_is_configured() -> bool:
 
 
 def _get_telegram_credentials() -> tuple[str, str]:
-    token = os.getenv("TG_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
-    chat_id = os.getenv("TG_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", "")).strip()
-    return token, chat_id
+    settings = load_telegram_settings()
+    return settings.bot_token, settings.chat_id
 
 
-def _telegram_api_request(method: str, data: bytes, headers: dict[str, str] | None = None) -> dict[str, object]:
-    token, chat_id = _get_telegram_credentials()
-    if not token or not chat_id:
-        raise RuntimeError("Нужны TG_BOT_TOKEN и TG_CHAT_ID.")
+def _telegram_api_request(
+    method: str,
+    data: bytes,
+    headers: dict[str, str] | None = None,
+    *,
+    require_chat: bool = True,
+    bot_token: str | None = None,
+) -> dict[str, object]:
+    configured_token, chat_id = _get_telegram_credentials()
+    token = str(bot_token or "").strip() or configured_token
+    if not token:
+        raise RuntimeError("Не задан токен Telegram-бота.")
+    if require_chat and not chat_id:
+        raise RuntimeError("Не выбран Telegram-чат для отчётов.")
 
     telegram_url = f"https://api.telegram.org/bot{token}/{method}"
     api_request = request.Request(telegram_url, data=data, headers=headers or {})
-    with request.urlopen(api_request, timeout=30) as response:
-        body = json.loads(response.read().decode("utf-8"))
+    try:
+        with request.urlopen(api_request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urlerror.HTTPError as error:
+        response_text = error.read().decode("utf-8", errors="replace")
+        try:
+            response_body = json.loads(response_text)
+            description = str(response_body.get("description", "")).strip()
+        except json.JSONDecodeError:
+            description = response_text.strip()
+        raise RuntimeError(description or f"Telegram API вернул HTTP {error.code}.") from error
+    except urlerror.URLError as error:
+        raise RuntimeError(f"Не удалось подключиться к Telegram: {error.reason}") from error
     if not body.get("ok"):
-        raise RuntimeError(f"Telegram API error: {body}")
+        raise RuntimeError(str(body.get("description", "Ошибка Telegram API.")))
     return body
+
+
+def get_telegram_bot_profile(bot_token: str | None = None) -> dict[str, object]:
+    response = _telegram_api_request(
+        "getMe",
+        b"",
+        require_chat=False,
+        bot_token=bot_token,
+    )
+    result = response.get("result", {})
+    return result if isinstance(result, dict) else {}
+
+
+def discover_telegram_chats() -> list[dict[str, str]]:
+    payload = parse.urlencode({"limit": 100, "timeout": 0}).encode("utf-8")
+    response = _telegram_api_request(
+        "getUpdates",
+        payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        require_chat=False,
+    )
+    updates = response.get("result", [])
+    if not isinstance(updates, list):
+        return []
+
+    chats: dict[str, dict[str, str]] = {}
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        message = update.get("message") or update.get("channel_post") or update.get("my_chat_member")
+        if not isinstance(message, dict):
+            continue
+        chat = message.get("chat")
+        if not isinstance(chat, dict):
+            continue
+        chat_id = str(chat.get("id", "")).strip()
+        if not chat_id:
+            continue
+        title = str(chat.get("title") or "").strip()
+        if not title:
+            title = " ".join(
+                value
+                for value in (
+                    str(chat.get("first_name") or "").strip(),
+                    str(chat.get("last_name") or "").strip(),
+                )
+                if value
+            )
+        username = str(chat.get("username") or "").strip()
+        label = title or (f"@{username}" if username else f"Чат {chat_id}")
+        chats[chat_id] = {
+            "chat_id": chat_id,
+            "label": label,
+            "type": str(chat.get("type") or "").strip(),
+        }
+    return list(chats.values())
 
 
 def send_telegram_message(text: str) -> None:

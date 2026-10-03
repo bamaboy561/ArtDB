@@ -126,7 +126,16 @@ from supplier_rules_store import (
     replace_supplier_keyword_rules,
     upsert_supplier_product_assignments,
 )
-from telegram_reports import build_supplier_order_file, send_telegram_report_pack, telegram_is_configured
+from telegram_reports import (
+    build_supplier_order_file,
+    discover_telegram_chats,
+    get_telegram_bot_profile,
+    send_telegram_message,
+    send_telegram_report_pack,
+    telegram_is_configured,
+)
+from telegram_scheduler import start_telegram_scheduler
+from telegram_settings_store import load_telegram_settings, save_telegram_settings
 
 # Design System Tokens
 PRIMARY_COLOR = "#003461"
@@ -165,6 +174,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+start_telegram_scheduler()
 
 
 DASHBOARD_CSS = f"""
@@ -7943,10 +7954,164 @@ with st.sidebar:
 
     if is_network_role(current_user["role"]):
         with st.expander("Telegram", expanded=False):
-            st.caption("Отправляет управленческую сводку, риски, CSV-отчёты и Excel-заказ поставщикам в настроенный чат.")
-            telegram_ready = telegram_is_configured()
+            st.caption("Управленческая сводка, риски, отчёты и заказы поставщикам в одном чате.")
+            try:
+                telegram_settings = load_telegram_settings()
+                telegram_settings_error = ""
+            except Exception as error:
+                telegram_settings = None
+                telegram_settings_error = str(error)
+
+            if telegram_settings_error:
+                st.error(f"Не удалось прочитать настройки Telegram: {telegram_settings_error}")
+
+            if current_user["role"] == "admin" and telegram_settings is not None:
+                status_text = "Подключён" if telegram_settings.configured else "Не подключён"
+                st.markdown(f"**Статус:** {status_text}")
+                st.caption(
+                    "Создайте бота через @BotFather, отправьте ему /start и сохраните токен. "
+                    "Токен шифруется в PostgreSQL и не попадает в Git."
+                )
+
+                with st.form("telegram_settings_form", clear_on_submit=False):
+                    telegram_token_input = st.text_input(
+                        "Токен бота",
+                        type="password",
+                        value="",
+                        placeholder="Оставьте пустым, чтобы сохранить текущий токен",
+                    )
+                    telegram_chat_input = st.text_input(
+                        "Chat ID",
+                        value=telegram_settings.chat_id,
+                        placeholder="Можно определить автоматически после /start",
+                    )
+                    telegram_daily_enabled = st.checkbox(
+                        "Отправлять ежедневный отчёт",
+                        value=telegram_settings.daily_enabled,
+                    )
+                    schedule_hour_col, schedule_minute_col = st.columns(2)
+                    with schedule_hour_col:
+                        telegram_report_hour = st.number_input(
+                            "Час",
+                            min_value=0,
+                            max_value=23,
+                            value=telegram_settings.report_hour,
+                            step=1,
+                        )
+                    with schedule_minute_col:
+                        telegram_report_minute = st.number_input(
+                            "Минута",
+                            min_value=0,
+                            max_value=59,
+                            value=telegram_settings.report_minute,
+                            step=1,
+                        )
+                    telegram_send_files = st.checkbox(
+                        "Прикладывать файлы к ежедневному отчёту",
+                        value=telegram_settings.send_report_files,
+                    )
+                    telegram_settings_submitted = st.form_submit_button(
+                        "Сохранить настройки",
+                        use_container_width=True,
+                    )
+
+                if telegram_settings_submitted:
+                    try:
+                        bot_profile = get_telegram_bot_profile(telegram_token_input or None)
+                        saved_telegram_settings = save_telegram_settings(
+                            bot_token=telegram_token_input or None,
+                            chat_id=telegram_chat_input,
+                            daily_enabled=telegram_daily_enabled,
+                            report_hour=int(telegram_report_hour),
+                            report_minute=int(telegram_report_minute),
+                            send_report_files=telegram_send_files,
+                            updated_by=current_user["username"],
+                        )
+                        audit_event(
+                            action="telegram.settings_update",
+                            user_id=current_user["username"],
+                            details={
+                                "chat_configured": bool(saved_telegram_settings.chat_id),
+                                "daily_enabled": bool(saved_telegram_settings.daily_enabled),
+                                "report_hour": int(saved_telegram_settings.report_hour),
+                                "report_minute": int(saved_telegram_settings.report_minute),
+                            },
+                        )
+                        bot_name = str(bot_profile.get("username") or bot_profile.get("first_name") or "бот")
+                        st.success(f"Настройки сохранены. Бот @{bot_name.lstrip('@')} доступен.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"Не удалось сохранить настройки: {error}")
+
+                discovery_col, test_col = st.columns(2)
+                with discovery_col:
+                    if st.button(
+                        "Найти чат",
+                        key="telegram_discover_chat_button",
+                        use_container_width=True,
+                        disabled=not bool(telegram_settings.bot_token),
+                    ):
+                        try:
+                            st.session_state.telegram_discovered_chats = discover_telegram_chats()
+                            if not st.session_state.telegram_discovered_chats:
+                                st.warning("Чаты не найдены. Откройте бота в Telegram, нажмите Start и повторите поиск.")
+                        except Exception as error:
+                            st.error(f"Не удалось получить чаты: {error}")
+                with test_col:
+                    if st.button(
+                        "Отправить тест",
+                        key="telegram_send_test_button",
+                        use_container_width=True,
+                        disabled=not telegram_settings.configured,
+                    ):
+                        try:
+                            send_telegram_message("<b>ArtDB подключён</b>\nТестовое сообщение доставлено успешно.")
+                            audit_event(
+                                action="telegram.test_send",
+                                user_id=current_user["username"],
+                            )
+                            st.success("Тестовое сообщение отправлено.")
+                        except Exception as error:
+                            st.error(f"Не удалось отправить тест: {error}")
+
+                discovered_chats = st.session_state.get("telegram_discovered_chats", [])
+                if discovered_chats:
+                    discovered_by_id = {item["chat_id"]: item for item in discovered_chats}
+                    selected_discovered_chat = st.selectbox(
+                        "Найденные чаты",
+                        options=list(discovered_by_id),
+                        format_func=lambda value: f"{discovered_by_id[value]['label']} · {value}",
+                        key="telegram_discovered_chat_select",
+                    )
+                    if st.button(
+                        "Подключить выбранный чат",
+                        key="telegram_connect_discovered_chat_button",
+                        use_container_width=True,
+                    ):
+                        try:
+                            save_telegram_settings(
+                                bot_token=None,
+                                chat_id=selected_discovered_chat,
+                                daily_enabled=telegram_settings.daily_enabled,
+                                report_hour=telegram_settings.report_hour,
+                                report_minute=telegram_settings.report_minute,
+                                send_report_files=telegram_settings.send_report_files,
+                                updated_by=current_user["username"],
+                            )
+                            audit_event(
+                                action="telegram.chat_connect",
+                                user_id=current_user["username"],
+                                details={"chat_id_suffix": selected_discovered_chat[-4:]},
+                            )
+                            st.session_state.pop("telegram_discovered_chats", None)
+                            st.success("Чат подключён.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"Не удалось подключить чат: {error}")
+
+            telegram_ready = telegram_is_configured() if not telegram_settings_error else False
             if not telegram_ready:
-                st.warning("Заполните TG_BOT_TOKEN и TG_CHAT_ID в переменных окружения.")
+                st.info("Для отправки нужен токен бота и выбранный Chat ID.")
             if st.button(
                 "Отправить отчёт в Telegram",
                 key="telegram_send_report_button",

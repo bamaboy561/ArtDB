@@ -20,16 +20,10 @@ from telegram_reports import (
     send_telegram_report_pack,
     send_supplier_order_files,
 )
+from telegram_settings_store import load_telegram_settings
 
 
 SERVICE_NAME = "telegram-daily-summary"
-
-
-def env_flag(name: str, *, default: bool = False) -> bool:
-    value = os.getenv(name, "").strip().casefold()
-    if not value:
-        return default
-    return value in {"1", "true", "yes", "y", "on"}
 
 
 def run_once(*, with_files: bool = False) -> None:
@@ -44,20 +38,23 @@ def run_daemon() -> None:
         raise RuntimeError("Для daemon-режима Telegram нужен DATABASE_URL и PostgreSQL-хранилище.")
 
     timezone = get_timezone()
-    report_hour = int(os.getenv("TELEGRAM_DAILY_REPORT_HOUR", "9"))
-    report_minute = int(os.getenv("TELEGRAM_DAILY_REPORT_MINUTE", "0"))
     check_interval = max(30, int(os.getenv("TELEGRAM_CHECK_INTERVAL_SECONDS", "60")))
-    send_files = env_flag("TELEGRAM_SEND_REPORT_FILES", default=False)
 
     while True:
+        settings = load_telegram_settings()
         now = datetime.now(timezone)
         run_key = now.strftime("%Y-%m-%d")
         already_sent = get_service_state(SERVICE_NAME)
         if (
-            now.hour > report_hour
-            or (now.hour == report_hour and now.minute >= report_minute)
-        ) and already_sent != run_key:
-            send_telegram_report_pack(with_files=send_files)
+            settings.daily_enabled
+            and settings.configured
+            and (
+                now.hour > settings.report_hour
+                or (now.hour == settings.report_hour and now.minute >= settings.report_minute)
+            )
+            and already_sent != run_key
+        ):
+            send_telegram_report_pack(with_files=settings.send_report_files)
             set_service_state(SERVICE_NAME, run_key)
         time.sleep(check_interval)
 
