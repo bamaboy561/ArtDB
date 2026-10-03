@@ -36,7 +36,7 @@ from telegram_reports import (
     send_targeted_telegram_report,
     send_telegram_message,
 )
-from telegram_settings_store import load_telegram_settings
+from telegram_settings_store import load_telegram_settings, parse_telegram_chat_ids
 
 
 UPDATE_STATE_PREFIX = "telegram-bot-update-offset"
@@ -278,11 +278,33 @@ class TelegramReportMenu:
             self._cache_loaded_at = now
         return self._cached_data
 
-    def handle_update(self, update: dict[str, object], *, allowed_chat_id: str) -> None:
+    def handle_update(
+        self,
+        update: dict[str, object],
+        *,
+        allowed_chat_id: str | None = None,
+        allowed_chat_ids: object | None = None,
+    ) -> None:
         chat_id, sender_id = self._extract_identity(update)
         if not chat_id:
             return
-        if chat_id != str(allowed_chat_id).strip():
+        allowed = set(
+            parse_telegram_chat_ids(
+                allowed_chat_ids if allowed_chat_ids is not None else allowed_chat_id
+            )
+        )
+        if chat_id not in allowed:
+            message = update.get("message")
+            text = str(message.get("text") or "").strip() if isinstance(message, dict) else ""
+            command = text.partition(" ")[0].split("@", 1)[0].casefold()
+            if command in {"/start", "/chatid"}:
+                send_telegram_message(
+                    "<b>Этот чат ещё не подключён к ArtDB.</b>\n"
+                    f"<b>Chat ID:</b> {chat_id}\n"
+                    "Передайте этот ID администратору ArtDB.",
+                    chat_id=chat_id,
+                )
+                return
             callback = update.get("callback_query")
             if isinstance(callback, dict) and callback.get("id"):
                 answer_telegram_callback(
@@ -356,6 +378,12 @@ class TelegramReportMenu:
 
         if command in {"/start", "/menu"} or text == "Меню":
             self._send_main_menu(chat_id)
+            return
+        if command == "/chatid":
+            send_telegram_message(
+                f"<b>Chat ID этого чата:</b> {chat_id}",
+                chat_id=chat_id,
+            )
             return
         if command == "/help" or text == "Помощь":
             self._send_help(chat_id)
@@ -908,11 +936,11 @@ def _poll_updates(menu: TelegramReportMenu, lock_connection: object | None = Non
             for update in updates:
                 update_id = int(update.get("update_id", -1))
                 try:
-                    menu.handle_update(update, allowed_chat_id=settings.chat_id)
+                    menu.handle_update(update, allowed_chat_ids=settings.chat_ids)
                 except Exception as error:
                     print(f"Telegram bot update error: {error}", flush=True)
                     chat_id, _ = menu._extract_identity(update)
-                    if chat_id == settings.chat_id:
+                    if chat_id in settings.chat_ids:
                         try:
                             send_telegram_message(
                                 f"Не удалось обработать запрос: {error}",

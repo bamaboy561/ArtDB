@@ -17,8 +17,19 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from telegram_reports import build_targeted_telegram_report, discover_telegram_chats, send_telegram_message
-from telegram_settings_store import load_environment_telegram_settings
+from telegram_reports import (
+    TelegramReportFile,
+    build_targeted_telegram_report,
+    discover_telegram_chats,
+    send_telegram_document,
+    send_telegram_message,
+)
+from telegram_settings_store import (
+    add_telegram_chat_id,
+    load_environment_telegram_settings,
+    parse_telegram_chat_ids,
+    remove_telegram_chat_id,
+)
 
 
 class TelegramEnvironmentSettingsTests(unittest.TestCase):
@@ -41,6 +52,22 @@ class TelegramEnvironmentSettingsTests(unittest.TestCase):
         self.assertEqual(settings.report_hour, 23)
         self.assertEqual(settings.report_minute, 0)
         self.assertTrue(settings.send_report_files)
+
+    def test_multiple_chat_ids_are_normalized_and_deduplicated(self) -> None:
+        environment = {
+            "TG_BOT_TOKEN": "token",
+            "TG_CHAT_IDS": "123, -100555\n123;456",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = load_environment_telegram_settings()
+
+        self.assertEqual(settings.chat_ids, ("123", "-100555", "456"))
+        self.assertEqual(settings.chat_id, "123,-100555,456")
+
+    def test_chat_list_helpers_append_and_remove_without_duplicates(self) -> None:
+        connected = add_telegram_chat_id("123,-100555", "123")
+        self.assertEqual(parse_telegram_chat_ids(connected), ("123", "-100555"))
+        self.assertEqual(remove_telegram_chat_id(connected, "123"), "-100555")
 
 
 class TelegramChatDiscoveryTests(unittest.TestCase):
@@ -118,6 +145,36 @@ class TelegramMessageSafetyTests(unittest.TestCase):
         fields = parse_qs(api_request.call_args.args[1].decode("utf-8"))
         self.assertEqual(fields["chat_id"], ["456"])
         self.assertIn('"callback_data": "period:30"', fields["reply_markup"][0])
+
+    def test_message_is_broadcast_to_all_configured_chats(self) -> None:
+        with (
+            patch("telegram_reports._get_telegram_credentials", return_value=("token", "123,-100555")),
+            patch("telegram_reports._telegram_api_request", return_value={"ok": True}) as api_request,
+        ):
+            send_telegram_message("Отчёт")
+
+        target_ids = [
+            parse_qs(call.args[1].decode("utf-8"))["chat_id"][0]
+            for call in api_request.call_args_list
+        ]
+        self.assertEqual(target_ids, ["123", "-100555"])
+
+    def test_document_is_broadcast_to_all_configured_chats(self) -> None:
+        report_file = TelegramReportFile(
+            filename="report.xlsx",
+            content=b"report-content",
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        with (
+            patch("telegram_reports._get_telegram_credentials", return_value=("token", "123,-100555")),
+            patch("telegram_reports._telegram_api_request", return_value={"ok": True}) as api_request,
+        ):
+            send_telegram_document(report_file)
+
+        self.assertEqual(api_request.call_count, 2)
+        payloads = [call.args[1] for call in api_request.call_args_list]
+        self.assertIn(b'\r\n\r\n123\r\n', payloads[0])
+        self.assertIn(b'\r\n\r\n-100555\r\n', payloads[1])
 
 
 class TargetedTelegramReportTests(unittest.TestCase):

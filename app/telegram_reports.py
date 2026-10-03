@@ -35,7 +35,7 @@ from sales_analytics import (
     build_product_summary,
     to_csv_bytes,
 )
-from telegram_settings_store import load_telegram_settings
+from telegram_settings_store import load_telegram_settings, parse_telegram_chat_ids
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,7 @@ def env_int(name: str, default: int) -> int:
 
 def telegram_is_configured() -> bool:
     token, chat_id = _get_telegram_credentials()
-    return bool(token and chat_id)
+    return bool(token and parse_telegram_chat_ids(chat_id))
 
 
 def _get_telegram_credentials() -> tuple[str, str]:
@@ -145,7 +145,7 @@ def _telegram_api_request(
     token = str(bot_token or "").strip() or configured_token
     if not token:
         raise RuntimeError("Не задан токен Telegram-бота.")
-    if require_chat and not chat_id:
+    if require_chat and not parse_telegram_chat_ids(chat_id):
         raise RuntimeError("Не выбран Telegram-чат для отчётов.")
 
     telegram_url = f"https://api.telegram.org/bot{token}/{method}"
@@ -231,21 +231,25 @@ def send_telegram_message(
     reply_markup: dict[str, object] | None = None,
 ) -> None:
     _, configured_chat_id = _get_telegram_credentials()
-    target_chat_id = str(chat_id or "").strip() or configured_chat_id
-    fields = {
-        "chat_id": target_chat_id,
-        "text": _normalize_telegram_html(text),
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true",
-    }
-    if reply_markup:
-        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
-    payload = parse.urlencode(fields).encode("utf-8")
-    _telegram_api_request(
-        "sendMessage",
-        payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    target_chat_ids = parse_telegram_chat_ids(chat_id if chat_id is not None else configured_chat_id)
+    if not target_chat_ids:
+        raise RuntimeError("Не выбран Telegram-чат для отчётов.")
+
+    for target_chat_id in target_chat_ids:
+        fields = {
+            "chat_id": target_chat_id,
+            "text": _normalize_telegram_html(text),
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }
+        if reply_markup:
+            fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        payload = parse.urlencode(fields).encode("utf-8")
+        _telegram_api_request(
+            "sendMessage",
+            payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
 
 
 def get_telegram_updates(*, offset: int = 0, timeout: int = 20) -> list[dict[str, object]]:
@@ -293,6 +297,7 @@ def answer_telegram_callback(
 def configure_telegram_commands() -> None:
     commands = [
         {"command": "menu", "description": "Открыть меню отчётов"},
+        {"command": "chatid", "description": "Показать ID текущего чата"},
         {"command": "summary", "description": "Управленческая сводка"},
         {"command": "categories", "description": "Отчёт по категориям"},
         {"command": "brand", "description": "Отчёт по бренду"},
@@ -370,28 +375,32 @@ def send_telegram_document(
     chat_id: str | None = None,
 ) -> None:
     _, configured_chat_id = _get_telegram_credentials()
-    target_chat_id = str(chat_id or "").strip() or configured_chat_id
-    fields = {
-        "chat_id": target_chat_id,
-        "caption": _normalize_telegram_html(report_file.caption)[:1024],
-        "parse_mode": "HTML",
-    }
-    payload, boundary = _encode_multipart_formdata(
-        fields,
-        [
-            (
-                "document",
-                report_file.filename,
-                report_file.content,
-                report_file.content_type,
-            )
-        ],
-    )
-    _telegram_api_request(
-        "sendDocument",
-        payload,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
+    target_chat_ids = parse_telegram_chat_ids(chat_id if chat_id is not None else configured_chat_id)
+    if not target_chat_ids:
+        raise RuntimeError("Не выбран Telegram-чат для отчётов.")
+
+    for target_chat_id in target_chat_ids:
+        fields = {
+            "chat_id": target_chat_id,
+            "caption": _normalize_telegram_html(report_file.caption)[:1024],
+            "parse_mode": "HTML",
+        }
+        payload, boundary = _encode_multipart_formdata(
+            fields,
+            [
+                (
+                    "document",
+                    report_file.filename,
+                    report_file.content,
+                    report_file.content_type,
+                )
+            ],
+        )
+        _telegram_api_request(
+            "sendDocument",
+            payload,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
 
 
 def format_money_plain(value: object) -> str:

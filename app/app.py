@@ -137,7 +137,12 @@ from telegram_reports import (
 )
 from telegram_bot import start_telegram_bot
 from telegram_scheduler import start_telegram_scheduler
-from telegram_settings_store import load_telegram_settings, save_telegram_settings
+from telegram_settings_store import (
+    add_telegram_chat_id,
+    load_telegram_settings,
+    remove_telegram_chat_id,
+    save_telegram_settings,
+)
 
 # Design System Tokens
 PRIMARY_COLOR = "#003461"
@@ -7983,10 +7988,12 @@ with st.sidebar:
                         value="",
                         placeholder="Оставьте пустым, чтобы сохранить текущий токен",
                     )
-                    telegram_chat_input = st.text_input(
-                        "Chat ID",
-                        value=telegram_settings.chat_id,
-                        placeholder="Можно определить автоматически после /start",
+                    telegram_chat_input = st.text_area(
+                        "Chat ID получателей",
+                        value="\n".join(telegram_settings.chat_ids),
+                        placeholder="По одному Chat ID в строке",
+                        help="Можно указать несколько чатов: по одному в строке или через запятую.",
+                        height=96,
                     )
                     telegram_daily_enabled = st.checkbox(
                         "Отправлять ежедневный отчёт",
@@ -8034,7 +8041,7 @@ with st.sidebar:
                             action="telegram.settings_update",
                             user_id=current_user["username"],
                             details={
-                                "chat_configured": bool(saved_telegram_settings.chat_id),
+                                "chat_count": len(saved_telegram_settings.chat_ids),
                                 "daily_enabled": bool(saved_telegram_settings.daily_enabled),
                                 "report_hour": int(saved_telegram_settings.report_hour),
                                 "report_minute": int(saved_telegram_settings.report_minute),
@@ -8045,6 +8052,48 @@ with st.sidebar:
                         st.rerun()
                     except Exception as error:
                         st.error(f"Не удалось сохранить настройки: {error}")
+
+                connected_chat_ids = list(telegram_settings.chat_ids)
+                if connected_chat_ids:
+                    st.markdown("**Подключённые чаты**")
+                    connected_col, remove_col = st.columns([3, 1])
+                    with connected_col:
+                        selected_connected_chat = st.selectbox(
+                            "Получатели автоматических и ручных отчётов",
+                            options=connected_chat_ids,
+                            key="telegram_connected_chat_select",
+                            label_visibility="collapsed",
+                        )
+                    with remove_col:
+                        remove_connected_chat = st.button(
+                            "Отключить",
+                            key="telegram_remove_connected_chat_button",
+                            use_container_width=True,
+                        )
+                    if remove_connected_chat:
+                        try:
+                            remaining_chat_ids = remove_telegram_chat_id(
+                                telegram_settings.chat_id,
+                                selected_connected_chat,
+                            )
+                            save_telegram_settings(
+                                bot_token=None,
+                                chat_id=remaining_chat_ids,
+                                daily_enabled=telegram_settings.daily_enabled,
+                                report_hour=telegram_settings.report_hour,
+                                report_minute=telegram_settings.report_minute,
+                                send_report_files=telegram_settings.send_report_files,
+                                updated_by=current_user["username"],
+                            )
+                            audit_event(
+                                action="telegram.chat_disconnect",
+                                user_id=current_user["username"],
+                                details={"chat_id_suffix": selected_connected_chat[-4:]},
+                            )
+                            st.success("Чат отключён.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"Не удалось отключить чат: {error}")
 
                 discovery_col, test_col = st.columns(2)
                 with discovery_col:
@@ -8073,7 +8122,7 @@ with st.sidebar:
                                 action="telegram.test_send",
                                 user_id=current_user["username"],
                             )
-                            st.success("Тестовое сообщение отправлено.")
+                            st.success("Тестовое сообщение отправлено во все подключённые чаты.")
                         except Exception as error:
                             st.error(f"Не удалось отправить тест: {error}")
 
@@ -8092,9 +8141,13 @@ with st.sidebar:
                         use_container_width=True,
                     ):
                         try:
-                            save_telegram_settings(
+                            updated_chat_ids = add_telegram_chat_id(
+                                telegram_settings.chat_id,
+                                selected_discovered_chat,
+                            )
+                            saved_telegram_settings = save_telegram_settings(
                                 bot_token=None,
-                                chat_id=selected_discovered_chat,
+                                chat_id=updated_chat_ids,
                                 daily_enabled=telegram_settings.daily_enabled,
                                 report_hour=telegram_settings.report_hour,
                                 report_minute=telegram_settings.report_minute,
@@ -8104,19 +8157,25 @@ with st.sidebar:
                             audit_event(
                                 action="telegram.chat_connect",
                                 user_id=current_user["username"],
-                                details={"chat_id_suffix": selected_discovered_chat[-4:]},
+                                details={
+                                    "chat_id_suffix": selected_discovered_chat[-4:],
+                                    "chat_count": len(saved_telegram_settings.chat_ids),
+                                },
                             )
                             st.session_state.pop("telegram_discovered_chats", None)
-                            st.success("Чат подключён.")
+                            st.success("Чат добавлен к получателям.")
                             st.rerun()
                         except Exception as error:
                             st.error(f"Не удалось подключить чат: {error}")
 
             telegram_ready = telegram_is_configured() if not telegram_settings_error else False
             if not telegram_ready:
-                st.info("Для отправки нужен токен бота и выбранный Chat ID.")
+                st.info("Для отправки нужен токен бота и хотя бы один Chat ID.")
             else:
-                st.caption("В Telegram отправьте /menu, чтобы запросить отчёт кнопками прямо у бота.")
+                st.caption(
+                    "Автоматические отчёты отправляются во все подключённые чаты. "
+                    "Команда /menu отвечает только в том чате, откуда её отправили."
+                )
 
             st.markdown("**Конструктор отчёта**")
             st.caption("Выберите период и нужный срез. В Telegram придёт краткая сводка и один Excel-файл.")

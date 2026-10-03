@@ -110,6 +110,24 @@ class TelegramBotMenuTests(unittest.TestCase):
 
         send_message.assert_not_called()
 
+    def test_unauthorized_chat_can_request_its_chat_id(self) -> None:
+        menu = TelegramReportMenu(data_loader=lambda: self.sales)
+        with patch("telegram_bot.send_telegram_message") as send_message:
+            menu.handle_update(message_update("/chatid", chat_id=999), allowed_chat_id="123")
+
+        self.assertIn("999", send_message.call_args.args[0])
+        self.assertEqual(send_message.call_args.kwargs["chat_id"], "999")
+
+    def test_second_authorized_chat_can_open_menu(self) -> None:
+        menu = TelegramReportMenu(data_loader=lambda: self.sales)
+        with patch("telegram_bot.send_telegram_message") as send_message:
+            menu.handle_update(
+                message_update("/menu", chat_id=-100555),
+                allowed_chat_ids=("123", "-100555"),
+            )
+
+        self.assertEqual(send_message.call_args.kwargs["chat_id"], "-100555")
+
     def test_sku_command_runs_exact_report_for_requested_period(self) -> None:
         menu = TelegramReportMenu(data_loader=lambda: self.sales)
         with (
