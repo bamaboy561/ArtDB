@@ -135,6 +135,7 @@ from telegram_reports import (
     send_telegram_message,
     telegram_is_configured,
 )
+from telegram_bot import start_telegram_bot
 from telegram_scheduler import start_telegram_scheduler
 from telegram_settings_store import load_telegram_settings, save_telegram_settings
 
@@ -177,6 +178,7 @@ st.set_page_config(
 )
 
 start_telegram_scheduler()
+start_telegram_bot()
 
 
 DASHBOARD_CSS = f"""
@@ -8113,6 +8115,8 @@ with st.sidebar:
             telegram_ready = telegram_is_configured() if not telegram_settings_error else False
             if not telegram_ready:
                 st.info("Для отправки нужен токен бота и выбранный Chat ID.")
+            else:
+                st.caption("В Telegram отправьте /menu, чтобы запросить отчёт кнопками прямо у бота.")
 
             st.markdown("**Конструктор отчёта**")
             st.caption("Выберите период и нужный срез. В Telegram придёт краткая сводка и один Excel-файл.")

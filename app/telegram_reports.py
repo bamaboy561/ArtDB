@@ -222,20 +222,89 @@ def discover_telegram_chats() -> list[dict[str, str]]:
     return list(chats.values())
 
 
-def send_telegram_message(text: str) -> None:
-    _, chat_id = _get_telegram_credentials()
-    payload = parse.urlencode(
-        {
-            "chat_id": chat_id,
-            "text": _normalize_telegram_html(text),
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        }
-    ).encode("utf-8")
+def send_telegram_message(
+    text: str,
+    *,
+    chat_id: str | None = None,
+    reply_markup: dict[str, object] | None = None,
+) -> None:
+    _, configured_chat_id = _get_telegram_credentials()
+    target_chat_id = str(chat_id or "").strip() or configured_chat_id
+    fields = {
+        "chat_id": target_chat_id,
+        "text": _normalize_telegram_html(text),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    payload = parse.urlencode(fields).encode("utf-8")
     _telegram_api_request(
         "sendMessage",
         payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
+def get_telegram_updates(*, offset: int = 0, timeout: int = 20) -> list[dict[str, object]]:
+    payload = parse.urlencode(
+        {
+            "offset": max(0, int(offset)),
+            "limit": 25,
+            "timeout": max(0, min(25, int(timeout))),
+            "allowed_updates": json.dumps(["message", "callback_query"]),
+        }
+    ).encode("utf-8")
+    response = _telegram_api_request(
+        "getUpdates",
+        payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        require_chat=False,
+    )
+    updates = response.get("result", [])
+    if not isinstance(updates, list):
+        return []
+    return [item for item in updates if isinstance(item, dict)]
+
+
+def answer_telegram_callback(
+    callback_query_id: str,
+    *,
+    text: str = "",
+    show_alert: bool = False,
+) -> None:
+    fields = {
+        "callback_query_id": str(callback_query_id),
+        "show_alert": "true" if show_alert else "false",
+    }
+    if text:
+        fields["text"] = str(text)[:200]
+    payload = parse.urlencode(fields).encode("utf-8")
+    _telegram_api_request(
+        "answerCallbackQuery",
+        payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        require_chat=False,
+    )
+
+
+def configure_telegram_commands() -> None:
+    commands = [
+        {"command": "menu", "description": "Открыть меню отчётов"},
+        {"command": "summary", "description": "Управленческая сводка"},
+        {"command": "categories", "description": "Отчёт по категориям"},
+        {"command": "portfolio", "description": "Портфель SKU"},
+        {"command": "sku", "description": "Карточка SKU или артикула"},
+        {"command": "help", "description": "Помощь по командам"},
+    ]
+    payload = parse.urlencode(
+        {"commands": json.dumps(commands, ensure_ascii=False)}
+    ).encode("utf-8")
+    _telegram_api_request(
+        "setMyCommands",
+        payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        require_chat=False,
     )
 
 
@@ -291,10 +360,15 @@ def _encode_multipart_formdata(
     return b"".join(chunks), boundary
 
 
-def send_telegram_document(report_file: TelegramReportFile) -> None:
-    _, chat_id = _get_telegram_credentials()
+def send_telegram_document(
+    report_file: TelegramReportFile,
+    *,
+    chat_id: str | None = None,
+) -> None:
+    _, configured_chat_id = _get_telegram_credentials()
+    target_chat_id = str(chat_id or "").strip() or configured_chat_id
     fields = {
-        "chat_id": chat_id,
+        "chat_id": target_chat_id,
         "caption": _normalize_telegram_html(report_file.caption)[:1024],
         "parse_mode": "HTML",
     }
@@ -1051,6 +1125,7 @@ def send_targeted_telegram_report(
     category: str | None = None,
     product_key: str | None = None,
     with_file: bool = True,
+    chat_id: str | None = None,
 ) -> int:
     message, report_file = build_targeted_telegram_report(
         data,
@@ -1061,10 +1136,10 @@ def send_targeted_telegram_report(
         product_key=product_key,
         include_file_note=with_file,
     )
-    send_telegram_message(message)
+    send_telegram_message(message, chat_id=chat_id)
     if not with_file:
         return 0
-    send_telegram_document(report_file)
+    send_telegram_document(report_file, chat_id=chat_id)
     return 1
 
 

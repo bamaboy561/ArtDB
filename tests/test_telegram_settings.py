@@ -107,6 +107,18 @@ class TelegramMessageSafetyTests(unittest.TestCase):
         )
         self.assertEqual(fields["parse_mode"], ["HTML"])
 
+    def test_message_supports_target_chat_and_keyboard(self) -> None:
+        keyboard = {"inline_keyboard": [[{"text": "30 дней", "callback_data": "period:30"}]]}
+        with (
+            patch("telegram_reports._get_telegram_credentials", return_value=("token", "123")),
+            patch("telegram_reports._telegram_api_request", return_value={"ok": True}) as api_request,
+        ):
+            send_telegram_message("Отчёт", chat_id="456", reply_markup=keyboard)
+
+        fields = parse_qs(api_request.call_args.args[1].decode("utf-8"))
+        self.assertEqual(fields["chat_id"], ["456"])
+        self.assertIn('"callback_data": "period:30"', fields["reply_markup"][0])
+
 
 class TargetedTelegramReportTests(unittest.TestCase):
     def setUp(self) -> None:
