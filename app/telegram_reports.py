@@ -498,6 +498,29 @@ def build_upload_status(today: datetime.date, salons: Iterable[str], manifest: p
     return uploaded_salons, missing_salons
 
 
+TELEGRAM_DIVIDER = "━━━━━━━━━━━━"
+
+
+def _telegram_metric_line(label: str, value: object) -> str:
+    """Render one compact metric line for mobile Telegram clients."""
+    return f"<b>{label}:</b> {value}"
+
+
+def _telegram_numbered_item(position: int, value: object) -> str:
+    return f"<b>{position}.</b> {value}"
+
+
+def _telegram_ranked_item(
+    position: int,
+    label: object,
+    details: str,
+) -> list[str]:
+    return [
+        f"<b>{position}. {escape(_short_label(label))}</b>",
+        f"   {details}",
+    ]
+
+
 def build_daily_summary() -> str:
     timezone = get_timezone()
     now = datetime.now(timezone)
@@ -512,19 +535,24 @@ def build_daily_summary() -> str:
         app_url = f"https://{app_url}"
 
     summary_lines = [
-        "<b>ArtDB: ежедневная сводка</b>",
-        f"Дата: {today.strftime('%d.%m.%Y')}",
-        f"Салонов в системе: {len(salons)}",
-        f"С загрузкой за сегодня: {len(uploaded_salons)}",
+        "<b>ArtDB | Ежедневная сводка</b>",
+        _telegram_metric_line("Дата", today.strftime("%d.%m.%Y")),
+        TELEGRAM_DIVIDER,
+        "<b>Загрузка данных</b>",
+        _telegram_metric_line("Салоны", format_number_plain(len(salons))),
+        _telegram_metric_line(
+            "Загружено сегодня",
+            f"{format_number_plain(len(uploaded_salons))} из {format_number_plain(len(salons))}",
+        ),
     ]
     if app_url:
-        summary_lines.append(f"Сайт: {escape(app_url)}")
+        summary_lines.append(_telegram_metric_line("Сайт", escape(app_url)))
 
     if missing_salons:
-        summary_lines.append("Без загрузки сегодня:")
+        summary_lines.extend(["", "<b>Ожидают загрузку</b>"])
         summary_lines.extend(f"• {escape(salon)}" for salon in missing_salons)
     else:
-        summary_lines.append("Все салоны загрузили данные за сегодня.")
+        summary_lines.append(_telegram_metric_line("Статус", "все салоны загрузили данные"))
 
     archive_result = load_archive_data(salons=salons if salons else None)
     procurement_forecast = pd.DataFrame()
@@ -537,12 +565,13 @@ def build_daily_summary() -> str:
         summary_lines.extend(
             [
                 "",
-                f"Последний месяц: {escape(str(latest_month.get('month_label', 'н/д')))}",
-                f"Выручка: {format_money_plain(overview.get('total_revenue'))}",
-                f"Маржа: {format_money_plain(overview.get('total_margin'))}",
-                f"Маржа %: {format_percent_plain(overview.get('margin_pct'))}",
-                f"Количество: {format_number_plain(overview.get('total_quantity'))}",
-                f"Риск по марже (&lt;15%): {risk_count}",
+                TELEGRAM_DIVIDER,
+                f"<b>Продажи | {escape(str(latest_month.get('month_label', 'н/д')))}</b>",
+                _telegram_metric_line("Выручка", format_money_plain(overview.get("total_revenue"))),
+                _telegram_metric_line("Валовая прибыль", format_money_plain(overview.get("total_margin"))),
+                _telegram_metric_line("Маржинальность", format_percent_plain(overview.get("margin_pct"))),
+                _telegram_metric_line("Количество", format_number_plain(overview.get("total_quantity"))),
+                _telegram_metric_line("SKU с маржой &lt;15%", format_number_plain(risk_count)),
             ]
         )
 
@@ -556,11 +585,24 @@ def build_daily_summary() -> str:
             summary_lines.extend(
                 [
                     "",
+                    TELEGRAM_DIVIDER,
                     "<b>Закупки и остатки</b>",
-                    f"SKU к заказу: {format_number_plain(procurement_overview.get('reorder_sku_count'))}",
-                    f"Риск дефицита: {format_number_plain(procurement_overview.get('critical_stock_count'))}",
-                    f"Рекомендованный заказ: {format_number_plain(procurement_overview.get('recommended_order_qty_total'))}",
-                    f"Неликвид с остатком: {format_number_plain(len(stock_frames['dormant']))}",
+                    _telegram_metric_line(
+                        "SKU к заказу",
+                        format_number_plain(procurement_overview.get("reorder_sku_count")),
+                    ),
+                    _telegram_metric_line(
+                        "Риск дефицита",
+                        format_number_plain(procurement_overview.get("critical_stock_count")),
+                    ),
+                    _telegram_metric_line(
+                        "Рекомендованный заказ",
+                        f"{format_number_plain(procurement_overview.get('recommended_order_qty_total'))} шт.",
+                    ),
+                    _telegram_metric_line(
+                        "Неликвид с остатком",
+                        f"{format_number_plain(len(stock_frames['dormant']))} SKU",
+                    ),
                 ]
             )
 
@@ -571,12 +613,18 @@ def build_daily_summary() -> str:
         procurement_forecast=procurement_forecast,
     )
     if alerts:
-        summary_lines.extend(["", "<b>Что требует внимания</b>"])
-        summary_lines.extend(f"• {alert}" for alert in alerts[:6])
+        summary_lines.extend(["", TELEGRAM_DIVIDER, "<b>Что требует внимания</b>"])
+        summary_lines.extend(
+            _telegram_numbered_item(position, alert)
+            for position, alert in enumerate(alerts[:6], start=1)
+        )
 
     if archive_result.warnings:
-        summary_lines.extend(["", "Предупреждения архива:"])
-        summary_lines.extend(f"• {escape(warning)}" for warning in archive_result.warnings[:5])
+        summary_lines.extend(["", TELEGRAM_DIVIDER, "<b>Предупреждения архива</b>"])
+        summary_lines.extend(
+            _telegram_numbered_item(position, escape(warning))
+            for position, warning in enumerate(archive_result.warnings[:5], start=1)
+        )
 
     return "\n".join(summary_lines)
 
@@ -703,10 +751,14 @@ def build_risk_alert_message() -> str:
     today = datetime.now(get_timezone()).strftime("%d.%m.%Y")
     return "\n".join(
         [
-            "<b>ArtDB: автоматические предупреждения</b>",
-            f"Дата: {today}",
-            "",
-            *[f"• {alert}" for alert in alerts],
+            "<b>ArtDB | Контроль рисков</b>",
+            _telegram_metric_line("Дата", today),
+            TELEGRAM_DIVIDER,
+            "<b>Требует внимания</b>",
+            *[
+                _telegram_numbered_item(position, alert)
+                for position, alert in enumerate(alerts, start=1)
+            ],
         ]
     )
 
@@ -995,56 +1047,65 @@ def build_targeted_telegram_report(
     report_label = TARGETED_TELEGRAM_REPORT_LABELS[report_kind]
     period_label = f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
     message_lines = [
-        f"<b>ArtDB: {escape(report_label)}</b>",
-        f"Период: {period_label}",
+        f"<b>ArtDB | {escape(report_label)}</b>",
+        _telegram_metric_line("Период", period_label),
     ]
     if category:
-        message_lines.append(f"Категория: {escape(_short_label(category))}")
+        message_lines.append(f"<b>Категория: {escape(_short_label(category))}</b>")
     if brand:
-        message_lines.append(f"Бренд: {escape(_short_label(brand))}")
+        message_lines.append(f"<b>Бренд: {escape(_short_label(brand))}</b>")
     if supplier:
-        message_lines.append(f"Поставщик: {escape(_short_label(supplier))}")
+        message_lines.append(f"<b>Поставщик: {escape(_short_label(supplier))}</b>")
 
     sku_label = ""
     if report_kind == "sku":
         sku_label = _short_label(product_summary.iloc[0].get("group_name", product_key))
-        message_lines.append(f"SKU: {escape(sku_label)}")
+        message_lines.append(f"<b>SKU: {escape(sku_label)}</b>")
         item_code = _first_text(filtered, "item_code")
         if item_code and item_code.casefold() not in sku_label.casefold():
-            message_lines.append(f"Артикул: {escape(item_code)}")
+            message_lines.append(_telegram_metric_line("Артикул", escape(item_code)))
         supplier = _first_text(filtered, "supplier")
         if supplier:
-            message_lines.append(f"Поставщик: {escape(_short_label(supplier))}")
+            message_lines.append(_telegram_metric_line("Поставщик", escape(_short_label(supplier))))
 
     message_lines.extend(
         [
-            "",
+            TELEGRAM_DIVIDER,
             "<b>Ключевые показатели</b>",
-            f"• Выручка: {format_money_plain(overview.get('total_revenue'))}",
-            f"• Валовая прибыль: {format_money_plain(overview.get('total_margin'))}",
-            f"• Маржинальность: {format_percent_plain(overview.get('margin_pct'))}",
-            f"• Количество: {format_number_plain(overview.get('total_quantity'))}",
-            f"• SKU: {format_number_plain(overview.get('product_count'))}",
-            f"• Строк продаж: {format_number_plain(overview.get('line_count'))}",
+            _telegram_metric_line("Выручка", format_money_plain(overview.get("total_revenue"))),
+            _telegram_metric_line("Валовая прибыль", format_money_plain(overview.get("total_margin"))),
+            _telegram_metric_line("Маржинальность", format_percent_plain(overview.get("margin_pct"))),
+            _telegram_metric_line("Количество", format_number_plain(overview.get("total_quantity"))),
+            _telegram_metric_line("SKU", format_number_plain(overview.get("product_count"))),
+            _telegram_metric_line("Строк продаж", format_number_plain(overview.get("line_count"))),
             "",
-            f"К предыдущим {period_days} дн.: выручка {_format_change_plain(revenue_change)}, "
-            f"прибыль {_format_change_plain(margin_change)}.",
+            "<b>Сравнение с предыдущим периодом</b>",
+            _telegram_metric_line("Выручка", _format_change_plain(revenue_change)),
+            _telegram_metric_line("Валовая прибыль", _format_change_plain(margin_change)),
         ]
     )
 
     if report_kind in {"summary", "categories"}:
-        message_lines.extend(["", "<b>Категории-лидеры</b>"])
+        message_lines.extend(["", TELEGRAM_DIVIDER, "<b>Категории-лидеры</b>"])
         for position, (_, row) in enumerate(category_summary.head(5).iterrows(), start=1):
-            message_lines.append(
-                f"{position}. {escape(_short_label(row.get('group_name')))}: "
-                f"{format_money_plain(row.get('revenue'))}; маржа {format_percent_plain(row.get('margin_pct'))}"
+            message_lines.extend(
+                _telegram_ranked_item(
+                    position,
+                    row.get("group_name"),
+                    f"Выручка: {format_money_plain(row.get('revenue'))} | "
+                    f"Маржа: {format_percent_plain(row.get('margin_pct'))}",
+                )
             )
     elif report_kind == "portfolio":
-        message_lines.extend(["", "<b>SKU-лидеры портфеля</b>"])
+        message_lines.extend(["", TELEGRAM_DIVIDER, "<b>SKU-лидеры портфеля</b>"])
         for position, (_, row) in enumerate(portfolio_summary.head(5).iterrows(), start=1):
-            message_lines.append(
-                f"{position}. {escape(_short_label(row.get('group_name')))}: "
-                f"{format_money_plain(row.get('revenue'))}; ABC {escape(str(row.get('abc_class', 'н/д')))}"
+            message_lines.extend(
+                _telegram_ranked_item(
+                    position,
+                    row.get("group_name"),
+                    f"Выручка: {format_money_plain(row.get('revenue'))} | "
+                    f"ABC: {escape(str(row.get('abc_class', 'н/д')))}",
+                )
             )
     elif report_kind in {"brand", "supplier"}:
         shortage_frame = scope_risks.get("shortage", pd.DataFrame())
@@ -1060,31 +1121,56 @@ def build_targeted_telegram_report(
         message_lines.extend(
             [
                 "",
+                TELEGRAM_DIVIDER,
                 "<b>Текущий склад и закупки</b>",
-                f"• Остаток: {format_number_plain(stock_on_hand)} шт. на {format_money_plain(stock_value)}",
-                f"• В пути: {format_number_plain(scope_procurement_overview.get('ordered_in_transit_qty_total'))} шт.",
-                f"• К заказу: {format_number_plain(scope_procurement_overview.get('recommended_order_qty_total'))} шт. "
-                f"по {format_number_plain(scope_procurement_overview.get('reorder_sku_count'))} SKU",
-                f"• Дефицит: {len(shortage_frame)} SKU; излишек: {len(overstock_frame)} SKU",
+                _telegram_metric_line("Остаток, шт.", format_number_plain(stock_on_hand)),
+                _telegram_metric_line("Стоимость остатка", format_money_plain(stock_value)),
+                _telegram_metric_line(
+                    "В пути",
+                    f"{format_number_plain(scope_procurement_overview.get('ordered_in_transit_qty_total'))} шт.",
+                ),
+                _telegram_metric_line(
+                    "К заказу",
+                    f"{format_number_plain(scope_procurement_overview.get('recommended_order_qty_total'))} шт.",
+                ),
+                _telegram_metric_line(
+                    "SKU к заказу",
+                    format_number_plain(scope_procurement_overview.get("reorder_sku_count")),
+                ),
+                _telegram_metric_line("Дефицит", f"{format_number_plain(len(shortage_frame))} SKU"),
+                _telegram_metric_line("Излишек", f"{format_number_plain(len(overstock_frame))} SKU"),
                 "",
                 "<b>SKU-лидеры по продажам</b>",
             ]
         )
         for position, (_, row) in enumerate(portfolio_summary.head(5).iterrows(), start=1):
-            message_lines.append(
-                f"{position}. {escape(_short_label(row.get('group_name')))}: "
-                f"{format_money_plain(row.get('revenue'))}; маржа {format_percent_plain(row.get('margin_pct'))}"
+            message_lines.extend(
+                _telegram_ranked_item(
+                    position,
+                    row.get("group_name"),
+                    f"Выручка: {format_money_plain(row.get('revenue'))} | "
+                    f"Маржа: {format_percent_plain(row.get('margin_pct'))}",
+                )
             )
     else:
-        message_lines.extend(["", "<b>Динамика по месяцам</b>"])
+        message_lines.extend(["", TELEGRAM_DIVIDER, "<b>Динамика по месяцам</b>"])
         for _, row in monthly_summary.tail(4).iterrows():
-            message_lines.append(
-                f"• {escape(str(row.get('month_label', 'н/д')))}: "
-                f"{format_money_plain(row.get('revenue'))}; {format_number_plain(row.get('quantity'))} шт."
+            message_lines.extend(
+                [
+                    f"<b>{escape(str(row.get('month_label', 'н/д')))}</b>",
+                    f"   Выручка: {format_money_plain(row.get('revenue'))} | "
+                    f"Количество: {format_number_plain(row.get('quantity'))} шт.",
+                ]
             )
 
     if include_file_note:
-        message_lines.extend(["", "Детализация приложена в одном Excel-файле."])
+        message_lines.extend(
+            [
+                "",
+                TELEGRAM_DIVIDER,
+                "<b>Файл:</b> подробная детализация приложена в Excel.",
+            ]
+        )
 
     summary_sheet = pd.DataFrame(
         [
