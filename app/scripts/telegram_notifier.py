@@ -13,7 +13,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from db import database_enabled, get_service_state, set_service_state
 from telegram_reports import (
-    build_daily_summary,
     build_risk_alert_message,
     get_timezone,
     send_telegram_message,
@@ -27,10 +26,7 @@ SERVICE_NAME = "telegram-daily-summary"
 
 
 def run_once(*, with_files: bool = False) -> None:
-    if with_files:
-        send_telegram_report_pack(with_files=True)
-        return
-    send_telegram_message(build_daily_summary())
+    send_telegram_report_pack(with_files=with_files)
 
 
 def run_daemon() -> None:

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs
 
 import pandas as pd
 from openpyxl import load_workbook
+from PIL import Image
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -19,10 +20,12 @@ if str(APP_DIR) not in sys.path:
 
 from telegram_reports import (
     TelegramReportFile,
+    build_targeted_telegram_card,
     build_targeted_telegram_report,
     discover_telegram_chats,
     send_telegram_document,
     send_telegram_message,
+    send_telegram_photo,
 )
 from telegram_settings_store import (
     add_telegram_chat_id,
@@ -176,6 +179,23 @@ class TelegramMessageSafetyTests(unittest.TestCase):
         self.assertIn(b'\r\n\r\n123\r\n', payloads[0])
         self.assertIn(b'\r\n\r\n-100555\r\n', payloads[1])
 
+    def test_photo_is_broadcast_to_all_configured_chats(self) -> None:
+        report_file = TelegramReportFile(
+            filename="summary.png",
+            content=b"png-content",
+            caption="<b>ArtDB</b>",
+            content_type="image/png",
+        )
+        with (
+            patch("telegram_reports._get_telegram_credentials", return_value=("token", "123,-100555")),
+            patch("telegram_reports._telegram_api_request", return_value={"ok": True}) as api_request,
+        ):
+            send_telegram_photo(report_file)
+
+        self.assertEqual(api_request.call_count, 2)
+        self.assertTrue(all(call.args[0] == "sendPhoto" for call in api_request.call_args_list))
+        self.assertTrue(all(b'name="photo"' in call.args[1] for call in api_request.call_args_list))
+
 
 class TargetedTelegramReportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -262,6 +282,20 @@ class TargetedTelegramReportTests(unittest.TestCase):
         self.assertEqual(portfolio_sheet["A1"].fill.fgColor.rgb, "00003461")
         self.assertTrue(bool(portfolio_sheet.auto_filter.ref))
         styled_workbook.close()
+
+    def test_targeted_visual_card_is_a_readable_png(self) -> None:
+        report_file = build_targeted_telegram_card(
+            self.sales,
+            report_kind="summary",
+            date_from=date(2026, 6, 1),
+            date_to=date(2026, 7, 31),
+        )
+
+        self.assertEqual(report_file.content_type, "image/png")
+        self.assertTrue(report_file.content.startswith(b"\x89PNG\r\n\x1a\n"))
+        with Image.open(BytesIO(report_file.content)) as image:
+            self.assertEqual(image.size, (1200, 830))
+            self.assertEqual(image.mode, "RGB")
 
     def test_sku_report_contains_only_selected_article_sales(self) -> None:
         message, report_file = build_targeted_telegram_report(

@@ -8356,9 +8356,9 @@ with st.sidebar:
                                 },
                             )
                             if sent_files:
-                                st.success("Отчёт и Excel-файл отправлены в Telegram.")
+                                st.success("Визуальная карточка, отчёт и Excel-файл отправлены в Telegram.")
                             else:
-                                st.success("Краткий отчёт отправлен в Telegram.")
+                                st.success("Визуальная карточка и краткий отчёт отправлены в Telegram.")
                         except Exception as error:
                             st.error(f"Не удалось отправить отчёт: {error}")
 

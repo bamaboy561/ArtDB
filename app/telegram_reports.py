@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
+from PIL import Image, ImageDraw, ImageFont
 
 from procurement_analytics import (
     build_procurement_forecast,
@@ -403,6 +404,40 @@ def send_telegram_document(
         )
 
 
+def send_telegram_photo(
+    report_file: TelegramReportFile,
+    *,
+    chat_id: str | None = None,
+) -> None:
+    _, configured_chat_id = _get_telegram_credentials()
+    target_chat_ids = parse_telegram_chat_ids(chat_id if chat_id is not None else configured_chat_id)
+    if not target_chat_ids:
+        raise RuntimeError("Не выбран Telegram-чат для отчётов.")
+
+    for target_chat_id in target_chat_ids:
+        fields = {
+            "chat_id": target_chat_id,
+            "caption": _normalize_telegram_html(report_file.caption)[:1024],
+            "parse_mode": "HTML",
+        }
+        payload, boundary = _encode_multipart_formdata(
+            fields,
+            [
+                (
+                    "photo",
+                    report_file.filename,
+                    report_file.content,
+                    report_file.content_type,
+                )
+            ],
+        )
+        _telegram_api_request(
+            "sendPhoto",
+            payload,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+
+
 def format_money_plain(value: object) -> str:
     numeric = pd.to_numeric(value, errors="coerce")
     if pd.isna(numeric):
@@ -422,6 +457,341 @@ def format_percent_plain(value: object) -> str:
     if pd.isna(numeric):
         return "н/д"
     return f"{float(numeric):.1f}%"
+
+
+TELEGRAM_CARD_WIDTH = 1200
+TELEGRAM_CARD_HEIGHT = 830
+TELEGRAM_CARD_COLORS = {
+    "navy": "#003461",
+    "teal": "#006C49",
+    "gold": "#D89A2B",
+    "danger": "#D94D3D",
+    "background": "#F4F7F9",
+    "surface": "#FFFFFF",
+    "border": "#DCE5EB",
+    "text": "#0F172A",
+    "muted": "#64748B",
+    "grid": "#EAF0F4",
+    "soft_blue": "#DDEBFA",
+}
+
+
+def _telegram_card_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
+    configured_font = os.getenv("ARTDB_REPORT_FONT", "").strip()
+    candidates = [
+        configured_font,
+        "C:/Windows/Fonts/seguisb.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=size)
+
+
+def _fit_card_text(
+    draw: ImageDraw.ImageDraw,
+    value: object,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    suffix = "…"
+    while text and draw.textlength(f"{text}{suffix}", font=font) > max_width:
+        text = text[:-1].rstrip()
+    return f"{text}{suffix}" if text else suffix
+
+
+def _build_telegram_card_trend(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty or "date" not in frame.columns or "revenue" not in frame.columns:
+        return pd.DataFrame(columns=["label", "revenue"])
+
+    trend = frame[["date", "revenue"]].copy()
+    trend["date"] = pd.to_datetime(trend["date"], errors="coerce")
+    trend["revenue"] = pd.to_numeric(trend["revenue"], errors="coerce").fillna(0.0)
+    trend = trend.dropna(subset=["date"])
+    if trend.empty:
+        return pd.DataFrame(columns=["label", "revenue"])
+
+    span_days = max((trend["date"].max() - trend["date"].min()).days, 0)
+    if span_days <= 45:
+        trend["period"] = trend["date"].dt.normalize()
+        label_format = "%d.%m"
+        max_points = 12
+    elif span_days <= 180:
+        trend["period"] = trend["date"].dt.normalize() - pd.to_timedelta(
+            trend["date"].dt.dayofweek,
+            unit="D",
+        )
+        label_format = "%d.%m"
+        max_points = 12
+    else:
+        trend["period"] = trend["date"].dt.to_period("M").dt.to_timestamp()
+        label_format = "%m.%Y"
+        max_points = 10
+
+    grouped = (
+        trend.groupby("period", as_index=False)["revenue"]
+        .sum()
+        .sort_values("period")
+        .tail(max_points)
+        .reset_index(drop=True)
+    )
+    grouped["label"] = grouped["period"].dt.strftime(label_format)
+    return grouped[["label", "revenue"]]
+
+
+def _draw_telegram_metric_card(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    *,
+    label: str,
+    value: str,
+    accent: str,
+) -> None:
+    draw.rounded_rectangle(
+        box,
+        radius=22,
+        fill=TELEGRAM_CARD_COLORS["surface"],
+        outline=TELEGRAM_CARD_COLORS["border"],
+        width=2,
+    )
+    left, top, right, _ = box
+    draw.rounded_rectangle(
+        (left + 20, top + 22, left + 28, top + 60),
+        radius=4,
+        fill=accent,
+    )
+    label_font = _telegram_card_font(20, bold=True)
+    value_font = _telegram_card_font(30, bold=True)
+    draw.text(
+        (left + 44, top + 22),
+        label.upper(),
+        font=label_font,
+        fill=TELEGRAM_CARD_COLORS["muted"],
+    )
+    fitted_value = _fit_card_text(draw, value, value_font, right - left - 48)
+    draw.text(
+        (left + 22, top + 76),
+        fitted_value,
+        font=value_font,
+        fill=TELEGRAM_CARD_COLORS["text"],
+    )
+
+
+def _draw_telegram_trend_chart(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    trend: pd.DataFrame,
+) -> None:
+    left, top, right, bottom = box
+    draw.rounded_rectangle(
+        box,
+        radius=24,
+        fill=TELEGRAM_CARD_COLORS["surface"],
+        outline=TELEGRAM_CARD_COLORS["border"],
+        width=2,
+    )
+    title_font = _telegram_card_font(24, bold=True)
+    axis_font = _telegram_card_font(17)
+    value_font = _telegram_card_font(20, bold=True)
+    draw.text(
+        (left + 28, top + 22),
+        "Динамика выручки",
+        font=title_font,
+        fill=TELEGRAM_CARD_COLORS["navy"],
+    )
+
+    plot_left = left + 34
+    plot_right = right - 34
+    plot_top = top + 84
+    plot_bottom = bottom - 48
+    for step in range(4):
+        y = int(plot_top + (plot_bottom - plot_top) * step / 3)
+        draw.line(
+            (plot_left, y, plot_right, y),
+            fill=TELEGRAM_CARD_COLORS["grid"],
+            width=2,
+        )
+
+    if trend.empty:
+        draw.text(
+            (plot_left, plot_top + 54),
+            "Недостаточно данных для графика",
+            font=axis_font,
+            fill=TELEGRAM_CARD_COLORS["muted"],
+        )
+        return
+
+    values = pd.to_numeric(trend["revenue"], errors="coerce").fillna(0.0).tolist()
+    labels = trend["label"].fillna("").astype(str).tolist()
+    value_min = min(0.0, min(values))
+    value_max = max(values)
+    if value_max == value_min:
+        value_max = value_min + 1.0
+
+    point_count = len(values)
+    x_step = (plot_right - plot_left) / max(point_count - 1, 1)
+    points: list[tuple[int, int]] = []
+    for index, value in enumerate(values):
+        x = int(plot_left + index * x_step) if point_count > 1 else int((plot_left + plot_right) / 2)
+        y_ratio = (float(value) - value_min) / (value_max - value_min)
+        y = int(plot_bottom - y_ratio * (plot_bottom - plot_top))
+        points.append((x, y))
+
+    if len(points) > 1:
+        area_points = [points[0], *points, points[-1], (points[-1][0], plot_bottom), (points[0][0], plot_bottom)]
+        draw.polygon(area_points, fill=TELEGRAM_CARD_COLORS["soft_blue"])
+        draw.line(points, fill=TELEGRAM_CARD_COLORS["navy"], width=6, joint="curve")
+    for x, y in points:
+        draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=TELEGRAM_CARD_COLORS["gold"])
+
+    if labels:
+        draw.text((plot_left, plot_bottom + 14), labels[0], font=axis_font, fill=TELEGRAM_CARD_COLORS["muted"])
+        last_label = labels[-1]
+        label_width = draw.textlength(last_label, font=axis_font)
+        draw.text(
+            (plot_right - label_width, plot_bottom + 14),
+            last_label,
+            font=axis_font,
+            fill=TELEGRAM_CARD_COLORS["muted"],
+        )
+
+    last_value = format_money_plain(values[-1])
+    value_width = draw.textlength(last_value, font=value_font)
+    label_x = min(max(points[-1][0] - value_width / 2, plot_left), plot_right - value_width)
+    label_y = max(points[-1][1] - 38, plot_top)
+    draw.rounded_rectangle(
+        (label_x - 9, label_y - 4, label_x + value_width + 9, label_y + 28),
+        radius=10,
+        fill=TELEGRAM_CARD_COLORS["surface"],
+        outline=TELEGRAM_CARD_COLORS["border"],
+        width=1,
+    )
+    draw.text(
+        (label_x, label_y),
+        last_value,
+        font=value_font,
+        fill=TELEGRAM_CARD_COLORS["navy"],
+    )
+
+
+def _render_telegram_sales_card(
+    *,
+    title: str,
+    period_label: str,
+    scope_label: str,
+    overview: dict[str, object],
+    trend: pd.DataFrame,
+    revenue_change: float | None,
+    margin_change: float | None,
+) -> bytes:
+    image = Image.new(
+        "RGB",
+        (TELEGRAM_CARD_WIDTH, TELEGRAM_CARD_HEIGHT),
+        TELEGRAM_CARD_COLORS["background"],
+    )
+    draw = ImageDraw.Draw(image)
+    margin = 54
+
+    eyebrow_font = _telegram_card_font(19, bold=True)
+    title_font = _telegram_card_font(42, bold=True)
+    subtitle_font = _telegram_card_font(21)
+    draw.text((margin, 36), "ARTDB  /  BUSINESS REPORT", font=eyebrow_font, fill=TELEGRAM_CARD_COLORS["teal"])
+    draw.text(
+        (margin, 72),
+        _fit_card_text(draw, title, title_font, TELEGRAM_CARD_WIDTH - margin * 2),
+        font=title_font,
+        fill=TELEGRAM_CARD_COLORS["navy"],
+    )
+    subtitle = f"{period_label}  |  {scope_label}"
+    draw.text(
+        (margin, 130),
+        _fit_card_text(draw, subtitle, subtitle_font, TELEGRAM_CARD_WIDTH - margin * 2),
+        font=subtitle_font,
+        fill=TELEGRAM_CARD_COLORS["muted"],
+    )
+
+    metric_top = 180
+    gap = 16
+    metric_width = int((TELEGRAM_CARD_WIDTH - margin * 2 - gap * 3) / 4)
+    metric_specs = [
+        ("Выручка", format_money_plain(overview.get("total_revenue")), TELEGRAM_CARD_COLORS["navy"]),
+        ("Валовая прибыль", format_money_plain(overview.get("total_margin")), TELEGRAM_CARD_COLORS["teal"]),
+        ("Маржинальность", format_percent_plain(overview.get("margin_pct")), TELEGRAM_CARD_COLORS["gold"]),
+        ("SKU", format_number_plain(overview.get("product_count")), "#2673B8"),
+    ]
+    for index, (label, value, accent) in enumerate(metric_specs):
+        left = margin + index * (metric_width + gap)
+        _draw_telegram_metric_card(
+            draw,
+            (left, metric_top, left + metric_width, metric_top + 142),
+            label=label,
+            value=value,
+            accent=accent,
+        )
+
+    _draw_telegram_trend_chart(
+        draw,
+        (margin, 346, TELEGRAM_CARD_WIDTH - margin, 666),
+        trend,
+    )
+
+    comparison_font = _telegram_card_font(21, bold=True)
+    comparison_value_font = _telegram_card_font(24, bold=True)
+    draw.text(
+        (margin, 700),
+        "К ПРЕДЫДУЩЕМУ ПЕРИОДУ",
+        font=comparison_font,
+        fill=TELEGRAM_CARD_COLORS["muted"],
+    )
+    comparisons = [
+        ("Выручка", revenue_change),
+        ("Валовая прибыль", margin_change),
+    ]
+    comparison_x = margin
+    for label, change in comparisons:
+        value_text = _format_change_plain(change)
+        change_color = (
+            TELEGRAM_CARD_COLORS["teal"]
+            if change is not None and not pd.isna(change) and float(change) >= 0
+            else TELEGRAM_CARD_COLORS["danger"]
+        )
+        if change is None or pd.isna(change):
+            change_color = TELEGRAM_CARD_COLORS["muted"]
+        line = f"{label}: {value_text}"
+        draw.text(
+            (comparison_x, 738),
+            line,
+            font=comparison_value_font,
+            fill=change_color,
+        )
+        comparison_x += 380
+
+    footer_font = _telegram_card_font(16)
+    generated_label = datetime.now(get_timezone()).strftime("Сформировано %d.%m.%Y %H:%M")
+    generated_width = draw.textlength(generated_label, font=footer_font)
+    draw.text(
+        (TELEGRAM_CARD_WIDTH - margin - generated_width, 795),
+        generated_label,
+        font=footer_font,
+        fill=TELEGRAM_CARD_COLORS["muted"],
+    )
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
 
 
 def _safe_excel_sheet_name(value: object, used_names: set[str]) -> str:
@@ -558,9 +928,16 @@ def build_daily_summary() -> str:
     procurement_forecast = pd.DataFrame()
     if not archive_result.data.empty:
         monthly_summary = build_monthly_summary(archive_result.data)
-        overview = build_overview_metrics(archive_result.data)
-        product_summary = build_product_summary(archive_result.data)
         latest_month = monthly_summary.iloc[-1] if not monthly_summary.empty else {}
+        latest_data = archive_result.data
+        latest_month_date = pd.to_datetime(latest_month.get("month"), errors="coerce")
+        if pd.notna(latest_month_date) and "date" in archive_result.data.columns:
+            archive_dates = pd.to_datetime(archive_result.data["date"], errors="coerce")
+            latest_data = archive_result.data[
+                archive_dates.dt.to_period("M") == latest_month_date.to_period("M")
+            ].copy()
+        overview = build_overview_metrics(latest_data)
+        product_summary = build_product_summary(latest_data)
         risk_count = int((product_summary["margin_pct"].fillna(9999) < 15).sum()) if "margin_pct" in product_summary.columns else 0
         summary_lines.extend(
             [
@@ -955,6 +1332,135 @@ def _short_label(value: object, max_length: int = 76) -> str:
     if len(text) <= max_length:
         return text
     return f"{text[:max_length - 1].rstrip()}…"
+
+
+def build_targeted_telegram_card(
+    data: pd.DataFrame,
+    *,
+    report_kind: str,
+    date_from: date,
+    date_to: date,
+    category: str | None = None,
+    product_key: str | None = None,
+    brand: str | None = None,
+    supplier: str | None = None,
+) -> TelegramReportFile:
+    if report_kind not in TARGETED_TELEGRAM_REPORT_LABELS:
+        raise ValueError("Выбран неизвестный тип Telegram-отчёта.")
+
+    start_date = pd.Timestamp(date_from).date()
+    end_date = pd.Timestamp(date_to).date()
+    filtered = _filter_targeted_sales_data(
+        data,
+        date_from=start_date,
+        date_to=end_date,
+        category=category,
+        product_key=product_key,
+        brand=brand,
+        supplier=supplier,
+    )
+    if filtered.empty:
+        raise ValueError("За выбранный период и срез нет данных для визуальной карточки.")
+
+    overview = build_overview_metrics(filtered)
+    period_days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=period_days - 1)
+    previous = _filter_targeted_sales_data(
+        data,
+        date_from=previous_start,
+        date_to=previous_end,
+        category=category,
+        product_key=product_key,
+        brand=brand,
+        supplier=supplier,
+    )
+    previous_overview = build_overview_metrics(previous) if not previous.empty else {}
+    revenue_change = _percentage_change(
+        overview.get("total_revenue"),
+        previous_overview.get("total_revenue"),
+    )
+    margin_change = _percentage_change(
+        overview.get("total_margin"),
+        previous_overview.get("total_margin"),
+    )
+
+    scope_parts: list[str] = []
+    if category:
+        scope_parts.append(f"Категория: {_short_label(category, 34)}")
+    if brand:
+        scope_parts.append(f"Бренд: {_short_label(brand, 34)}")
+    if supplier:
+        scope_parts.append(f"Поставщик: {_short_label(supplier, 34)}")
+    if product_key:
+        product_name = _first_text(filtered, "product") or product_key
+        scope_parts.append(f"SKU: {_short_label(product_name, 46)}")
+    scope_label = " / ".join(scope_parts) or "Все данные"
+    report_label = TARGETED_TELEGRAM_REPORT_LABELS[report_kind]
+    period_label = f"{start_date:%d.%m.%Y} - {end_date:%d.%m.%Y}"
+    image_content = _render_telegram_sales_card(
+        title=report_label,
+        period_label=period_label,
+        scope_label=scope_label,
+        overview=overview,
+        trend=_build_telegram_card_trend(filtered),
+        revenue_change=revenue_change,
+        margin_change=margin_change,
+    )
+    scope_filename = brand or supplier or product_key or category or "all"
+    safe_scope = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(scope_filename)).strip("_")[:36]
+    return TelegramReportFile(
+        filename=f"artdb_{report_kind}_{safe_scope}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.png",
+        content=image_content,
+        caption=f"<b>ArtDB | {escape(report_label)}</b>\n{period_label}",
+        content_type="image/png",
+    )
+
+
+def build_daily_telegram_card() -> TelegramReportFile | None:
+    salons = load_salons()
+    archive_result = load_archive_data(salons=salons if salons else None)
+    if archive_result.data.empty:
+        return None
+
+    data = archive_result.data.copy()
+    monthly_summary = build_monthly_summary(data)
+    if monthly_summary.empty:
+        return None
+
+    latest_row = monthly_summary.iloc[-1]
+    latest_month = pd.to_datetime(latest_row.get("month"), errors="coerce")
+    parsed_dates = (
+        pd.to_datetime(data["date"], errors="coerce")
+        if "date" in data.columns
+        else pd.Series(pd.NaT, index=data.index, dtype="datetime64[ns]")
+    )
+    if pd.notna(latest_month) and parsed_dates.notna().any():
+        latest_mask = parsed_dates.dt.to_period("M") == latest_month.to_period("M")
+        latest_data = data[latest_mask].copy()
+    else:
+        latest_data = data.copy()
+    overview = build_overview_metrics(latest_data)
+    trend = monthly_summary.tail(10)[["month_label", "revenue"]].rename(
+        columns={"month_label": "label"}
+    )
+    period_label = str(latest_row.get("month_label") or "Последний доступный месяц")
+    image_content = _render_telegram_sales_card(
+        title="Ежедневная управленческая сводка",
+        period_label=period_label,
+        scope_label=f"Салоны: {format_number_plain(len(salons))}",
+        overview=overview,
+        trend=trend,
+        revenue_change=pd.to_numeric(latest_row.get("revenue_change_pct"), errors="coerce"),
+        margin_change=pd.to_numeric(latest_row.get("margin_change_pct"), errors="coerce"),
+    )
+    today_label = datetime.now(get_timezone()).strftime("%Y%m%d")
+    return TelegramReportFile(
+        filename=f"artdb_daily_summary_{today_label}.png",
+        content=image_content,
+        caption=f"<b>ArtDB | Ежедневная сводка</b>\nПоследний период: {escape(period_label)}",
+        content_type="image/png",
+    )
 
 
 def build_targeted_telegram_report(
@@ -1431,6 +1937,21 @@ def send_targeted_telegram_report(
     with_file: bool = True,
     chat_id: str | None = None,
 ) -> int:
+    try:
+        visual_card = build_targeted_telegram_card(
+            data,
+            report_kind=report_kind,
+            date_from=date_from,
+            date_to=date_to,
+            category=category,
+            product_key=product_key,
+            brand=brand,
+            supplier=supplier,
+        )
+        send_telegram_photo(visual_card, chat_id=chat_id)
+    except Exception as error:
+        print(f"Telegram visual card error: {error}", flush=True)
+
     message, report_file = build_targeted_telegram_report(
         data,
         report_kind=report_kind,
@@ -1619,6 +2140,13 @@ def build_telegram_report_files() -> list[TelegramReportFile]:
 
 
 def send_telegram_report_pack(*, with_files: bool = True, caption: str | None = None) -> int:
+    try:
+        visual_card = build_daily_telegram_card()
+        if visual_card is not None:
+            send_telegram_photo(visual_card)
+    except Exception as error:
+        print(f"Telegram daily visual card error: {error}", flush=True)
+
     send_telegram_message(caption or build_daily_summary())
     sent_files = 0
     if with_files:
