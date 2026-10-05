@@ -12299,6 +12299,19 @@ if active_screen == "Закупки":
                                             height=260,
                                         )
 
+                                        replace_existing_brands = st.checkbox(
+                                            "Заменять назначенные бренды значениями из файла",
+                                            value=False,
+                                            disabled=not bool(inventory_brand_col),
+                                            key="procurement_stock_replace_brands",
+                                            help=(
+                                                "По умолчанию существующая структура брендов защищена: "
+                                                "бренд из файла заполнится только для нового или ещё не "
+                                                "размеченного SKU. Включайте замену только если колонка "
+                                                "бренда в файле является основной и проверенной."
+                                            ),
+                                        )
+
                                         override_fields = {
                                             field
                                             for field, column_name in inventory_mapping.items()
@@ -12425,6 +12438,11 @@ if active_screen == "Закупки":
                                                 updated_by=current_user["username"],
                                                 override_fields=override_fields,
                                                 replace_stock_snapshot=full_inventory_snapshot,
+                                                preserve_existing_fields=(
+                                                    set()
+                                                    if replace_existing_brands
+                                                    else {"brand"}
+                                                ),
                                             )
                                             reconciliation_differences: dict[
                                                 str, dict[str, float]

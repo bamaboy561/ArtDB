@@ -349,6 +349,7 @@ def merge_procurement_upload(
     updated_by: str,
     override_fields: set[str] | None = None,
     replace_stock_snapshot: bool = False,
+    preserve_existing_fields: set[str] | None = None,
 ) -> int:
     ensure_procurement_store()
     if frame.empty or "product" not in frame.columns:
@@ -364,6 +365,11 @@ def merge_procurement_upload(
     snapshot_fields = safe_override_fields.intersection(
         {"stock_on_hand", "stock_value", "stock_in_transit"}
     )
+    protected_fields = {
+        field
+        for field in (preserve_existing_fields or set())
+        if field in safe_override_fields
+    }
 
     existing = load_procurement_items()
     existing_groups: dict[str, list[dict[str, Any]]] = {}
@@ -405,6 +411,27 @@ def merge_procurement_upload(
         canonical_product = str(existing_record.get("product", "")).strip() or product
         merged_record = {**existing_record, "product": canonical_product}
 
+        # Cosmetic SKU duplicates can contain catalog attributes on a different
+        # spelling of the same product. Keep that metadata before refreshing stock.
+        candidates_by_recency = sorted(
+            existing_candidates,
+            key=lambda candidate: str(candidate.get("updated_at", "")),
+            reverse=True,
+        )
+        for catalog_field in ("supplier", "brand", "notes"):
+            if str(merged_record.get(catalog_field, "")).strip():
+                continue
+            preserved_value = next(
+                (
+                    str(candidate.get(catalog_field, "")).strip()
+                    for candidate in candidates_by_recency
+                    if str(candidate.get(catalog_field, "")).strip()
+                ),
+                "",
+            )
+            if preserved_value:
+                merged_record[catalog_field] = preserved_value
+
         for field in safe_override_fields:
             presence_key = f"__has_{field}"
             if presence_key in row and not bool(row.get(presence_key)):
@@ -412,6 +439,8 @@ def merge_procurement_upload(
                     merged_record[field] = 0.0
                 continue
             if field not in row:
+                continue
+            if field in protected_fields and str(merged_record.get(field, "")).strip():
                 continue
             merged_record[field] = row.get(field)
 

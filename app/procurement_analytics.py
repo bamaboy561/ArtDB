@@ -325,9 +325,22 @@ def build_procurement_forecast(
     item_settings["product"] = item_settings["product"].fillna("").astype(str).str.strip()
     item_settings = item_settings[item_settings["product"] != ""].copy()
     item_settings["_product_key"] = item_settings["product"].map(normalize_product_match_key)
-    if "updated_at" in item_settings.columns:
-        item_settings["_updated_sort"] = pd.to_datetime(item_settings["updated_at"], errors="coerce")
-        item_settings = item_settings.sort_values("_updated_sort", na_position="first")
+    item_settings["_updated_sort"] = pd.to_datetime(
+        item_settings.get("updated_at", pd.Series(pd.NaT, index=item_settings.index)),
+        errors="coerce",
+    )
+    snapshot_signal = pd.Series(0.0, index=item_settings.index, dtype="float64")
+    for snapshot_column in ("stock_on_hand", "stock_value", "stock_in_transit"):
+        snapshot_signal += pd.to_numeric(
+            item_settings[snapshot_column],
+            errors="coerce",
+        ).fillna(0.0).abs()
+    item_settings["_snapshot_signal"] = snapshot_signal
+    item_settings = item_settings.sort_values(
+        ["_updated_sort", "_snapshot_signal"],
+        na_position="first",
+        kind="stable",
+    )
     item_settings = item_settings.drop_duplicates(subset=["_product_key"], keep="last")
     item_settings["supplier"] = item_settings["supplier"].fillna("").astype(str).str.strip()
     item_settings["brand"] = item_settings["brand"].fillna("").astype(str).str.strip()
