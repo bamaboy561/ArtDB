@@ -7,6 +7,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from product_identity import apply_product_category_rules
+
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "date": (
@@ -890,6 +892,8 @@ def prepare_sales_data(
         prepared["category"] = prepared[category].astype(str).str.strip()
     else:
         prepared["category"] = "Без категории"
+
+    prepared = apply_product_category_rules(prepared)
 
     if supplier := resolved_mapping.get("supplier"):
         prepared["supplier"] = prepared[supplier].fillna("").astype(str).str.strip()

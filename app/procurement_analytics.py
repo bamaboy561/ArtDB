@@ -4,6 +4,7 @@ import math
 
 import pandas as pd
 
+from product_identity import normalize_product_match_key
 from sales_analytics import build_abc_analysis, build_product_summary
 
 
@@ -149,7 +150,7 @@ def build_procurement_forecast(
     if working.empty:
         return pd.DataFrame(columns=columns)
 
-    working["_product_key"] = working["product"].str.casefold()
+    working["_product_key"] = working["product"].map(normalize_product_match_key)
     canonical_products = (
         working.sort_values("date")
         .drop_duplicates("_product_key", keep="last")
@@ -323,7 +324,10 @@ def build_procurement_forecast(
             item_settings[column] = pd.NA
     item_settings["product"] = item_settings["product"].fillna("").astype(str).str.strip()
     item_settings = item_settings[item_settings["product"] != ""].copy()
-    item_settings["_product_key"] = item_settings["product"].str.casefold()
+    item_settings["_product_key"] = item_settings["product"].map(normalize_product_match_key)
+    if "updated_at" in item_settings.columns:
+        item_settings["_updated_sort"] = pd.to_datetime(item_settings["updated_at"], errors="coerce")
+        item_settings = item_settings.sort_values("_updated_sort", na_position="first")
     item_settings = item_settings.drop_duplicates(subset=["_product_key"], keep="last")
     item_settings["supplier"] = item_settings["supplier"].fillna("").astype(str).str.strip()
     item_settings["brand"] = item_settings["brand"].fillna("").astype(str).str.strip()
@@ -334,13 +338,7 @@ def build_procurement_forecast(
         item_settings[numeric_column] = item_settings[numeric_column].map(_safe_non_negative_number)
     item_settings["lead_time_days"] = item_settings["lead_time_days"].map(_safe_non_negative_int)
 
-    procurement["_product_key"] = (
-        procurement["product"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-    )
+    procurement["_product_key"] = procurement["product"].map(normalize_product_match_key)
     inventory_only_settings = item_settings[
         ~item_settings["_product_key"].isin(procurement["_product_key"])
     ].copy()
@@ -353,7 +351,7 @@ def build_procurement_forecast(
             inventory_only_records.append(
                 {
                     "product": product_name,
-                    "_product_key": product_name.casefold(),
+                    "_product_key": normalize_product_match_key(product_name),
                     "active_months": 0,
                     "history_months_used": history_months_used,
                     "last_month_qty": 0.0,
@@ -413,7 +411,7 @@ def build_procurement_forecast(
             inbound_summary[column] = pd.NA
     inbound_summary["product"] = inbound_summary["product"].fillna("").astype(str).str.strip()
     inbound_summary = inbound_summary[inbound_summary["product"] != ""].copy()
-    inbound_summary["_product_key"] = inbound_summary["product"].str.casefold()
+    inbound_summary["_product_key"] = inbound_summary["product"].map(normalize_product_match_key)
     inbound_summary["ordered_in_transit_qty"] = inbound_summary["ordered_in_transit_qty"].map(_safe_non_negative_number)
     inbound_summary["open_order_count"] = pd.to_numeric(inbound_summary["open_order_count"], errors="coerce").fillna(0).astype(int)
     inbound_summary = (

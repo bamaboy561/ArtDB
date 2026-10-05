@@ -44,6 +44,7 @@ from data_center import (
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import log_audit_event
+from product_identity import apply_product_category_rules, normalize_product_match_key
 from inventory_analytics import (
     guess_inventory_column_mapping,
     load_inventory_input_file,
@@ -4001,8 +4002,8 @@ def enrich_sales_with_supplier(
 
     if not procurement_items.empty and {"product", "supplier"}.issubset(procurement_items.columns):
         supplier_lookup_source = procurement_items.copy()
-        supplier_lookup_source["product_lookup_key"] = (
-            supplier_lookup_source["product"].fillna("").astype(str).str.strip().str.casefold()
+        supplier_lookup_source["product_lookup_key"] = supplier_lookup_source["product"].map(
+            normalize_product_match_key
         )
         supplier_lookup_source["supplier"] = supplier_lookup_source["supplier"].fillna("").astype(str).str.strip()
         supplier_lookup_source = supplier_lookup_source[
@@ -4015,11 +4016,11 @@ def enrich_sales_with_supplier(
                 .set_index("product_lookup_key")["supplier"]
                 .to_dict()
             )
-            product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+            product_lookup = enriched["product"].map(normalize_product_match_key)
             mapped_supplier = product_lookup.map(supplier_lookup)
 
             if "product_key" in enriched.columns:
-                product_key_lookup = enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+                product_key_lookup = enriched["product_key"].map(normalize_product_match_key)
                 mapped_supplier = mapped_supplier.fillna(product_key_lookup.map(supplier_lookup))
 
             fill_mask = missing_supplier & mapped_supplier.fillna("").astype(str).str.strip().ne("")
@@ -4098,8 +4099,8 @@ def enrich_sales_with_brand(
         return enriched
 
     brand_lookup_source = procurement_items[["product", "brand"]].copy()
-    brand_lookup_source["product_lookup_key"] = (
-        brand_lookup_source["product"].fillna("").astype(str).str.strip().str.casefold()
+    brand_lookup_source["product_lookup_key"] = brand_lookup_source["product"].map(
+        normalize_product_match_key
     )
     brand_lookup_source["brand"] = (
         brand_lookup_source["brand"].fillna("").astype(str).str.strip()
@@ -4114,12 +4115,10 @@ def enrich_sales_with_brand(
             .set_index("product_lookup_key")["brand"]
             .to_dict()
         )
-        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+        product_lookup = enriched["product"].map(normalize_product_match_key)
         mapped_brand = product_lookup.map(brand_lookup)
         if "product_key" in enriched.columns:
-            product_key_lookup = (
-                enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
-            )
+            product_key_lookup = enriched["product_key"].map(normalize_product_match_key)
             mapped_brand = mapped_brand.fillna(product_key_lookup.map(brand_lookup))
 
         missing_brand = enriched["brand"].eq("") | enriched["brand"].str.casefold().eq("не назначен")
@@ -4410,7 +4409,9 @@ def build_sku_cleanup_queue(
 
     if procurement_items is not None and not procurement_items.empty and "product" in procurement_items.columns:
         stock_source = procurement_items.copy()
-        stock_source["stock_product_key"] = stock_source["product"].fillna("").astype(str).str.strip().str.casefold()
+        stock_source["stock_product_key"] = stock_source["product"].map(
+            normalize_product_match_key
+        )
         stock_source = stock_source[stock_source["stock_product_key"].ne("")]
         if not stock_source.empty:
             if "supplier" not in stock_source.columns:
@@ -4425,7 +4426,7 @@ def build_sku_cleanup_queue(
                 .set_index("stock_product_key")[["supplier", "stock_on_hand", "stock_in_transit"]]
                 .rename(columns={"supplier": "stock_supplier"})
             )
-            summary["stock_lookup_key"] = summary["product"].fillna("").astype(str).str.strip().str.casefold()
+            summary["stock_lookup_key"] = summary["product"].map(normalize_product_match_key)
             summary = summary.merge(
                 stock_lookup,
                 left_on="stock_lookup_key",
@@ -6978,8 +6979,8 @@ def build_partner_sku_portfolio(
             ]
         )
 
-    sales_summary["_join_key"] = (
-        sales_summary["product"].fillna("").astype(str).str.strip().str.casefold()
+    sales_summary["_join_key"] = sales_summary["product"].map(
+        normalize_product_match_key
     )
     sales_summary = sales_summary[sales_summary["_join_key"].ne("")].copy()
 
@@ -7003,8 +7004,8 @@ def build_partner_sku_portfolio(
         if column not in procurement_scope.columns:
             procurement_scope[column] = ""
     procurement_scope = procurement_scope[procurement_columns].copy()
-    procurement_scope["_join_key"] = (
-        procurement_scope["product"].fillna("").astype(str).str.strip().str.casefold()
+    procurement_scope["_join_key"] = procurement_scope["product"].map(
+        normalize_product_match_key
     )
     procurement_scope = (
         procurement_scope[procurement_scope["_join_key"].ne("")]
@@ -7808,6 +7809,7 @@ data = enrich_sales_with_brand(data, procurement_items)
 data = apply_sku_attribute_overrides(data, sku_attribute_overrides)
 sku_alias_source_data = data.copy()
 data = apply_sku_aliases(data, sku_aliases)
+data = apply_product_category_rules(data)
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -12331,11 +12333,9 @@ if active_screen == "Закупки":
                                             ),
                                         )
                                         uploaded_inventory_keys = set(
-                                            prepared_inventory_result.data["product"]
-                                            .fillna("")
-                                            .astype(str)
-                                            .str.strip()
-                                            .str.casefold()
+                                            prepared_inventory_result.data["product"].map(
+                                                normalize_product_match_key
+                                            )
                                         )
                                         blank_stock_count = int(
                                             (
@@ -12367,13 +12367,9 @@ if active_screen == "Закупки":
                                             and reset_snapshot_fields
                                             and not procurement_items.empty
                                         ):
-                                            existing_inventory_keys = (
-                                                procurement_items["product"]
-                                                .fillna("")
-                                                .astype(str)
-                                                .str.strip()
-                                                .str.casefold()
-                                            )
+                                            existing_inventory_keys = procurement_items[
+                                                "product"
+                                            ].map(normalize_product_match_key)
                                             has_stored_stock = pd.Series(
                                                 False,
                                                 index=procurement_items.index,

@@ -19,6 +19,7 @@ from db import (
     set_service_state,
 )
 from procurement_store import load_procurement_items
+from product_identity import apply_product_category_rules, normalize_product_match_key
 from salon_data_store import load_archive_data, load_salons
 from sales_analytics import infer_supplier_from_text
 from sku_catalog_store import (
@@ -163,7 +164,8 @@ def load_bot_sales_data() -> pd.DataFrame:
         supplier_rules=_supplier_rules(),
     )
     data = apply_sku_attribute_overrides(data, load_sku_attribute_overrides())
-    return apply_sku_aliases(data, aliases)
+    data = apply_sku_aliases(data, aliases)
+    return apply_product_category_rules(data)
 
 
 def _enrich_sales_catalog(
@@ -187,11 +189,11 @@ def _enrich_sales_catalog(
 
     if not procurement_items.empty and "product" in procurement_items.columns:
         catalog = procurement_items.copy()
-        catalog["_lookup_key"] = catalog["product"].fillna("").astype(str).str.strip().str.casefold()
+        catalog["_lookup_key"] = catalog["product"].map(normalize_product_match_key)
         catalog = catalog[catalog["_lookup_key"].ne("")]
-        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
+        product_lookup = enriched["product"].map(normalize_product_match_key)
         product_key_lookup = (
-            enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
+            enriched["product_key"].map(normalize_product_match_key)
             if "product_key" in enriched.columns
             else product_lookup
         )

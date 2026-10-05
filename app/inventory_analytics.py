@@ -6,6 +6,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from product_identity import normalize_product_match_key
+
 from sales_analytics import (
     _normalize_number_string,
     coerce_numeric,
@@ -436,7 +438,7 @@ def prepare_inventory_data(frame: pd.DataFrame, mapping: dict[str, str | None]) 
     if prepared.empty:
         raise ValueError("После очистки не осталось строк с товарами. Проверьте файл остатков.")
 
-    prepared["_product_key"] = prepared["product"].str.casefold()
+    prepared["_product_key"] = prepared["product"].map(normalize_product_match_key)
 
     aggregated_rows: list[dict[str, object]] = []
     duplicate_rows = len(prepared) - int(prepared["_product_key"].nunique())

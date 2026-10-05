@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
+from product_identity import normalize_product_match_key
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -327,12 +328,12 @@ def upsert_procurement_items(frame: pd.DataFrame, *, updated_by: str) -> int:
 
     existing_frame = load_procurement_items()
     existing_map = {
-        str(row.get("product", "")).strip().casefold(): _normalize_procurement_record(row)
+        normalize_product_match_key(row.get("product", "")): _normalize_procurement_record(row)
         for row in existing_frame.to_dict(orient="records")
         if str(row.get("product", "")).strip()
     }
     for record in records:
-        existing_map[record["product"].casefold()] = record
+        existing_map[normalize_product_match_key(record["product"])] = record
 
     merged_records = sorted(existing_map.values(), key=lambda item: item["product"].casefold())
     PROCUREMENT_ITEMS_PATH.write_text(
@@ -370,7 +371,7 @@ def merge_procurement_upload(
         product = str(row.get("product", "")).strip()
         if not product:
             continue
-        existing_groups.setdefault(product.casefold(), []).append(
+        existing_groups.setdefault(normalize_product_match_key(product), []).append(
             _normalize_procurement_record(row)
         )
     existing_map = {
@@ -388,7 +389,7 @@ def merge_procurement_upload(
         if not product:
             continue
 
-        product_key = product.casefold()
+        product_key = normalize_product_match_key(product)
         uploaded_product_keys.add(product_key)
         existing_candidates = existing_groups.get(product_key, [])
         existing_record = next(
