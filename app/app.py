@@ -3361,7 +3361,7 @@ def save_upload_with_feedback(
         replace_existing=replace_existing,
         parsed_data=parsed_data,
     )
-    st.cache_data.clear()
+    clear_application_caches()
     replaced_text = ""
     if save_result["replaced"]:
         replaced_text = f" Заменено файлов за дату: {save_result['replaced']}."
@@ -3881,7 +3881,7 @@ def render_auth_gate() -> dict[str, str]:
     st.stop()
 
 
-@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=900)
 def cached_load_input_file(
     file_bytes: bytes,
     filename: str,
@@ -3898,7 +3898,7 @@ def cached_load_input_file(
     )
 
 
-@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=900)
 def cached_prepare_sales_data(
     frame: pd.DataFrame,
     mapping_items: tuple[tuple[str, str | None], ...],
@@ -3908,7 +3908,7 @@ def cached_prepare_sales_data(
     return prepare_sales_data(frame, mapping, supplier_rules=supplier_rule_items)
 
 
-@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=900)
 def cached_prepare_inventory_data(
     frame: pd.DataFrame,
     mapping_items: tuple[tuple[str, str | None], ...],
@@ -3917,7 +3917,7 @@ def cached_prepare_inventory_data(
     return prepare_inventory_data(frame, mapping)
 
 
-@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
+@st.cache_data(show_spinner=False, max_entries=1, ttl=900)
 def cached_load_inventory_input_file(
     file_bytes: bytes,
     filename: str,
@@ -3934,12 +3934,17 @@ def cached_load_inventory_input_file(
     )
 
 
-@st.cache_data(show_spinner=False, max_entries=3, ttl=900)
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=600)
 def cached_load_archive_data(
     selected_salons: tuple[str, ...],
     supplier_rule_items: tuple[tuple[str, str], ...] = (),
 ):
     return load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
+
+
+def clear_application_caches() -> None:
+    st.cache_data.clear()
+    st.cache_resource.clear()
 
 
 @st.cache_data(show_spinner=False, max_entries=2, ttl=300)
@@ -3988,11 +3993,13 @@ def enrich_sales_with_supplier(
     procurement_items: pd.DataFrame,
     supplier_rule_items: tuple[tuple[str, str], ...] = (),
     supplier_product_assignments: pd.DataFrame | None = None,
+    *,
+    copy_data: bool = True,
 ) -> pd.DataFrame:
     if data.empty:
         return data
 
-    enriched = data.copy()
+    enriched = data.copy() if copy_data else data
     if "supplier" not in enriched.columns:
         enriched["supplier"] = ""
 
@@ -4083,11 +4090,13 @@ def enrich_sales_with_supplier(
 def enrich_sales_with_brand(
     data: pd.DataFrame,
     procurement_items: pd.DataFrame,
+    *,
+    copy_data: bool = True,
 ) -> pd.DataFrame:
     if data.empty:
         return data
 
-    enriched = data.copy()
+    enriched = data.copy() if copy_data else data
     enriched["brand"] = (
         enriched.get("brand", pd.Series("", index=enriched.index))
         .fillna("")
@@ -4526,24 +4535,46 @@ def default_supplier_rules_frame() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["supplier", "keyword"])
 
 
+def dataframe_cache_key(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return f"empty:{','.join(map(str, frame.columns))}"
+
+    try:
+        row_hashes = pd.util.hash_pandas_object(frame, index=True, categorize=True).values
+        digest = hashlib.blake2b(row_hashes.tobytes(), digest_size=16).hexdigest()
+    except (TypeError, ValueError):
+        digest_source = (
+            len(frame),
+            tuple(map(str, frame.columns)),
+            tuple(map(str, frame.dtypes)),
+            tuple(map(str, frame.index[[0, -1]])),
+        )
+        digest = hashlib.blake2b(repr(digest_source).encode("utf-8"), digest_size=16).hexdigest()
+    return f"{len(frame)}:{len(frame.columns)}:{digest}"
+
+
 @st.cache_data(show_spinner=False, max_entries=8, ttl=900)
-def cached_build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:
-    return build_overview_metrics(frame)
+def cached_build_overview_metrics(_frame: pd.DataFrame, frame_key: str) -> dict[str, float]:
+    return build_overview_metrics(_frame)
 
 
 @st.cache_data(show_spinner=False, max_entries=6, ttl=900)
-def cached_build_product_summary(frame: pd.DataFrame, group_column: str = "product") -> pd.DataFrame:
-    return build_product_summary(frame, group_column)
+def cached_build_product_summary(
+    _frame: pd.DataFrame,
+    frame_key: str,
+    group_column: str = "product",
+) -> pd.DataFrame:
+    return build_product_summary(_frame, group_column)
 
 
 @st.cache_data(show_spinner=False, max_entries=6, ttl=900)
-def cached_build_monthly_summary(frame: pd.DataFrame) -> pd.DataFrame:
-    return build_monthly_summary(frame)
+def cached_build_monthly_summary(_frame: pd.DataFrame, frame_key: str) -> pd.DataFrame:
+    return build_monthly_summary(_frame)
 
 
 @st.cache_data(show_spinner=False, max_entries=8, ttl=900)
-def cached_build_returns_overview(frame: pd.DataFrame) -> dict[str, float]:
-    return build_returns_overview(frame)
+def cached_build_returns_overview(_frame: pd.DataFrame, frame_key: str) -> dict[str, float]:
+    return build_returns_overview(_frame)
 
 
 @st.cache_data(show_spinner=False, max_entries=6, ttl=900)
@@ -4556,36 +4587,45 @@ def cached_build_plan_fact_summary(
 
 @st.cache_data(show_spinner=False, max_entries=4, ttl=900)
 def cached_build_procurement_forecast(
-    frame: pd.DataFrame,
+    _frame: pd.DataFrame,
+    frame_key: str,
     *,
     history_months: int,
     coverage_days: int,
     lead_time_days: int,
     safety_days: int,
     min_active_months: int,
-    procurement_items: pd.DataFrame,
-    inbound_orders: pd.DataFrame,
+    _procurement_items: pd.DataFrame,
+    procurement_items_key: str,
+    _inbound_orders: pd.DataFrame,
+    inbound_orders_key: str,
 ) -> pd.DataFrame:
     return build_procurement_forecast(
-        frame,
+        _frame,
         history_months=history_months,
         coverage_days=coverage_days,
         lead_time_days=lead_time_days,
         safety_days=safety_days,
         min_active_months=min_active_months,
-        procurement_items=procurement_items,
-        inbound_orders=inbound_orders,
+        procurement_items=_procurement_items,
+        inbound_orders=_inbound_orders,
     )
 
 
 @st.cache_data(show_spinner=False, max_entries=6, ttl=900)
-def cached_build_procurement_overview(procurement_frame: pd.DataFrame) -> dict[str, float]:
-    return build_procurement_overview(procurement_frame)
+def cached_build_procurement_overview(
+    _procurement_frame: pd.DataFrame,
+    frame_key: str,
+) -> dict[str, float]:
+    return build_procurement_overview(_procurement_frame)
 
 
 @st.cache_data(show_spinner=False, max_entries=6, ttl=900)
-def cached_build_procurement_supplier_summary(procurement_frame: pd.DataFrame) -> pd.DataFrame:
-    return build_procurement_supplier_summary(procurement_frame)
+def cached_build_procurement_supplier_summary(
+    _procurement_frame: pd.DataFrame,
+    frame_key: str,
+) -> pd.DataFrame:
+    return build_procurement_supplier_summary(_procurement_frame)
 
 
 def select_column(
@@ -6236,6 +6276,7 @@ def build_overview_focus_cards(
     returns_overview: dict[str, float],
     *,
     allow_margin: bool = True,
+    procurement_available: bool = True,
 ) -> list[dict[str, str]]:
     month_label = str(latest_month.get("month_label", "Текущий период"))
     revenue_delta = percent_or_none(latest_revenue_delta)
@@ -6273,7 +6314,16 @@ def build_overview_focus_cards(
 
     reorder_count = int(procurement_overview.get("reorder_sku_count", 0) or 0)
     critical_count = int(procurement_overview.get("critical_stock_count", 0) or 0)
-    if reorder_count or critical_count:
+    if not procurement_available:
+        cards.append(
+            {
+                "label": "Закупки",
+                "value": "по запросу",
+                "body": "Точный прогноз открывается в разделе «Закупки»",
+                "tone": "info",
+            }
+        )
+    elif reorder_count or critical_count:
         cards.append(
             {
                 "label": "Закупки",
@@ -7740,28 +7790,6 @@ if work_mode in upload_modes:
         if selected_salon_name:
             data["salon"] = selected_salon_name
         source_label = f"Текущая выгрузка: {filename}"
-    else:
-        selected_archive_salons = []
-        if current_user["role"] == "salon":
-            selected_archive_salons = [selected_salon_name]
-        else:
-            selected_archive_salons = selected_salons_for_archive if selected_salons_for_archive else registered_salons
-
-        archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
-        manifest_view = archive_result.manifest.copy()
-        data = archive_result.data
-
-        for warning in archive_result.warnings:
-            st.warning(warning)
-
-        if data.empty:
-            if current_user["role"] == "salon":
-                st.info("У этого салона пока нет сохранённых выгрузок. Загрузите первый файл и сохраните его в архив.")
-            else:
-                st.info("В архиве пока нет данных по выбранным салонам.")
-            st.stop()
-
-        source_label = "Архив сети" if is_network_role(current_user["role"]) else f"Архив салона: {selected_salon_name}"
 
 if prepared_result is not None and work_mode in {"Разовая загрузка", "Новая выгрузка", "Загрузка салона"}:
     for warning in prepared_result.warnings:
@@ -7794,6 +7822,11 @@ if data.empty:
     st.warning("После применения фильтров не осталось данных.")
     st.stop()
 
+# Archive and upload result containers keep references to their full source frames.
+# Release them before the enrichment pipeline starts producing a working copy.
+archive_result = None
+prepared_result = None
+
 procurement_items = apply_sku_aliases(
     load_procurement_items(),
     sku_aliases,
@@ -7805,11 +7838,17 @@ data = enrich_sales_with_supplier(
     supplier_rule_items=supplier_rule_items,
     supplier_product_assignments=supplier_product_assignments,
 )
-data = enrich_sales_with_brand(data, procurement_items)
-data = apply_sku_attribute_overrides(data, sku_attribute_overrides)
-sku_alias_source_data = data.copy()
-data = apply_sku_aliases(data, sku_aliases)
-data = apply_product_category_rules(data)
+data = enrich_sales_with_brand(data, procurement_items, copy_data=False)
+data = apply_sku_attribute_overrides(data, sku_attribute_overrides, copy_data=False)
+
+requested_screen = str(
+    st.session_state.get("primary_screen_nav")
+    or st.session_state.get("mobile_primary_screen_nav")
+    or "Обзор"
+)
+sku_alias_source_data = data.copy() if requested_screen == "Данные" else pd.DataFrame()
+data = apply_sku_aliases(data, sku_aliases, copy_data=False)
+data = apply_product_category_rules(data, copy_data=False)
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -8364,7 +8403,7 @@ with st.sidebar:
                         except Exception as error:
                             st.error(f"Не удалось отправить отчёт: {error}")
 
-filter_source_data = data.copy()
+filter_source_data = data
 valid_filter_dates = filter_source_data["date"].dropna()
 if valid_filter_dates.empty:
     st.error("В данных нет корректных дат для построения аналитики.")
@@ -8570,7 +8609,8 @@ has_item_codes = (
     and data["item_code"].fillna("").astype(str).str.strip().ne("").any()
 )
 product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
-overview = cached_build_overview_metrics(data)
+data_cache_key = dataframe_cache_key(data)
+overview = cached_build_overview_metrics(data, data_cache_key)
 
 needs_product_summary = active_screen in {"Обзор", "Карточка SKU", "Финансы", "ABC-анализ"} or (
     active_screen == "Аналитика" and active_analytics_screen == "Маржинальность"
@@ -8592,39 +8632,39 @@ needs_returns_overview = active_screen in {"Обзор", "Финансы"} or (
     and active_advanced_screen == "Возвраты"
 )
 needs_plan_analysis = active_screen in {"Обзор", "Финансы", "План / факт"}
-needs_order_analysis = active_screen in {"Обзор", "Карточка SKU", "Финансы", "Закупки"}
+needs_order_analysis = active_screen in {"Карточка SKU", "Финансы", "Закупки"}
 
 product_summary = (
-    cached_build_product_summary(data, product_analysis_column)
+    cached_build_product_summary(data, data_cache_key, product_analysis_column)
     if needs_product_summary
     else pd.DataFrame()
 )
 category_summary = (
-    cached_build_product_summary(data, "category")
+    cached_build_product_summary(data, data_cache_key, "category")
     if needs_breakdown_summaries
     else pd.DataFrame()
 )
 manager_summary = (
-    cached_build_product_summary(data, "manager")
+    cached_build_product_summary(data, data_cache_key, "manager")
     if active_screen == "Обзор"
     else pd.DataFrame()
 )
 salon_summary = (
-    cached_build_product_summary(data, "salon")
+    cached_build_product_summary(data, data_cache_key, "salon")
     if needs_breakdown_summaries and "salon" in data.columns
     else pd.DataFrame()
 )
 supplier_sales_summary = (
-    cached_build_product_summary(data, "supplier")
+    cached_build_product_summary(data, data_cache_key, "supplier")
     if active_screen == "Обзор" and "supplier" in data.columns
     else pd.DataFrame()
 )
 monthly_summary = (
-    cached_build_monthly_summary(data)
+    cached_build_monthly_summary(data, data_cache_key)
     if needs_monthly_summary
     else pd.DataFrame()
 )
-returns_overview = cached_build_returns_overview(data) if needs_returns_overview else {}
+returns_overview = cached_build_returns_overview(data, data_cache_key) if needs_returns_overview else {}
 
 plan_monthly_summary = pd.DataFrame()
 monthly_plans = pd.DataFrame()
@@ -8632,7 +8672,8 @@ plan_scope_salons: list[str] = []
 scope_plan_summary = pd.DataFrame()
 plan_fact_summary = pd.DataFrame()
 if needs_plan_analysis:
-    plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data)
+    plan_source_cache_key = dataframe_cache_key(plan_fact_source_data)
+    plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data, plan_source_cache_key)
     monthly_plans = load_monthly_plans()
     plan_scope_salons = (
         sorted(plan_fact_source_data["salon"].dropna().astype(str).unique().tolist())
@@ -8669,32 +8710,45 @@ if needs_order_analysis:
 plan_fact_uses_unfiltered_scope = len(data) != len(plan_fact_source_data)
 latest_revenue_delta = monthly_summary.iloc[-1]["revenue_change_pct"] if len(monthly_summary) >= 2 else float("nan")
 latest_margin_delta = monthly_summary.iloc[-1]["margin_change_pct"] if len(monthly_summary) >= 2 else float("nan")
-procurement_items_for_forecast = procurement_items.copy()
-if all_suppliers and "supplier" in procurement_items_for_forecast.columns:
-    procurement_supplier_text = (
-        procurement_items_for_forecast["supplier"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .replace("", "Не назначен")
-    )
-    procurement_items_for_forecast = procurement_items_for_forecast[
-        procurement_supplier_text.isin(set(selected_suppliers))
-    ].copy()
 procurement_forecast = pd.DataFrame()
-procurement_overview = cached_build_procurement_overview(procurement_forecast)
-procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
+empty_procurement_cache_key = dataframe_cache_key(procurement_forecast)
+procurement_overview = cached_build_procurement_overview(
+    procurement_forecast,
+    empty_procurement_cache_key,
+)
+procurement_supplier_summary = cached_build_procurement_supplier_summary(
+    procurement_forecast,
+    empty_procurement_cache_key,
+)
 needs_procurement_analysis = needs_order_analysis
 if needs_procurement_analysis:
+    procurement_items_for_forecast = procurement_items.copy()
+    if all_suppliers and "supplier" in procurement_items_for_forecast.columns:
+        procurement_supplier_text = (
+            procurement_items_for_forecast["supplier"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "Не назначен")
+        )
+        procurement_items_for_forecast = procurement_items_for_forecast[
+            procurement_supplier_text.isin(set(selected_suppliers))
+        ].copy()
+    procurement_source_cache_key = dataframe_cache_key(procurement_source_data)
+    procurement_items_cache_key = dataframe_cache_key(procurement_items_for_forecast)
+    inbound_orders_cache_key = dataframe_cache_key(open_procurement_orders)
     procurement_forecast = cached_build_procurement_forecast(
         procurement_source_data,
+        procurement_source_cache_key,
         history_months=procurement_history_months,
         coverage_days=procurement_coverage_days,
         lead_time_days=procurement_lead_time_days,
         safety_days=procurement_safety_days,
         min_active_months=procurement_min_active_months,
-        procurement_items=procurement_items_for_forecast,
-        inbound_orders=open_procurement_orders,
+        _procurement_items=procurement_items_for_forecast,
+        procurement_items_key=procurement_items_cache_key,
+        _inbound_orders=open_procurement_orders,
+        inbound_orders_key=inbound_orders_cache_key,
     )
     if all_brands and "brand" in procurement_forecast.columns:
         procurement_brand_text = (
@@ -8707,8 +8761,15 @@ if needs_procurement_analysis:
         procurement_forecast = procurement_forecast[
             procurement_brand_text.isin(set(selected_brands))
         ].copy()
-    procurement_overview = cached_build_procurement_overview(procurement_forecast)
-    procurement_supplier_summary = cached_build_procurement_supplier_summary(procurement_forecast)
+    procurement_forecast_cache_key = dataframe_cache_key(procurement_forecast)
+    procurement_overview = cached_build_procurement_overview(
+        procurement_forecast,
+        procurement_forecast_cache_key,
+    )
+    procurement_supplier_summary = cached_build_procurement_supplier_summary(
+        procurement_forecast,
+        procurement_forecast_cache_key,
+    )
 
 with main_col:
     render_dataset_hero(
@@ -8774,14 +8835,24 @@ with main_col:
                 }
             )
 
-        overview_cards.append(
-            {
-                "label": "К закупке",
-                "value": f"{format_number(procurement_overview.get('reorder_sku_count', 0))} SKU",
-                "delta": f"Критичных: {format_number(procurement_overview.get('critical_stock_count', 0))}",
-                "tone": "danger" if procurement_overview.get("critical_stock_count", 0) else "success",
-            }
-        )
+        if needs_procurement_analysis:
+            overview_cards.append(
+                {
+                    "label": "К закупке",
+                    "value": f"{format_number(procurement_overview.get('reorder_sku_count', 0))} SKU",
+                    "delta": f"Критичных: {format_number(procurement_overview.get('critical_stock_count', 0))}",
+                    "tone": "danger" if procurement_overview.get("critical_stock_count", 0) else "success",
+                }
+            )
+        else:
+            overview_cards.append(
+                {
+                    "label": "Закупки",
+                    "value": "По запросу",
+                    "delta": "Точный расчёт в разделе «Закупки»",
+                    "tone": "info",
+                }
+            )
         overview_cards.append(
             {
                 "label": "Продано единиц",
@@ -10464,6 +10535,7 @@ if active_screen == "Обзор":
         procurement_overview,
         returns_overview,
         allow_margin=margin_visible,
+        procurement_available=needs_procurement_analysis,
     )
 
     with main_col:
@@ -11455,7 +11527,7 @@ if active_screen == "Поставщики":
                     edited_keyword_rules,
                     updated_by=current_user["username"],
                 )
-                st.cache_data.clear()
+                clear_application_caches()
                 audit_event(
                     action="supplier.keyword_rules_replace",
                     user_id=current_user["username"],
@@ -11566,7 +11638,7 @@ if active_screen == "Поставщики":
                             assignment_row,
                             updated_by=current_user["username"],
                         )
-                        st.cache_data.clear()
+                        clear_application_caches()
                         audit_event(
                             action="supplier.product_assignments_upsert",
                             user_id=current_user["username"],
@@ -11719,7 +11791,7 @@ if active_screen == "Поставщики":
                             assignment_rows,
                             updated_by=current_user["username"],
                         )
-                        st.cache_data.clear()
+                        clear_application_caches()
                         audit_event(
                             action="supplier.product_assignments_upsert",
                             user_id=current_user["username"],
@@ -11773,7 +11845,7 @@ if active_screen == "Поставщики":
                     assignment_rows,
                     updated_by=current_user["username"],
                 )
-                st.cache_data.clear()
+                clear_application_caches()
                 audit_event(
                     action="supplier.product_assignments_upsert",
                     user_id=current_user["username"],
@@ -11914,7 +11986,7 @@ if active_screen == "Поставщики":
                                     ),
                                     updated_by=current_user["username"],
                                 )
-                                st.cache_data.clear()
+                                clear_application_caches()
                                 audit_event(
                                     action="supplier.product_assignment_update",
                                     user_id=current_user["username"],
@@ -11937,7 +12009,7 @@ if active_screen == "Поставщики":
                             disabled=not can_edit_suppliers,
                         ):
                             deleted_count = delete_supplier_product_assignments([str(selected_assignment_fix_key)])
-                            st.cache_data.clear()
+                            clear_application_caches()
                             audit_event(
                                 action="supplier.product_assignment_delete",
                                 user_id=current_user["username"],
@@ -11988,7 +12060,7 @@ if active_screen == "Поставщики":
                 assignment_rows,
                 updated_by=current_user["username"],
             )
-            st.cache_data.clear()
+            clear_application_caches()
             audit_event(
                 action="supplier.product_assignments_upsert",
                 user_id=current_user["username"],
@@ -12505,7 +12577,7 @@ if active_screen == "Закупки":
                                                     filename=inventory_filename,
                                                     uploaded_by=current_user["username"],
                                                 )
-                                            st.cache_data.clear()
+                                            clear_application_caches()
                                             audit_event(
                                                 action="procurement.stock_upload",
                                                 user_id=current_user["username"],
@@ -12613,7 +12685,7 @@ if active_screen == "Закупки":
                                 bulk_brand_rows,
                                 updated_by=current_user["username"],
                             )
-                            st.cache_data.clear()
+                            clear_application_caches()
                             audit_event(
                                 action="procurement.brand_bulk_assign",
                                 user_id=current_user["username"],
@@ -14865,7 +14937,7 @@ if active_screen == "Данные":
                     key="data_center_refresh",
                     use_container_width=True,
                 ):
-                    st.cache_data.clear()
+                    clear_application_caches()
                     st.rerun()
 
             if sample_path.exists():
@@ -15084,7 +15156,7 @@ if active_screen == "Данные":
                     st.session_state["data_center_flash_message"] = (
                         f"SKU «{pending_row['source_product']}» объединён с «{pending_row['canonical_product']}»."
                     )
-                    st.cache_data.clear()
+                    clear_application_caches()
                     st.rerun()
 
             if can_manage_procurement(current_user) and not active_sku_aliases.empty:
@@ -15134,7 +15206,7 @@ if active_screen == "Данные":
                             },
                         )
                         st.session_state["data_center_flash_message"] = "Объединение отменено. SKU снова учитываются раздельно."
-                        st.cache_data.clear()
+                        clear_application_caches()
                         st.rerun()
 
         with st.container(border=True):
@@ -15486,7 +15558,7 @@ if active_screen == "Данные":
                                 f"Исправления сохранены: {len(pending_cleanup_changes)} SKU. "
                                 "Показатели и очередь качества пересчитаны."
                             )
-                            st.cache_data.clear()
+                            clear_application_caches()
                             st.rerun()
 
                 cleanup_rename_map = {

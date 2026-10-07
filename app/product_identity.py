@@ -56,11 +56,15 @@ def refine_product_category(
     return category_text
 
 
-def apply_product_category_rules(data: pd.DataFrame) -> pd.DataFrame:
+def apply_product_category_rules(
+    data: pd.DataFrame,
+    *,
+    copy_data: bool = True,
+) -> pd.DataFrame:
     if data.empty or "product" not in data.columns:
         return data
 
-    refined = data.copy()
+    refined = data.copy() if copy_data else data
     if "category" not in refined.columns:
         refined["category"] = "Без категории"
 

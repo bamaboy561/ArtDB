@@ -6,7 +6,7 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/init_db.py
-    startCommand: python -X faulthandler -m streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false --server.enableXsrfProtection=false --server.enableStaticServing=true --server.maxUploadSize=200
+    startCommand: python -X faulthandler -m streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false --server.enableXsrfProtection=false --server.enableStaticServing=true --server.fileWatcherType=none --server.maxUploadSize=75
     healthCheckPath: /_stcore/health
     domains:
       - artisandb.shop.kg
@@ -22,7 +22,7 @@ services:
       - key: APP_UPLOADS_DIR
         value: /var/data/uploads
       - key: APP_MAX_UPLOAD_SIZE_MB
-        value: "200"
+        value: "75"
       - key: DATABASE_URL
         fromDatabase:
           name: artdb-db
@@ -34,7 +34,15 @@ services:
       - key: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
         value: "false"
       - key: STREAMLIT_SERVER_MAX_UPLOAD_SIZE
-        value: "200"
+        value: "75"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: NUMEXPR_NUM_THREADS
+        value: "1"
       - key: APP_PGCRYPTO_KEY
         generateValue: true
       - key: INITIAL_ADMIN_USERNAME

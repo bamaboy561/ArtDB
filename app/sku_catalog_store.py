@@ -218,11 +218,16 @@ def upsert_sku_attribute_overrides(frame: pd.DataFrame, *, updated_by: str) -> i
     return len(records)
 
 
-def apply_sku_attribute_overrides(data: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
+def apply_sku_attribute_overrides(
+    data: pd.DataFrame,
+    overrides: pd.DataFrame,
+    *,
+    copy_data: bool = True,
+) -> pd.DataFrame:
     if data.empty or overrides.empty or "product_key" not in overrides.columns:
         return data
 
-    enriched = data.copy()
+    enriched = data.copy() if copy_data else data
     if "product" not in enriched.columns:
         return enriched
 
@@ -494,6 +499,7 @@ def apply_sku_aliases(
     aliases: pd.DataFrame,
     *,
     aggregate_inventory: bool = False,
+    copy_data: bool = True,
 ) -> pd.DataFrame:
     if data.empty or aliases.empty or "product" not in data.columns:
         return data
@@ -502,7 +508,7 @@ def apply_sku_aliases(
     if not key_map:
         return data
 
-    enriched = data.copy()
+    enriched = data.copy() if copy_data else data
     source_keys = (
         enriched["product_key"]
         if "product_key" in enriched.columns

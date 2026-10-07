@@ -144,11 +144,12 @@ def _supplier_rules() -> tuple[tuple[str, str], ...]:
 
 def load_bot_sales_data() -> pd.DataFrame:
     salons = load_salons()
+    supplier_rules = _supplier_rules()
     archive_result = load_archive_data(
         salons=salons if salons else None,
-        supplier_rules=_supplier_rules(),
+        supplier_rules=supplier_rules,
     )
-    data = archive_result.data.copy()
+    data = archive_result.data
     if data.empty:
         return data
     aliases = load_sku_aliases()
@@ -157,15 +158,20 @@ def load_bot_sales_data() -> pd.DataFrame:
         aliases,
         aggregate_inventory=True,
     )
+    archive_result = None
     data = _enrich_sales_catalog(
         data,
         procurement_items=procurement_items,
         supplier_product_assignments=load_supplier_product_assignments(),
-        supplier_rules=_supplier_rules(),
+        supplier_rules=supplier_rules,
     )
-    data = apply_sku_attribute_overrides(data, load_sku_attribute_overrides())
-    data = apply_sku_aliases(data, aliases)
-    return apply_product_category_rules(data)
+    data = apply_sku_attribute_overrides(
+        data,
+        load_sku_attribute_overrides(),
+        copy_data=False,
+    )
+    data = apply_sku_aliases(data, aliases, copy_data=False)
+    return apply_product_category_rules(data, copy_data=False)
 
 
 def _enrich_sales_catalog(
