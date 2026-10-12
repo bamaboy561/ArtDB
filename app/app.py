@@ -2321,102 +2321,6 @@ WORKSPACE_UI_CSS = f"""
         letter-spacing: -0.02em !important;
     }}
 
-    /* ====== DARK SIDEBAR ====== */
-    section[data-testid="stSidebar"] {{
-        background: linear-gradient(180deg, #001427 0%, #002952 55%, {PRIMARY_COLOR} 100%) !important;
-        border-right: 1px solid rgba(255,255,255,0.08) !important;
-    }}
-    section[data-testid="stSidebar"] > div,
-    section[data-testid="stSidebar"] > div > div,
-    section[data-testid="stSidebar"] > div > div > div {{
-        background: transparent !important;
-    }}
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] li,
-    section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
-        color: rgba(255, 255, 255, 0.9) !important;
-    }}
-    section[data-testid="stSidebar"] label {{
-        color: rgba(255, 255, 255, 0.85) !important;
-    }}
-    section[data-testid="stSidebar"] small,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] small {{
-        color: rgba(255, 255, 255, 0.50) !important;
-    }}
-    section[data-testid="stSidebar"] hr {{
-        border-color: rgba(255, 255, 255, 0.14) !important;
-        opacity: 1 !important;
-    }}
-    section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {{
-        background: rgba(255,255,255,0.12) !important;
-        border-color: rgba(255,255,255,0.22) !important;
-    }}
-    section[data-testid="stSidebar"] [data-baseweb="select"] span {{
-        color: rgba(255,255,255,0.9) !important;
-    }}
-    section[data-testid="stSidebar"] [data-baseweb="select"] svg {{
-        fill: rgba(255,255,255,0.7) !important;
-    }}
-    section[data-testid="stSidebar"] .stButton > button {{
-        background: rgba(255,255,255,0.12) !important;
-        border: 1px solid rgba(255,255,255,0.28) !important;
-        color: rgba(255,255,255,0.9) !important;
-        box-shadow: none !important;
-    }}
-    section[data-testid="stSidebar"] .stButton > button:hover {{
-        background: rgba(255,255,255,0.22) !important;
-        color: white !important;
-    }}
-    section[data-testid="stSidebar"] [data-baseweb="radio"] label span:last-child {{
-        color: rgba(255,255,255,0.85) !important;
-    }}
-    section[data-testid="stSidebar"] [data-testid="stExpander"] {{
-        background: rgba(255,255,255,0.07) !important;
-        border-color: rgba(255,255,255,0.15) !important;
-    }}
-    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
-        color: rgba(255,255,255,0.9) !important;
-    }}
-    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {{
-        background: rgba(255,255,255,0.10) !important;
-    }}
-    section[data-testid="stSidebar"] [data-testid="stExpander"] svg {{
-        fill: rgba(255,255,255,0.7) !important;
-    }}
-    section[data-testid="stSidebar"] .sidebar-health-item.danger {{
-        background: rgba(220, 38, 38, 0.28) !important;
-        color: #fca5b0 !important;
-        border-color: rgba(220, 38, 38, 0.5) !important;
-    }}
-    section[data-testid="stSidebar"] .sidebar-health-item.warning {{
-        background: rgba(217, 119, 6, 0.25) !important;
-        color: #fde68a !important;
-        border-color: rgba(217, 119, 6, 0.45) !important;
-    }}
-    section[data-testid="stSidebar"] .sidebar-health-item.ok {{
-        background: rgba(22, 163, 74, 0.22) !important;
-        color: #86efac !important;
-        border-color: rgba(22, 163, 74, 0.42) !important;
-    }}
-    section[data-testid="stSidebar"] .sidebar-health-item.info {{
-        background: rgba(59, 130, 246, 0.22) !important;
-        color: #93c5fd !important;
-        border-color: rgba(59, 130, 246, 0.42) !important;
-    }}
-    [data-testid="stSidebarCollapseButton"] button,
-    [data-testid="collapsedControl"] button {{
-        background: rgba(0, 52, 97, 0.10) !important;
-        border-color: rgba(0, 52, 97, 0.25) !important;
-        color: {PRIMARY_COLOR} !important;
-    }}
-    [data-testid="stSidebarCollapseButton"] svg,
-    [data-testid="collapsedControl"] svg {{
-        fill: {PRIMARY_COLOR} !important;
-    }}
-
     /* ====== OVERVIEW HERO BANNER ====== */
     .overview-hero-banner {{
         background: linear-gradient(135deg, #001427 0%, #002952 45%, #003461 70%, #004a30 100%);
@@ -2448,7 +2352,7 @@ WORKSPACE_UI_CSS = f"""
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-        color: rgba(0, 180, 120, 0.85);
+        color: #4ade80;
         margin-bottom: 0.28rem;
     }}
     .overview-hero-title {{
@@ -2461,7 +2365,7 @@ WORKSPACE_UI_CSS = f"""
     }}
     .overview-hero-meta {{
         font-size: 0.82rem;
-        color: rgba(255, 255, 255, 0.55);
+        color: rgba(200, 225, 255, 0.85);
         font-weight: 500;
     }}
     .overview-hero-stats {{
@@ -2483,7 +2387,7 @@ WORKSPACE_UI_CSS = f"""
     }}
     .overview-hero-stat-label {{
         font-size: 0.72rem;
-        color: rgba(255, 255, 255, 0.50);
+        color: rgba(180, 210, 250, 0.65);
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -2499,6 +2403,154 @@ WORKSPACE_UI_CSS = f"""
         .overview-hero-content {{ flex-direction: column; align-items: flex-start; }}
         .overview-hero-stats {{ width: 100%; justify-content: flex-start; }}
         .overview-hero-stat {{ text-align: left; }}
+    }}
+
+    /* ====== TINTED CARD BACKGROUNDS ====== */
+    .metric-card {{ background: linear-gradient(150deg, #f8f9ff 0%, #f0f3ff 100%) !important; }}
+    .metric-card.info {{ background: linear-gradient(150deg, #eef4ff 0%, #e4edff 100%) !important; }}
+    .metric-card.success {{ background: linear-gradient(150deg, #edfff8 0%, #dcfcef 100%) !important; }}
+    .metric-card.warning {{ background: linear-gradient(150deg, #fffbeb 0%, #fef3c7 100%) !important; }}
+    .metric-card.danger {{ background: linear-gradient(150deg, #fff1f2 0%, #fde2e4 100%) !important; }}
+    .metric-card.info .metric-value {{ color: #003461 !important; }}
+    .metric-card.success .metric-value {{ color: #065f46 !important; }}
+    .metric-card.warning .metric-value {{ color: #92400e !important; }}
+    .metric-card.danger .metric-value {{ color: #991b1b !important; }}
+    .metric-value {{ font-size: 2.1rem !important; font-weight: 900 !important; letter-spacing: -0.03em !important; }}
+    .metric-card::before {{ height: 5px !important; }}
+
+    /* ====== DARK SIDEBAR ====== */
+    section[data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #071a33 0%, #0b2a52 60%, #0d3a6b 100%) !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }}
+    section[data-testid="stSidebar"] > div,
+    section[data-testid="stSidebar"] > div > div,
+    section[data-testid="stSidebar"] > div > div > div {{
+        background: transparent !important;
+    }}
+    section[data-testid="stSidebar"] :is(p, span, label, li, small, div, h1, h2, h3, h4, summary) {{
+        color: #e6eefc !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
+    section[data-testid="stSidebar"] .nav-title,
+    section[data-testid="stSidebar"] .sidebar-section-label {{
+        color: #9fb3d1 !important;
+    }}
+    section[data-testid="stSidebar"] hr {{
+        border-color: rgba(255, 255, 255, 0.14) !important;
+        opacity: 1 !important;
+    }}
+
+    section[data-testid="stSidebar"] label[data-baseweb="radio"] {{
+        background: transparent !important;
+        border-radius: 10px;
+        padding: 6px 10px;
+        transition: background 0.15s ease;
+    }}
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:hover {{
+        background: rgba(255, 255, 255, 0.08) !important;
+    }}
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:has(input:checked) {{
+        background: rgba(74, 222, 128, 0.16) !important;
+        box-shadow: inset 3px 0 0 #4ade80;
+    }}
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:has(input:checked) p {{
+        color: #ffffff !important;
+        font-weight: 700 !important;
+    }}
+
+    section[data-testid="stSidebar"] .nav-shell {{
+        background: rgba(255, 255, 255, 0.06) !important;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        box-shadow: none !important;
+        padding: 0.9rem 0.8rem !important;
+    }}
+    section[data-testid="stSidebar"] .nav-item {{
+        color: #c7d6ee !important;
+        background: transparent !important;
+    }}
+    section[data-testid="stSidebar"] .nav-item.active {{
+        color: #ffffff !important;
+        background: rgba(255, 255, 255, 0.14) !important;
+    }}
+
+    section[data-testid="stSidebar"] :is([data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"]),
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div {{
+        background: rgba(255, 255, 255, 0.10) !important;
+        border-color: rgba(255, 255, 255, 0.22) !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="input"] :is(div, button) {{
+        background-color: transparent !important;
+    }}
+    section[data-testid="stSidebar"] :is(input, textarea) {{
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        caret-color: #ffffff;
+    }}
+    section[data-testid="stSidebar"] :is(input, textarea)::placeholder {{
+        color: rgba(230, 238, 252, 0.5) !important;
+        -webkit-text-fill-color: rgba(230, 238, 252, 0.5) !important;
+    }}
+    section[data-testid="stSidebar"] svg {{
+        fill: currentColor !important;
+        color: #c7d6ee !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="tag"] {{
+        background: rgba(74, 222, 128, 0.20) !important;
+        border: 1px solid rgba(74, 222, 128, 0.40) !important;
+    }}
+
+    section[data-testid="stSidebar"] :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button,
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
+        background: rgba(255, 255, 255, 0.12) !important;
+        border: 1px solid rgba(255, 255, 255, 0.28) !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+    }}
+    section[data-testid="stSidebar"] :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button:hover {{
+        background: rgba(255, 255, 255, 0.22) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"],
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+    section[data-testid="stSidebar"] :is([data-testid="stAlert"], [data-testid="stAlertContainer"]) {{
+        background: rgba(255, 255, 255, 0.07) !important;
+        border-color: rgba(255, 255, 255, 0.16) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {{
+        background: rgba(255, 255, 255, 0.10) !important;
+    }}
+
+    section[data-testid="stSidebar"] .sidebar-health-item.danger {{
+        background: rgba(220, 38, 38, 0.28) !important;
+        color: #fecdd3 !important;
+        border-color: rgba(248, 113, 113, 0.5) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.warning {{
+        background: rgba(217, 119, 6, 0.25) !important;
+        color: #fde68a !important;
+        border-color: rgba(245, 158, 11, 0.45) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.ok {{
+        background: rgba(22, 163, 74, 0.22) !important;
+        color: #bbf7d0 !important;
+        border-color: rgba(74, 222, 128, 0.42) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.info {{
+        background: rgba(59, 130, 246, 0.22) !important;
+        color: #bfdbfe !important;
+        border-color: rgba(96, 165, 250, 0.42) !important;
+    }}
+
+    /* ====== METRIC GRID: 6 cards never leave an orphan ====== */
+    @media (min-width: 901px) {{
+        .metric-grid:has(> .metric-card:nth-child(6):last-child) {{
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        }}
+    }}
+    @media (min-width: 1700px) {{
+        .metric-grid:has(> .metric-card:nth-child(6):last-child) {{
+            grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+        }}
     }}
 </style>
 """
@@ -4398,7 +4450,6 @@ def render_auth_gate() -> dict[str, str]:
         )
 
     with right_col:
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
         auth_notice = st.session_state.pop("auth_notice", "")
         if auth_notice:
             st.warning(auth_notice)
@@ -4474,7 +4525,6 @@ def render_auth_gate() -> dict[str, str]:
                     },
                 )
                 st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
     st.stop()
 
@@ -6674,9 +6724,47 @@ def render_dataset_hero(
     selected_managers: list[str] | None,
     current_user: dict[str, str],
     active_screen: str = "Обзор",
+    salon_name: str = "",
 ) -> None:
     min_date = format_date_value(data["date"].min())
     max_date = format_date_value(data["date"].max())
+
+    if active_screen == "Обзор":
+        revenue_str = format_money(float(overview.get("total_revenue", 0) or 0))
+        lines_str = format_number(overview["line_count"])
+        products_str = format_number(overview["product_count"])
+        hero_salon = salon_name or "Все салоны"
+        period_label = f"{min_date} — {max_date}"
+        render_html_block(
+            f"""
+            <div class="overview-hero-banner">
+                <div class="overview-hero-content">
+                    <div class="overview-hero-left">
+                        <div class="overview-hero-eyebrow">Аналитика продаж</div>
+                        <div class="overview-hero-title">{escape(hero_salon)}</div>
+                        <div class="overview-hero-meta">{escape(period_label)}</div>
+                    </div>
+                    <div class="overview-hero-stats">
+                        <div class="overview-hero-stat">
+                            <div class="overview-hero-stat-value">{escape(revenue_str)}</div>
+                            <div class="overview-hero-stat-label">Выручка</div>
+                        </div>
+                        <div class="overview-hero-stat-divider"></div>
+                        <div class="overview-hero-stat">
+                            <div class="overview-hero-stat-value">{escape(lines_str)}</div>
+                            <div class="overview-hero-stat-label">Строк продаж</div>
+                        </div>
+                        <div class="overview-hero-stat-divider"></div>
+                        <div class="overview-hero-stat">
+                            <div class="overview-hero-stat-value">{escape(products_str)}</div>
+                            <div class="overview-hero-stat-label">Товаров</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """
+        )
+        return
 
     chips = [
         f"Период: {min_date} - {max_date}",
@@ -9428,6 +9516,7 @@ with main_col:
         selected_managers,
         current_user,
         active_screen=active_screen,
+        salon_name=selected_salon_name or "Все салоны",
     )
 
     if active_screen == "Обзор":
@@ -11187,17 +11276,6 @@ if active_screen == "Обзор":
     )
 
     with main_col:
-        # Hero banner
-        _hero_salon = selected_salon_name or "Все салоны"
-        _hero_period = f"{date_from:%d.%m.%Y} — {date_to:%d.%m.%Y}"
-        _hero_revenue = format_money(overview.get("total_revenue", 0) or 0)
-        _hero_qty = format_number(overview.get("total_quantity", 0) or 0)
-        render_overview_hero_banner(
-            salon_name=_hero_salon,
-            period_label=_hero_period,
-            revenue_label=_hero_revenue,
-            txn_label=_hero_qty,
-        )
         # Data freshness & alert strip
         _data_max_date = data["date"].max().date() if not data.empty and "date" in data.columns else None
         _data_age_days = (date.today() - _data_max_date).days if _data_max_date else 0
