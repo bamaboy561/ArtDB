@@ -527,12 +527,37 @@ DASHBOARD_CSS = f"""
     .section-marker,
     .nav-shell,
     .login-shell {{
-        background: {SURFACE_COLOR};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 14px;
-        padding: 0.85rem 0.95rem;
+        background: linear-gradient(145deg, {PRIMARY_COLOR} 0%, #004d80 55%, {SECONDARY_COLOR} 100%);
+        border-radius: 18px;
+        padding: 2rem 1.6rem 1.8rem;
         margin: 0 0 0.78rem 0;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        box-shadow: 0 8px 32px rgba(0, 52, 97, 0.28), 0 2px 8px rgba(0,0,0,0.06);
+        color: white;
+        position: relative;
+        overflow: hidden;
+    }}
+    .login-shell::before {{
+        content: "";
+        position: absolute;
+        top: -40px; right: -40px;
+        width: 200px; height: 200px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.06);
+    }}
+    .login-shell::after {{
+        content: "";
+        position: absolute;
+        bottom: -60px; left: -30px;
+        width: 260px; height: 260px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.04);
+    }}
+    .login-card {{
+        background: white;
+        border: 1px solid {BORDER_COLOR};
+        border-radius: 16px;
+        padding: 1.6rem 1.4rem;
+        box-shadow: 0 4px 20px rgba(15,23,42,0.07);
     }}
 
     .section-intro-title,
@@ -992,23 +1017,59 @@ DASHBOARD_CSS = f"""
     }}
 
     .feature-chip {{
-        padding: 0.45rem 0.7rem;
+        padding: 0.42rem 0.7rem;
         border-radius: 999px;
-        background: #f8fafc;
-        border: 1px solid {BORDER_COLOR};
-        color: {TEXT_SECONDARY};
-        font-size: 0.82rem;
+        background: rgba(255,255,255,0.16);
+        border: 1px solid rgba(255,255,255,0.28);
+        color: rgba(255,255,255,0.92);
+        font-size: 0.8rem;
         font-weight: 600;
+        backdrop-filter: blur(4px);
     }}
 
     .auth-title {{
         font-size: 1.8rem;
         margin: 0;
+        color: white !important;
     }}
 
     .auth-copy {{
         margin-top: 0.75rem;
         margin-bottom: 0;
+        color: rgba(255,255,255,0.75) !important;
+    }}
+
+    .auth-kicker {{
+        color: rgba(255,255,255,0.65) !important;
+    }}
+
+    .login-stat-row {{
+        display: flex;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+        margin-bottom: 0.25rem;
+    }}
+    .login-stat {{
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 12px;
+        padding: 0.6rem 0.9rem;
+        flex: 1;
+    }}
+    .login-stat-value {{
+        font-size: 1.35rem;
+        font-weight: 800;
+        color: white;
+        font-family: 'Manrope', sans-serif;
+        line-height: 1.1;
+    }}
+    .login-stat-label {{
+        font-size: 0.7rem;
+        color: rgba(255,255,255,0.6);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-top: 0.2rem;
     }}
 
     /* Navigation */
@@ -2092,6 +2153,139 @@ WORKSPACE_UI_CSS = f"""
         border-color: {BORDER_COLOR} !important;
         border-radius: 8px !important;
     }}
+
+    /* === Page transition === */
+    @keyframes pageFadeIn {{
+        from {{ opacity: 0; transform: translateY(6px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    section[data-testid="stMain"] .block-container > div {{
+        animation: pageFadeIn 0.22s ease both;
+    }}
+
+    /* === Entry animations === */
+    @keyframes slideInCard {{
+        from {{ opacity: 0; transform: translateY(14px) scale(0.985); }}
+        to   {{ opacity: 1; transform: translateY(0) scale(1); }}
+    }}
+    .metric-card {{
+        animation: slideInCard 0.32s cubic-bezier(.22,.68,0,.98) both;
+    }}
+    .metric-card:nth-child(2) {{ animation-delay: 0.07s; }}
+    .metric-card:nth-child(3) {{ animation-delay: 0.14s; }}
+    .metric-card:nth-child(4) {{ animation-delay: 0.21s; }}
+    .metric-card:nth-child(5) {{ animation-delay: 0.28s; }}
+    .snapshot-card {{
+        animation: slideInCard 0.28s cubic-bezier(.22,.68,0,.98) both;
+    }}
+    .snapshot-card:nth-child(2) {{ animation-delay: 0.06s; }}
+    .snapshot-card:nth-child(3) {{ animation-delay: 0.12s; }}
+    .snapshot-card:nth-child(4) {{ animation-delay: 0.18s; }}
+    .overview-focus-card {{
+        animation: slideInCard 0.30s cubic-bezier(.22,.68,0,.98) both;
+    }}
+    .overview-focus-card:nth-child(2) {{ animation-delay: 0.08s; }}
+    .overview-focus-card:nth-child(3) {{ animation-delay: 0.16s; }}
+    .overview-action-item {{
+        animation: slideInCard 0.28s cubic-bezier(.22,.68,0,.98) both;
+    }}
+    .overview-action-item:nth-child(2) {{ animation-delay: 0.06s; }}
+    .overview-action-item:nth-child(3) {{ animation-delay: 0.12s; }}
+    .overview-action-item:nth-child(4) {{ animation-delay: 0.18s; }}
+    .overview-action-item:nth-child(5) {{ animation-delay: 0.24s; }}
+
+    /* === Sidebar health monitor === */
+    .sidebar-health-widget {{
+        display: flex;
+        flex-direction: column;
+        gap: 0.28rem;
+        margin: 0.1rem 0 0.6rem;
+    }}
+    .sidebar-health-item {{
+        display: flex;
+        align-items: flex-start;
+        gap: 0.4rem;
+        font-size: 0.76rem;
+        font-weight: 600;
+        padding: 0.32rem 0.55rem;
+        border-radius: 7px;
+        line-height: 1.35;
+        font-family: 'Inter', 'Manrope', sans-serif;
+    }}
+    .sidebar-health-item.danger {{
+        background: #fff1f2;
+        color: #9b1c2c;
+        border: 1px solid #fca5b0;
+    }}
+    .sidebar-health-item.warning {{
+        background: #fffbeb;
+        color: #7c5212;
+        border: 1px solid #fde68a;
+    }}
+    .sidebar-health-item.ok {{
+        background: #f0fdf4;
+        color: #166534;
+        border: 1px solid #86efac;
+    }}
+    .sidebar-health-item.info {{
+        background: #eff6ff;
+        color: #1e40af;
+        border: 1px solid #93c5fd;
+    }}
+
+    /* === Freshness banner on Overview === */
+    .freshness-banner {{
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.5rem 0.85rem;
+        border-radius: 9px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin-bottom: 0.4rem;
+        font-family: 'Inter', sans-serif;
+    }}
+    .freshness-banner.ok {{
+        background: #f0fdf4; color: #166534; border: 1px solid #86efac;
+    }}
+    .freshness-banner.warning {{
+        background: #fffbeb; color: #7c5212; border: 1px solid #fde68a;
+    }}
+    .freshness-banner.danger {{
+        background: #fff1f2; color: #9b1c2c; border: 1px solid #fca5b0;
+    }}
+
+    /* === Alert action strip on Overview === */
+    .alert-action-strip {{
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.75rem;
+    }}
+    .alert-action-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.38rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        font-family: 'Inter', sans-serif;
+        white-space: nowrap;
+        cursor: default;
+    }}
+    .alert-action-pill.danger {{
+        background: #fff1f2; color: #9b1c2c; border: 1.5px solid #fca5b0;
+    }}
+    .alert-action-pill.warning {{
+        background: #fffbeb; color: #7c5212; border: 1.5px solid #fde68a;
+    }}
+    .alert-action-pill.success {{
+        background: #f0fdf4; color: #166534; border: 1.5px solid #86efac;
+    }}
+    .alert-action-pill.info {{
+        background: #eff6ff; color: #1e40af; border: 1.5px solid #93c5fd;
+    }}
 </style>
 """
 
@@ -2973,6 +3167,43 @@ def render_snapshot_strip(items: list[dict[str, str]]) -> None:
         )
 
     render_html_block(f'<div class="snapshot-strip">{"".join(cards_html)}</div>')
+
+
+def render_sidebar_health_widget(overdue: int, critical: int, reorder: int) -> None:
+    items_html: list[str] = []
+    if overdue > 0:
+        label = "заказ" if overdue == 1 else ("заказа" if 2 <= overdue <= 4 else "заказов")
+        items_html.append(f'<div class="sidebar-health-item danger">🔴 {escape(str(overdue))} {label} просрочен{"о" if overdue >= 2 else ""}</div>')
+    if critical > 0:
+        label = "SKU" if critical == 1 else "SKU"
+        items_html.append(f'<div class="sidebar-health-item warning">⚠️ {escape(str(critical))} {label} — критичный остаток</div>')
+    elif reorder > 0:
+        items_html.append(f'<div class="sidebar-health-item warning">📦 {escape(str(reorder))} SKU нужно заказать</div>')
+    if not items_html:
+        items_html.append('<div class="sidebar-health-item ok">✅ Критичных задач нет</div>')
+    st.markdown(
+        '<div class="sidebar-section-label">Статус</div>'
+        f'<div class="sidebar-health-widget">{"".join(items_html)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_overview_alert_strip(overdue: int, critical: int, reorder: int, data_age_days: int) -> None:
+    pills: list[str] = []
+    if overdue > 0:
+        label = "заказ просрочен" if overdue == 1 else ("заказа просрочено" if 2 <= overdue <= 4 else "заказов просрочено")
+        pills.append(f'<span class="alert-action-pill danger">🔴 {escape(str(overdue))} {label}</span>')
+    if critical > 0:
+        pills.append(f'<span class="alert-action-pill warning">⚠️ {escape(str(critical))} SKU критичный остаток</span>')
+    elif reorder > 0:
+        pills.append(f'<span class="alert-action-pill warning">📦 {escape(str(reorder))} SKU к закупке</span>')
+    if data_age_days > 30:
+        pills.append(f'<span class="alert-action-pill danger">📅 Данные не обновлялись {escape(str(data_age_days))} дн.</span>')
+    elif data_age_days > 7:
+        pills.append(f'<span class="alert-action-pill warning">📅 Данные за {escape(str(data_age_days))} дн. назад</span>')
+    else:
+        pills.append(f'<span class="alert-action-pill success">✅ Данные актуальны</span>')
+    render_html_block(f'<div class="alert-action-strip">{"".join(pills)}</div>')
 
 
 def render_data_quality_report(report, current_user: dict[str, str]) -> None:
@@ -3893,16 +4124,31 @@ def render_auth_gate() -> dict[str, str]:
         st.markdown(
             """
             <div class="login-shell">
-                <div class="auth-kicker">Retail Intelligence</div>
-                <h1 class="auth-title">Система продаж для сети салонов</h1>
+                <div class="auth-kicker">Retail Intelligence · v2</div>
+                <h1 class="auth-title">Система управления продажами</h1>
                 <p class="auth-copy">
-                    Каждый салон видит только свой контур продаж и ежедневные выгрузки.
-                    Руководитель получает общую картину по сети, сравнение салонов и единую управленческую панель.
+                    Аналитическая платформа для сети салонов красоты: продажи, закупки, ABC-анализ
+                    и ежедневные отчёты в Telegram — всё в одном месте.
                 </p>
+                <div class="login-stat-row">
+                    <div class="login-stat">
+                        <div class="login-stat-value">ABC</div>
+                        <div class="login-stat-label">XYZ-анализ</div>
+                    </div>
+                    <div class="login-stat">
+                        <div class="login-stat-value">📊</div>
+                        <div class="login-stat-label">Аналитика</div>
+                    </div>
+                    <div class="login-stat">
+                        <div class="login-stat-value">📦</div>
+                        <div class="login-stat-label">Закупки</div>
+                    </div>
+                </div>
                 <div class="feature-list">
-                    <div class="feature-chip">Ежедневная загрузка файлов из 1С по салонам</div>
-                    <div class="feature-chip">Роли доступа: салон и руководитель</div>
-                    <div class="feature-chip">Сводка по сети, ABC, маржинальность и динамика</div>
+                    <div class="feature-chip">✓ Загрузка файлов из 1С</div>
+                    <div class="feature-chip">✓ Роли: салон и руководитель</div>
+                    <div class="feature-chip">✓ Telegram-отчёты</div>
+                    <div class="feature-chip">✓ Прогноз закупок</div>
                 </div>
             </div>
             """,
@@ -3910,6 +4156,7 @@ def render_auth_gate() -> dict[str, str]:
         )
 
     with right_col:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
         auth_notice = st.session_state.pop("auth_notice", "")
         if auth_notice:
             st.warning(auth_notice)
@@ -3985,6 +4232,7 @@ def render_auth_gate() -> dict[str, str]:
                     },
                 )
                 st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.stop()
 
@@ -4078,6 +4326,11 @@ def cached_load_sku_aliases() -> pd.DataFrame:
 @st.cache_data(show_spinner=False, max_entries=2, ttl=300)
 def cached_load_procurement_items() -> pd.DataFrame:
     return load_procurement_items()
+
+
+@st.cache_data(show_spinner=False, max_entries=1, ttl=60)
+def cached_load_procurement_orders_light() -> pd.DataFrame:
+    return load_procurement_orders()
 
 
 @st.cache_data(show_spinner=False, max_entries=4, ttl=300)
@@ -8037,6 +8290,21 @@ with mobile_navigation_slot.container():
 with mobile_bottom_navigation_slot.container():
     render_mobile_bottom_navigation(active_screen, screen_options)
 
+# Quick overdue count for sidebar health monitor — lightweight cached query
+_sidebar_overdue = 0
+try:
+    _quick_orders = cached_load_procurement_orders_light()
+    if not _quick_orders.empty and "status" in _quick_orders.columns:
+        _active_mask = _quick_orders["status"].isin({"ordered", "in_transit"})
+        _active_orders = _quick_orders[_active_mask]
+        if "expected_date" in _active_orders.columns and not _active_orders.empty:
+            _exp = pd.to_datetime(_active_orders["expected_date"], errors="coerce")
+            _sidebar_overdue = int((_exp.dt.date < date.today()).sum())
+except Exception:
+    pass
+_sidebar_critical = int(st.session_state.get("_health_critical_count", 0))
+_sidebar_reorder = int(st.session_state.get("_health_reorder_count", 0))
+
 with st.sidebar:
     st.markdown('<div class="sidebar-section-label">Рабочее пространство</div>', unsafe_allow_html=True)
 
@@ -8896,6 +9164,17 @@ if needs_procurement_analysis:
     procurement_supplier_summary = cached_build_procurement_supplier_summary(
         procurement_forecast,
         procurement_forecast_cache_key,
+    )
+
+# Save procurement health counts for the sidebar widget (used on next render too)
+st.session_state["_health_critical_count"] = int(procurement_overview.get("critical_stock_count", 0) or 0)
+st.session_state["_health_reorder_count"] = int(procurement_overview.get("reorder_sku_count", 0) or 0)
+
+with st.sidebar:
+    render_sidebar_health_widget(
+        overdue=_sidebar_overdue,
+        critical=int(procurement_overview.get("critical_stock_count", 0) or 0),
+        reorder=int(procurement_overview.get("reorder_sku_count", 0) or 0),
     )
 
 with main_col:
@@ -10666,6 +10945,17 @@ if active_screen == "Обзор":
     )
 
     with main_col:
+        # Data freshness & alert strip
+        _data_max_date = data["date"].max().date() if not data.empty and "date" in data.columns else None
+        _data_age_days = (date.today() - _data_max_date).days if _data_max_date else 0
+        render_overview_alert_strip(
+            overdue=_sidebar_overdue,
+            critical=int(procurement_overview.get("critical_stock_count", 0) or 0),
+            reorder=int(procurement_overview.get("reorder_sku_count", 0) or 0),
+            data_age_days=_data_age_days,
+        )
+
+    with main_col:
         overview_left, overview_right = st.columns([1.55, 0.75], gap="medium")
 
         with overview_left:
@@ -10724,6 +11014,18 @@ if active_screen == "Обзор":
                                 marker=dict(symbol="diamond", size=8, color=CHART_ACCENT_COLOR),
                             )
                         )
+                if len(monthly_summary) >= 3:
+                    _avg_rev = float(monthly_summary["revenue"].mean())
+                    trend_chart.add_hline(
+                        y=_avg_rev,
+                        line_dash="dot",
+                        line_color="rgba(0,108,73,0.45)",
+                        line_width=1.8,
+                        annotation_text=f"Среднее {format_money(_avg_rev)}",
+                        annotation_position="top left",
+                        annotation_font_size=11,
+                        annotation_font_color="rgba(0,108,73,0.75)",
+                    )
                 trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="", bargap=0.24)
                 polish_figure(trend_chart, height=340)
                 st.plotly_chart(trend_chart, use_container_width=True)
@@ -10732,6 +11034,32 @@ if active_screen == "Обзор":
 
         with overview_right:
             render_overview_action_center(insights, overview_focus_cards)
+
+            # Quick navigation buttons
+            _has_alerts = _sidebar_overdue > 0 or int(procurement_overview.get("critical_stock_count", 0) or 0) > 0
+            if _has_alerts:
+                st.markdown(
+                    f'<div class="sidebar-section-label" style="margin-top:0.75rem;">Быстрый переход</div>',
+                    unsafe_allow_html=True,
+                )
+                if _sidebar_overdue > 0 and st.button(
+                    f"⚠️ Заказы в работе ({_sidebar_overdue} просрочено)",
+                    key="overview_go_to_orders",
+                    use_container_width=True,
+                    type="secondary",
+                ):
+                    st.session_state["primary_screen_nav"] = "Закупки"
+                    st.session_state["mobile_primary_screen_nav"] = "Закупки"
+                    st.rerun()
+                if int(procurement_overview.get("critical_stock_count", 0) or 0) > 0 and st.button(
+                    f"📦 Закупить срочно ({procurement_overview.get('critical_stock_count', 0)} SKU)",
+                    key="overview_go_to_procurement",
+                    use_container_width=True,
+                    type="secondary",
+                ):
+                    st.session_state["primary_screen_nav"] = "Закупки"
+                    st.session_state["mobile_primary_screen_nav"] = "Закупки"
+                    st.rerun()
 
     if not salon_summary.empty and len(salon_summary) > 1:
         with main_col:
@@ -13032,11 +13360,22 @@ if active_screen == "Закупки":
                 field_columns=["Бренд", "Поставщик", "Статус остатка", "Количество доступно", "Количество к заказу"],
                 max_rows=6,
             )
+            coverage_col_name = stock_risk_rename_map.get("stock_coverage_days", "Покрытие, дней")
+            _coverage_config = {}
+            if coverage_col_name in stock_risk_display.columns:
+                _coverage_config[coverage_col_name] = st.column_config.ProgressColumn(
+                    coverage_col_name,
+                    help="Дней покрытия при текущем запасе",
+                    min_value=0,
+                    max_value=max(90, int(stock_risk_display[coverage_col_name].fillna(0).max()) + 10),
+                    format="%d дн.",
+                )
             st.dataframe(
                 stock_risk_display,
                 use_container_width=True,
                 hide_index=True,
                 height=height,
+                column_config=_coverage_config or None,
             )
 
         brand_summary_source = stock_risk_frame.copy()
