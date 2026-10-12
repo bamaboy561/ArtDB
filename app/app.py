@@ -13963,22 +13963,11 @@ if active_screen == "Закупки":
                 field_columns=["Бренд", "Поставщик", "Статус остатка", "Количество доступно", "Количество к заказу"],
                 max_rows=6,
             )
-            coverage_col_name = stock_risk_rename_map.get("stock_coverage_days", "Покрытие, дней")
-            _coverage_config = {}
-            if coverage_col_name in stock_risk_display.columns:
-                _coverage_config[coverage_col_name] = st.column_config.ProgressColumn(
-                    coverage_col_name,
-                    help="Дней покрытия при текущем запасе",
-                    min_value=0,
-                    max_value=max(90, int(stock_risk_display[coverage_col_name].fillna(0).max()) + 10),
-                    format="%d дн.",
-                )
             st.dataframe(
                 stock_risk_display,
                 use_container_width=True,
                 hide_index=True,
                 height=height,
-                column_config=_coverage_config or None,
             )
 
         brand_summary_source = stock_risk_frame.copy()
