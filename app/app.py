@@ -1984,6 +1984,114 @@ WORKSPACE_UI_CSS = f"""
             gap: 0.55rem;
         }}
     }}
+
+    /* ── Native widget polish ───────────────────────────────────── */
+
+    /* Text inputs, textareas */
+    [data-baseweb="input"] > div,
+    [data-baseweb="textarea"] > div {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 8px !important;
+        background: {SURFACE_COLOR} !important;
+        transition: border-color 120ms ease !important;
+    }}
+    [data-baseweb="input"] > div:hover,
+    [data-baseweb="textarea"] > div:hover {{
+        border-color: rgba(0, 52, 97, 0.30) !important;
+    }}
+    [data-baseweb="input"] > div:focus-within,
+    [data-baseweb="textarea"] > div:focus-within {{
+        border-color: {PRIMARY_COLOR} !important;
+        box-shadow: 0 0 0 3px rgba(0, 52, 97, 0.10) !important;
+    }}
+
+    /* Selectbox / multiselect */
+    [data-baseweb="select"] > div:first-child {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 8px !important;
+        background: {SURFACE_COLOR} !important;
+        transition: border-color 120ms ease !important;
+    }}
+    [data-baseweb="select"] > div:first-child:hover {{
+        border-color: rgba(0, 52, 97, 0.30) !important;
+    }}
+    [data-baseweb="select"]:focus-within > div:first-child {{
+        border-color: {PRIMARY_COLOR} !important;
+        box-shadow: 0 0 0 3px rgba(0, 52, 97, 0.10) !important;
+    }}
+
+    /* Slider — accent colour */
+    [data-testid="stSlider"] {{
+        accent-color: {PRIMARY_COLOR};
+    }}
+    [data-testid="stSlider"] [role="slider"] {{
+        background: {PRIMARY_COLOR} !important;
+        border-color: {PRIMARY_COLOR} !important;
+    }}
+    [data-testid="stSlider"] [data-testid="stSliderThumb"] {{
+        background: {PRIMARY_COLOR} !important;
+        border-color: {PRIMARY_COLOR} !important;
+        box-shadow: 0 0 0 4px rgba(0, 52, 97, 0.14) !important;
+    }}
+
+    /* Checkbox & radio accent */
+    [data-baseweb="checkbox"] span,
+    [data-baseweb="radio"] span {{
+        accent-color: {PRIMARY_COLOR};
+    }}
+    [data-baseweb="checkbox"] [role="checkbox"][aria-checked="true"] {{
+        background: {PRIMARY_COLOR} !important;
+        border-color: {PRIMARY_COLOR} !important;
+    }}
+
+    /* Alert messages */
+    [data-testid="stAlert"] {{
+        border-radius: 10px !important;
+        border-left-width: 4px !important;
+        padding: 0.72rem 0.9rem !important;
+        font-size: 0.88rem !important;
+    }}
+    /* Expanders */
+    [data-testid="stExpander"] {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 10px !important;
+    }}
+    [data-testid="stExpander"] summary {{
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        color: {PRIMARY_COLOR} !important;
+        font-size: 0.9rem !important;
+    }}
+    [data-testid="stExpander"] summary:hover {{
+        background: rgba(0, 52, 97, 0.04) !important;
+    }}
+
+    /* File uploader */
+    [data-testid="stFileUploaderDropzone"] {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 10px !important;
+        background: linear-gradient(180deg, {SURFACE_COLOR} 0%, #f8fafc 100%) !important;
+    }}
+    [data-testid="stFileUploaderDropzone"]:hover {{
+        border-color: rgba(0, 52, 97, 0.32) !important;
+        background: linear-gradient(180deg, #f0f4f8 0%, #e8f0f8 100%) !important;
+    }}
+
+    /* Number input */
+    [data-testid="stNumberInput"] > div {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 8px !important;
+    }}
+    [data-testid="stNumberInput"] > div:focus-within {{
+        border-color: {PRIMARY_COLOR} !important;
+        box-shadow: 0 0 0 3px rgba(0, 52, 97, 0.10) !important;
+    }}
+
+    /* Date input */
+    [data-testid="stDateInput"] > div {{
+        border-color: {BORDER_COLOR} !important;
+        border-radius: 8px !important;
+    }}
 </style>
 """
 
@@ -3965,6 +4073,25 @@ def cached_load_sku_attribute_overrides() -> pd.DataFrame:
 @st.cache_data(show_spinner=False, max_entries=2, ttl=300)
 def cached_load_sku_aliases() -> pd.DataFrame:
     return load_sku_aliases()
+
+
+@st.cache_data(show_spinner=False, max_entries=2, ttl=300)
+def cached_load_procurement_items() -> pd.DataFrame:
+    return load_procurement_items()
+
+
+@st.cache_data(show_spinner=False, max_entries=4, ttl=300)
+def cached_build_missing_supplier_candidates(_frame: pd.DataFrame, frame_key: str) -> pd.DataFrame:
+    return build_missing_supplier_assignment_candidates(_frame)
+
+
+@st.cache_data(show_spinner=False, max_entries=4, ttl=300)
+def cached_build_supplier_assignment_catalog(
+    _frame: pd.DataFrame,
+    _assignments: pd.DataFrame | None,
+    combined_key: str,
+) -> pd.DataFrame:
+    return build_supplier_assignment_catalog(_frame, _assignments)
 
 
 def supplier_rule_items_from_frame(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
@@ -7650,7 +7777,7 @@ if work_mode in upload_modes:
             else:
                 quality_expected_date = None
                 quality_replace_existing = False
-            quality_procurement_items = load_procurement_items()
+            quality_procurement_items = cached_load_procurement_items()
             quality_prepared_data = enrich_sales_with_supplier(
                 prepared_result.data,
                 quality_procurement_items,
@@ -7828,7 +7955,7 @@ archive_result = None
 prepared_result = None
 
 procurement_items = apply_sku_aliases(
-    load_procurement_items(),
+    cached_load_procurement_items(),
     sku_aliases,
     aggregate_inventory=True,
 )
@@ -11447,9 +11574,12 @@ if active_screen == "Поставщики":
     )
 
     can_edit_suppliers = can_manage_procurement(current_user)
-    missing_supplier_candidates = build_missing_supplier_assignment_candidates(data)
+    assignments_key = dataframe_cache_key(supplier_product_assignments)
+    missing_supplier_candidates = cached_build_missing_supplier_candidates(data, data_cache_key)
     default_rules = default_supplier_rules_frame()
-    supplier_assignment_catalog = build_supplier_assignment_catalog(data, supplier_product_assignments)
+    supplier_assignment_catalog = cached_build_supplier_assignment_catalog(
+        data, supplier_product_assignments, f"{data_cache_key}:{assignments_key}"
+    )
     supplier_name_options = build_supplier_name_options(
         data,
         supplier_product_assignments,
@@ -13471,6 +13601,7 @@ if active_screen == "Закупки":
                         ]
                     ].copy()
                     selected_order_source["order_qty"] = selected_order_source["recommended_order_qty"]
+                    selected_order_source["unit_cost"] = 0.0
                     selected_order_source["line_comment"] = ""
 
                     order_editor_col, order_meta_col = st.columns([1.24, 0.76], gap="medium")
@@ -13497,6 +13628,7 @@ if active_screen == "Закупки":
                                 "lead_time_days": st.column_config.NumberColumn("Срок поставки, дн.", format="%d"),
                                 "notes": st.column_config.TextColumn("Примечание SKU"),
                                 "order_qty": st.column_config.NumberColumn("Заказать", min_value=0.0, step=1.0, format="%.2f"),
+                                "unit_cost": st.column_config.NumberColumn("Цена закупки", min_value=0.0, format="%.2f"),
                                 "line_comment": st.column_config.TextColumn("Комментарий строки"),
                             },
                         )
@@ -13535,7 +13667,7 @@ if active_screen == "Закупки":
                             try:
                                 order_items_to_create = order_editor.rename(
                                     columns={"order_qty": "quantity", "line_comment": "comment"}
-                                )[["product", "quantity", "comment"]].copy()
+                                )[["product", "quantity", "unit_cost", "comment"]].copy()
                                 created_order = create_procurement_order(
                                     supplier=selected_order_supplier,
                                     items_frame=order_items_to_create,
@@ -13559,6 +13691,7 @@ if active_screen == "Закупки":
                                 st.session_state["procurement_flash_message"] = (
                                     f"Заказ {created_order['order_id']} создан для поставщика {selected_order_supplier}."
                                 )
+                                st.session_state["procurement_selected_order_id"] = created_order["order_id"]
                             except ValueError as error:
                                 st.session_state["procurement_error_message"] = str(error)
                             st.rerun()
@@ -13596,12 +13729,27 @@ if active_screen == "Закупки":
                         filtered_order_overview["status"] == matching_status
                     ].copy()
 
+                _today = date.today()
+                filtered_order_overview = filtered_order_overview.copy()
+                filtered_order_overview["_overdue"] = filtered_order_overview.apply(
+                    lambda _row: (
+                        _row.get("status") in ACTIVE_INBOUND_ORDER_STATUSES
+                        and pd.notna(pd.to_datetime(_row.get("expected_date"), errors="coerce"))
+                        and pd.to_datetime(_row.get("expected_date"), errors="coerce").date() < _today
+                    ),
+                    axis=1,
+                )
+                filtered_order_overview["status_label_display"] = filtered_order_overview.apply(
+                    lambda _row: f"⚠️ {_row['status_label']} — просрочен" if _row["_overdue"] else _row["status_label"],
+                    axis=1,
+                )
+
                 order_summary_col, order_detail_col = st.columns([1.08, 0.92], gap="medium")
                 with order_summary_col:
                     order_table_rename_map = {
                         "order_id": "Заказ",
                         "supplier": "Поставщик",
-                        "status_label": "Статус",
+                        "status_label_display": "Статус",
                         "order_date": "Дата заказа",
                         "expected_date": "Ожидаемая дата",
                         "sku_count": "SKU",
@@ -13613,7 +13761,7 @@ if active_screen == "Закупки":
                         [
                             "order_id",
                             "supplier",
-                            "status_label",
+                            "status_label_display",
                             "order_date",
                             "expected_date",
                             "sku_count",
@@ -13641,7 +13789,9 @@ if active_screen == "Закупки":
                     else:
                         order_option_labels = {
                             row["order_id"]: (
-                                f"{row['order_id']} • {row['supplier'] or 'Без поставщика'} • {row['status_label']}"
+                                f"{'⚠️ ' if row['_overdue'] else ''}#{row['order_id'][-4:]} · "
+                                f"{row['supplier'] or 'Без поставщика'} · {row['status_label_display']} · "
+                                f"{pd.to_datetime(row['order_date'], errors='coerce').strftime('%d.%m.%Y') if pd.notna(pd.to_datetime(row['order_date'], errors='coerce')) else '—'}"
                             )
                             for _, row in filtered_order_overview.iterrows()
                         }
@@ -13665,12 +13815,21 @@ if active_screen == "Закупки":
                         }
                         selected_order_lines_display = selected_order_lines.rename(columns=order_lines_rename_map)
 
+                        _selected_overdue = bool(
+                            filtered_order_overview.loc[
+                                filtered_order_overview["order_id"] == selected_order_id, "_overdue"
+                            ].values[0]
+                            if selected_order_id in filtered_order_overview["order_id"].values
+                            else False
+                        )
+                        _expected_dt = pd.to_datetime(selected_order_row["expected_date"], errors="coerce")
                         render_snapshot_strip(
                             [
                                 {
                                     "label": "Статус",
-                                    "value": str(selected_order_row["status_label"]),
+                                    "value": str(selected_order_row["status_label_display"]),
                                     "hint": f"Поставщик: {selected_order_row['supplier'] or 'Без поставщика'}",
+                                    "tone": "danger" if _selected_overdue else "info",
                                 },
                                 {
                                     "label": "SKU в заказе",
@@ -13680,11 +13839,12 @@ if active_screen == "Закупки":
                                 {
                                     "label": "Ожидаемая дата",
                                     "value": (
-                                        pd.to_datetime(selected_order_row["expected_date"], errors="coerce").strftime("%d.%m.%Y")
-                                        if pd.notna(pd.to_datetime(selected_order_row["expected_date"], errors="coerce"))
+                                        _expected_dt.strftime("%d.%m.%Y")
+                                        if pd.notna(_expected_dt)
                                         else "Не указана"
                                     ),
-                                    "hint": f"Создал: {selected_order_row['created_by'] or 'н/д'}",
+                                    "hint": f"Создал: {selected_order_row['created_by'] or 'н/д'}" + (" · ⚠️ Просрочен" if _selected_overdue else ""),
+                                    "tone": "danger" if _selected_overdue else "neutral",
                                 },
                             ]
                         )
@@ -13802,10 +13962,17 @@ if active_screen == "Закупки":
                                 if updated_status_value == "received"
                                 else "Сохранить статус заказа"
                             )
+                            _receive_confirmed = True
+                            if updated_status_value == "received":
+                                _receive_confirmed = st.checkbox(
+                                    "Подтвердить приёмку — товары будут зачислены на остаток",
+                                    key=f"procurement_receive_confirm_{selected_order_id}",
+                                )
                             if st.button(
                                 action_label,
                                 key=f"procurement_order_update_{selected_order_id}",
                                 use_container_width=True,
+                                disabled=(updated_status_value == "received" and not _receive_confirmed),
                             ):
                                 try:
                                     if updated_status_value == "received":
@@ -14801,9 +14968,10 @@ if active_screen == "Данные":
             stock_updated_at = procurement_items["updated_at"].max()
         stock_freshness = evaluate_freshness(stock_updated_at)
 
-        supplier_catalog = build_supplier_assignment_catalog(
+        supplier_catalog = cached_build_supplier_assignment_catalog(
             filter_source_data,
             supplier_product_assignments,
+            f"{data_cache_key}:{dataframe_cache_key(supplier_product_assignments)}:fsd",
         )
         total_sku_count = len(supplier_catalog)
         missing_supplier_count = (
