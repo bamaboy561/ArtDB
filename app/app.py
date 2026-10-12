@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 from datetime import date, timedelta
+from functools import partial
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -3336,11 +3339,138 @@ def style_chart_traces(figure: go.Figure) -> None:
     )
 
 
+RU_MONTHS_SHORT = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+VALUE_AXIS_TRACE_TYPES = {"bar", "scatter", "waterfall"}
+
+
+def _axis_layout_key(letter: str, reference: object) -> str:
+    return f"{letter}axis{str(reference or letter)[1:]}"
+
+
+def _short_number_ticks(low: float, high: float) -> tuple[list[float], list[str]] | None:
+    span = max(abs(low), abs(high))
+    if not math.isfinite(span) or span < 10_000:
+        return None
+    if span >= 1e9:
+        unit, unit_label = 1e9, "млрд"
+    elif span >= 1e6:
+        unit, unit_label = 1e6, "млн"
+    else:
+        unit, unit_label = 1e3, "тыс"
+    raw_step = span / 4
+    magnitude = 10 ** math.floor(math.log10(raw_step))
+    step = next(factor * magnitude for factor in (1, 2, 2.5, 5, 10) if factor * magnitude >= raw_step)
+    # Headroom beyond the largest single value keeps stacked bars labelled too.
+    values = [index * step for index in range(-16 if low < 0 else 0, 17)]
+    labels = ["0" if value == 0 else f"{value / unit:g}".replace(".", ",") + f" {unit_label}" for value in values]
+    return values, labels
+
+
+def localize_figure_axes(figure: go.Figure) -> None:
+    month_axes: dict[str, set[str]] = {}
+    date_axes: set[str] = set()
+    value_ranges: dict[str, tuple[float, float]] = {}
+
+    for trace in figure.data:
+        trace_type = getattr(trace, "type", "")
+        horizontal = getattr(trace, "orientation", None) == "h"
+        for letter in ("x", "y"):
+            raw_values = getattr(trace, letter, None)
+            if raw_values is None or len(raw_values) == 0:
+                continue
+            axis_key = _axis_layout_key(letter, getattr(trace, f"{letter}axis", None))
+            series = pd.Series(list(raw_values))
+            if series.map(lambda value: isinstance(value, str) and bool(MONTH_KEY_PATTERN.match(value))).all():
+                month_axes.setdefault(axis_key, set()).update(series.tolist())
+                continue
+            if series.map(lambda value: isinstance(value, str)).all():
+                # Text labels that look like dates or numbers must stay labels.
+                if figure.layout[axis_key].type is None:
+                    figure.update_layout({axis_key: dict(type="category")})
+                continue
+            if pd.api.types.is_datetime64_any_dtype(series):
+                date_axes.add(axis_key)
+                continue
+            is_value_axis = trace_type in VALUE_AXIS_TRACE_TYPES and (
+                trace_type == "scatter" or (letter == "x") == horizontal
+            )
+            if not is_value_axis or not pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+                continue
+            numeric = series.dropna()
+            if numeric.empty:
+                continue
+            low, high = value_ranges.get(axis_key, (0.0, 0.0))
+            value_ranges[axis_key] = (min(low, float(numeric.min())), max(high, float(numeric.max())))
+
+    for axis_key, month_keys in month_axes.items():
+        ordered = sorted(month_keys)
+        tick_step = max(1, math.ceil(len(ordered) / 12))
+        shown = ordered[::tick_step]
+        figure.update_layout(
+            {
+                axis_key: dict(
+                    type="category",
+                    categoryorder="array",
+                    categoryarray=ordered,
+                    tickmode="array",
+                    tickvals=shown,
+                    ticktext=[f"{RU_MONTHS_SHORT[int(key[5:7]) - 1]} {key[:4]}" for key in shown],
+                )
+            }
+        )
+
+    for axis_key in date_axes:
+        figure.update_layout(
+            {
+                axis_key: dict(
+                    hoverformat="%d.%m.%Y",
+                    tickformatstops=[
+                        dict(dtickrange=[None, 86_400_000], value="%H:%M"),
+                        dict(dtickrange=[86_400_000, "M1"], value="%d.%m"),
+                        dict(dtickrange=["M1", "M12"], value="%m.%Y"),
+                        dict(dtickrange=["M12", None], value="%Y"),
+                    ],
+                )
+            }
+        )
+
+    for axis_key, (low, high) in value_ranges.items():
+        axis = figure.layout[axis_key]
+        if axis.type in {"log", "date", "category"} or axis.tickvals is not None or axis.tickformat:
+            continue
+        updates: dict[str, object] = {}
+        if not axis.hoverformat:
+            updates["hoverformat"] = ",.0f" if max(abs(low), abs(high)) >= 1000 else ",.1~f"
+        ticks = _short_number_ticks(low, high)
+        if ticks is not None:
+            updates.update(tickmode="array", tickvals=ticks[0], ticktext=ticks[1])
+        if updates:
+            figure.update_layout({axis_key: updates})
+
+
+def apply_chart_filter(chart_key: str, filter_key: str, options: list[str], value_axis: str = "y") -> None:
+    try:
+        points = st.session_state[chart_key]["selection"]["points"]
+    except (KeyError, TypeError, AttributeError):
+        return
+    if not points:
+        return
+    value = str(points[0].get(value_axis, ""))
+    if value in options:
+        st.session_state[filter_key] = [value]
+
+
 def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
     trace_types = {getattr(trace, "type", "") for trace in figure.data}
     use_unified_hover = bool(trace_types & {"bar", "scatter", "waterfall"}) and not bool(
         trace_types & {"pie", "treemap", "heatmap"}
     )
+    horizontal_bars = any(
+        getattr(trace, "type", "") == "bar" and getattr(trace, "orientation", None) == "h"
+        for trace in figure.data
+    )
+    unified_hover_mode = "y unified" if horizontal_bars else "x unified"
     title_text = str(getattr(figure.layout.title, "text", "") or "")
     style_chart_traces(figure)
     figure.update_layout(
@@ -3355,7 +3485,7 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
         legend_title_text="",
         transition=dict(duration=520, easing="cubic-in-out"),
         colorway=CHART_COLORS,
-        hovermode="x unified" if use_unified_hover else None,
+        hovermode=unified_hover_mode if use_unified_hover else None,
         hoverlabel=dict(
             bgcolor="rgba(15, 23, 42, 0.96)",
             bordercolor="rgba(15, 23, 42, 0.96)",
@@ -3380,7 +3510,10 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
         uniformtext=dict(minsize=10, mode="hide"),
         bargap=0.28,
         bargroupgap=0.08,
+        barcornerradius=5,
+        separators=", ",
     )
+    localize_figure_axes(figure)
     figure.update_xaxes(
         gridcolor=CHART_GRID_COLOR,
         zerolinecolor=CHART_ZERO_COLOR,
@@ -9753,6 +9886,18 @@ with sidebar_health_slot:
         critical=int(procurement_overview.get("critical_stock_count", 0) or 0),
         reorder=int(procurement_overview.get("reorder_sku_count", 0) or 0),
     )
+    if active_screen != "Закупки" and "Закупки" in screen_options and (
+        _sidebar_overdue
+        or procurement_overview.get("critical_stock_count", 0)
+        or procurement_overview.get("reorder_sku_count", 0)
+    ):
+        st.button(
+            "Открыть закупки →",
+            key="sidebar_health_open_procurement",
+            on_click=navigate_to_screen,
+            args=("Закупки",),
+            use_container_width=True,
+        )
 
 with hero_slot:
     render_dataset_hero(
@@ -11797,7 +11942,22 @@ if active_screen == "Обзор":
                     category_chart.update_layout(yaxis_title="")
                 category_chart.update_yaxes(automargin=True)
                 polish_figure(category_chart, height=overview_breakdown_height)
-                st.plotly_chart(category_chart, use_container_width=True)
+                if all_categories:
+                    st.plotly_chart(
+                        category_chart,
+                        use_container_width=True,
+                        key="overview_category_chart",
+                        selection_mode="points",
+                        on_select=partial(
+                            apply_chart_filter,
+                            "overview_category_chart",
+                            "main_selected_categories",
+                            all_categories,
+                        ),
+                    )
+                    st.caption("Нажмите на столбец, чтобы отфильтровать весь отчёт по этой категории. Вернуть всё — кнопка «Сбросить» в фильтрах.")
+                else:
+                    st.plotly_chart(category_chart, use_container_width=True)
 
         with second_right:
             with st.container():
@@ -11821,7 +11981,22 @@ if active_screen == "Обзор":
                     manager_chart.update_layout(yaxis_title="")
                 manager_chart.update_yaxes(automargin=True)
                 polish_figure(manager_chart, height=overview_breakdown_height)
-                st.plotly_chart(manager_chart, use_container_width=True)
+                if all_managers:
+                    st.plotly_chart(
+                        manager_chart,
+                        use_container_width=True,
+                        key="overview_manager_chart",
+                        selection_mode="points",
+                        on_select=partial(
+                            apply_chart_filter,
+                            "overview_manager_chart",
+                            "main_selected_managers",
+                            all_managers,
+                        ),
+                    )
+                    st.caption("Нажмите на столбец, чтобы отфильтровать весь отчёт по этому менеджеру. Вернуть всё — кнопка «Сбросить» в фильтрах.")
+                else:
+                    st.plotly_chart(manager_chart, use_container_width=True)
 
         with breakdown_tabs["Топ товаров"]:
             render_panel_header("Топ товаров", "Лидеры по выручке.")
