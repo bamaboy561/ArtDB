@@ -355,37 +355,38 @@ DASHBOARD_CSS = f"""
     }}
 
     .metric-card {{
-        padding: 0.9rem 0.95rem;
-        border-radius: 12px;
-        background: {SURFACE_COLOR};
-        border: 1px solid {BORDER_COLOR};
-        border-left: 4px solid rgba(0, 108, 73, 0.72);
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-        transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+        padding: 1.1rem 1.0rem 0.9rem;
+        border-radius: 16px;
+        background: #ffffff;
+        border: none;
+        box-shadow: 0 4px 22px rgba(0, 52, 97, 0.09), 0 1px 4px rgba(0,0,0,0.04);
+        transition: transform 0.22s cubic-bezier(.22,.68,0,1.2), box-shadow 0.22s ease;
+        position: relative;
+        overflow: hidden;
     }}
-
+    .metric-card::before {{
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 4px;
+        background: linear-gradient(90deg, {PRIMARY_COLOR}, {SECONDARY_COLOR});
+        border-radius: 16px 16px 0 0;
+    }}
     .metric-card:hover {{
-        transform: translateY(-1px);
-        border-color: rgba(0, 52, 97, 0.22);
-        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+        transform: translateY(-5px) scale(1.015);
+        box-shadow: 0 22px 52px rgba(0, 52, 97, 0.18), 0 6px 16px rgba(0,0,0,0.08);
     }}
-
-    .metric-card.info {{
-        border-left-color: {PRIMARY_COLOR};
+    .metric-card.info::before {{
+        background: linear-gradient(90deg, {PRIMARY_COLOR}, #1d6fc9);
     }}
-
-    .metric-card.success {{
-        border-left-color: {SECONDARY_COLOR};
+    .metric-card.success::before {{
+        background: linear-gradient(90deg, {SECONDARY_COLOR}, #00b87c);
     }}
-
-    .metric-card.warning {{
-        border-left-color: {CHART_ACCENT_COLOR};
-        background: linear-gradient(180deg, rgba(255,251,235,0.72), rgba(255,255,255,0.98));
+    .metric-card.warning::before {{
+        background: linear-gradient(90deg, #d97706, #f59e0b);
     }}
-
-    .metric-card.danger {{
-        border-left-color: #dc2626;
-        background: linear-gradient(180deg, rgba(254,242,242,0.72), rgba(255,255,255,0.98));
+    .metric-card.danger::before {{
+        background: linear-gradient(90deg, #dc2626, #f87171);
     }}
 
     .metric-label {{
@@ -399,11 +400,12 @@ DASHBOARD_CSS = f"""
 
     .metric-value {{
         color: {PRIMARY_COLOR};
-        font-size: 1.45rem;
-        font-weight: 800;
+        font-size: 1.75rem;
+        font-weight: 900;
         font-family: 'Manrope', sans-serif;
         font-variant-numeric: tabular-nums;
         line-height: 1.08;
+        letter-spacing: -0.02em;
     }}
 
     .metric-delta {{
@@ -2286,6 +2288,218 @@ WORKSPACE_UI_CSS = f"""
     .alert-action-pill.info {{
         background: #eff6ff; color: #1e40af; border: 1.5px solid #93c5fd;
     }}
+
+    /* ====== FINAL OVERRIDES: METRIC CARDS REDESIGN ====== */
+    .metric-card {{
+        border-radius: 16px !important;
+        background: #ffffff !important;
+        border: none !important;
+        box-shadow: 0 4px 22px rgba(0, 52, 97, 0.09), 0 1px 4px rgba(0,0,0,0.04) !important;
+        position: relative !important;
+        overflow: hidden !important;
+    }}
+    .metric-card::before {{
+        content: '' !important;
+        position: absolute !important;
+        top: 0 !important; left: 0 !important; right: 0 !important;
+        height: 4px !important;
+        background: linear-gradient(90deg, {PRIMARY_COLOR}, {SECONDARY_COLOR}) !important;
+        border-radius: 16px 16px 0 0 !important;
+        pointer-events: none !important;
+    }}
+    .metric-card:hover {{
+        transform: translateY(-5px) scale(1.015) !important;
+        box-shadow: 0 22px 52px rgba(0, 52, 97, 0.18), 0 6px 16px rgba(0,0,0,0.08) !important;
+    }}
+    .metric-card.info::before {{ background: linear-gradient(90deg, {PRIMARY_COLOR}, #1d6fc9) !important; }}
+    .metric-card.success::before {{ background: linear-gradient(90deg, {SECONDARY_COLOR}, #00b87c) !important; }}
+    .metric-card.warning::before {{ background: linear-gradient(90deg, #d97706, #f59e0b) !important; }}
+    .metric-card.danger::before {{ background: linear-gradient(90deg, #dc2626, #f87171) !important; }}
+    .metric-value {{
+        font-size: 1.75rem !important;
+        font-weight: 900 !important;
+        letter-spacing: -0.02em !important;
+    }}
+
+    /* ====== DARK SIDEBAR ====== */
+    section[data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #001427 0%, #002952 55%, {PRIMARY_COLOR} 100%) !important;
+        border-right: 1px solid rgba(255,255,255,0.08) !important;
+    }}
+    section[data-testid="stSidebar"] > div,
+    section[data-testid="stSidebar"] > div > div,
+    section[data-testid="stSidebar"] > div > div > div {{
+        background: transparent !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] li,
+    section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
+        color: rgba(255, 255, 255, 0.9) !important;
+    }}
+    section[data-testid="stSidebar"] label {{
+        color: rgba(255, 255, 255, 0.85) !important;
+    }}
+    section[data-testid="stSidebar"] small,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] small {{
+        color: rgba(255, 255, 255, 0.50) !important;
+    }}
+    section[data-testid="stSidebar"] hr {{
+        border-color: rgba(255, 255, 255, 0.14) !important;
+        opacity: 1 !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {{
+        background: rgba(255,255,255,0.12) !important;
+        border-color: rgba(255,255,255,0.22) !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="select"] span {{
+        color: rgba(255,255,255,0.9) !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="select"] svg {{
+        fill: rgba(255,255,255,0.7) !important;
+    }}
+    section[data-testid="stSidebar"] .stButton > button {{
+        background: rgba(255,255,255,0.12) !important;
+        border: 1px solid rgba(255,255,255,0.28) !important;
+        color: rgba(255,255,255,0.9) !important;
+        box-shadow: none !important;
+    }}
+    section[data-testid="stSidebar"] .stButton > button:hover {{
+        background: rgba(255,255,255,0.22) !important;
+        color: white !important;
+    }}
+    section[data-testid="stSidebar"] [data-baseweb="radio"] label span:last-child {{
+        color: rgba(255,255,255,0.85) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"] {{
+        background: rgba(255,255,255,0.07) !important;
+        border-color: rgba(255,255,255,0.15) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+        color: rgba(255,255,255,0.9) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {{
+        background: rgba(255,255,255,0.10) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stExpander"] svg {{
+        fill: rgba(255,255,255,0.7) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.danger {{
+        background: rgba(220, 38, 38, 0.28) !important;
+        color: #fca5b0 !important;
+        border-color: rgba(220, 38, 38, 0.5) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.warning {{
+        background: rgba(217, 119, 6, 0.25) !important;
+        color: #fde68a !important;
+        border-color: rgba(217, 119, 6, 0.45) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.ok {{
+        background: rgba(22, 163, 74, 0.22) !important;
+        color: #86efac !important;
+        border-color: rgba(22, 163, 74, 0.42) !important;
+    }}
+    section[data-testid="stSidebar"] .sidebar-health-item.info {{
+        background: rgba(59, 130, 246, 0.22) !important;
+        color: #93c5fd !important;
+        border-color: rgba(59, 130, 246, 0.42) !important;
+    }}
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="collapsedControl"] button {{
+        background: rgba(0, 52, 97, 0.10) !important;
+        border-color: rgba(0, 52, 97, 0.25) !important;
+        color: {PRIMARY_COLOR} !important;
+    }}
+    [data-testid="stSidebarCollapseButton"] svg,
+    [data-testid="collapsedControl"] svg {{
+        fill: {PRIMARY_COLOR} !important;
+    }}
+
+    /* ====== OVERVIEW HERO BANNER ====== */
+    .overview-hero-banner {{
+        background: linear-gradient(135deg, #001427 0%, #002952 45%, #003461 70%, #004a30 100%);
+        border-radius: 20px;
+        padding: 1.4rem 1.6rem;
+        margin-bottom: 1.1rem;
+        position: relative;
+        overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0, 20, 39, 0.35), 0 2px 8px rgba(0,0,0,0.15);
+    }}
+    .overview-hero-banner::after {{
+        content: '';
+        position: absolute;
+        top: -60%; right: -15%;
+        width: 380px; height: 380px;
+        background: radial-gradient(circle, rgba(0,108,73,0.22) 0%, transparent 70%);
+        pointer-events: none;
+    }}
+    .overview-hero-content {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        position: relative;
+        z-index: 1;
+    }}
+    .overview-hero-eyebrow {{
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: rgba(0, 180, 120, 0.85);
+        margin-bottom: 0.28rem;
+    }}
+    .overview-hero-title {{
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.55rem;
+        font-weight: 800;
+        color: #ffffff;
+        line-height: 1.15;
+        margin-bottom: 0.22rem;
+    }}
+    .overview-hero-meta {{
+        font-size: 0.82rem;
+        color: rgba(255, 255, 255, 0.55);
+        font-weight: 500;
+    }}
+    .overview-hero-stats {{
+        display: flex;
+        align-items: center;
+        gap: 1.2rem;
+        flex-shrink: 0;
+    }}
+    .overview-hero-stat {{
+        text-align: right;
+    }}
+    .overview-hero-stat-value {{
+        font-family: 'Manrope', sans-serif;
+        font-size: 1.45rem;
+        font-weight: 900;
+        color: #ffffff;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+    }}
+    .overview-hero-stat-label {{
+        font-size: 0.72rem;
+        color: rgba(255, 255, 255, 0.50);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-top: 0.1rem;
+    }}
+    .overview-hero-stat-divider {{
+        width: 1px;
+        height: 44px;
+        background: rgba(255,255,255,0.15);
+        border-radius: 1px;
+    }}
+    @media (max-width: 700px) {{
+        .overview-hero-content {{ flex-direction: column; align-items: flex-start; }}
+        .overview-hero-stats {{ width: 100%; justify-content: flex-start; }}
+        .overview-hero-stat {{ text-align: left; }}
+    }}
 </style>
 """
 
@@ -3184,6 +3398,34 @@ def render_sidebar_health_widget(overdue: int, critical: int, reorder: int) -> N
     st.markdown(
         '<div class="sidebar-section-label">Статус</div>'
         f'<div class="sidebar-health-widget">{"".join(items_html)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_overview_hero_banner(salon_name: str, period_label: str, revenue_label: str, txn_label: str) -> None:
+    st.markdown(
+        f"""
+        <div class="overview-hero-banner">
+            <div class="overview-hero-content">
+                <div class="overview-hero-left">
+                    <div class="overview-hero-eyebrow">Аналитика продаж</div>
+                    <div class="overview-hero-title">{escape(salon_name)}</div>
+                    <div class="overview-hero-meta">{escape(period_label)}</div>
+                </div>
+                <div class="overview-hero-stats">
+                    <div class="overview-hero-stat">
+                        <div class="overview-hero-stat-value">{escape(revenue_label)}</div>
+                        <div class="overview-hero-stat-label">Выручка</div>
+                    </div>
+                    <div class="overview-hero-stat-divider"></div>
+                    <div class="overview-hero-stat">
+                        <div class="overview-hero-stat-value">{escape(txn_label)}</div>
+                        <div class="overview-hero-stat-label">Транзакции</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -10945,6 +11187,17 @@ if active_screen == "Обзор":
     )
 
     with main_col:
+        # Hero banner
+        _hero_salon = selected_salon_name or "Все салоны"
+        _hero_period = f"{date_from:%d.%m.%Y} — {date_to:%d.%m.%Y}"
+        _hero_revenue = format_money(overview.get("total_revenue", 0) or 0)
+        _hero_qty = format_number(overview.get("total_quantity", 0) or 0)
+        render_overview_hero_banner(
+            salon_name=_hero_salon,
+            period_label=_hero_period,
+            revenue_label=_hero_revenue,
+            txn_label=_hero_qty,
+        )
         # Data freshness & alert strip
         _data_max_date = data["date"].max().date() if not data.empty and "date" in data.columns else None
         _data_age_days = (date.today() - _data_max_date).days if _data_max_date else 0
