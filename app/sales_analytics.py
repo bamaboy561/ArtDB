@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 import re
 from typing import Iterable
@@ -186,10 +186,27 @@ REVENUE_TOTAL_COLUMN_ALIASES: tuple[str, ...] = (
 )
 
 
+EXCLUSION_COLUMNS = ["row_number", "severity", "reason", "raw_date", "product", "quantity", "revenue"]
+EXCLUSION_DETAIL_LIMIT = 3000
+EXCLUSION_SEVERITY_ERROR = "Ошибка в данных"
+EXCLUSION_SEVERITY_EMPTY = "Пустая строка"
+EXCLUSION_SEVERITY_SERVICE = "Служебная строка"
+
+
 @dataclass
 class PreparedSalesData:
     data: pd.DataFrame
     warnings: list[str]
+    exclusions: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=EXCLUSION_COLUMNS))
+    stats: dict[str, object] = field(default_factory=dict)
+
+
+def _exclusion_text(series: pd.Series | None, index: pd.Index) -> pd.Series:
+    if series is None:
+        return pd.Series("", index=index, dtype="object")
+    values = series.reindex(index)
+    text = values.astype("object").where(values.notna(), "").astype(str).str.strip()
+    return text.where(~text.str.casefold().isin({"nan", "nat", "none", "<na>"}), "")
 
 
 def normalize_column_name(name: str) -> str:
@@ -866,12 +883,36 @@ def prepare_sales_data(
         raise ValueError("Нужно указать хотя бы колонки с датой и названием товара.")
 
     prepared = frame.copy()
+    if not prepared.index.is_unique:
+        prepared = prepared.reset_index(drop=True)
     warnings: list[str] = []
+    raw_row_count = len(prepared)
+    prepared["_source_row"] = range(1, raw_row_count + 1)
+    exclusion_frames: list[pd.DataFrame] = []
+    exclusion_counts: dict[str, int] = {}
+    error_row_count = 0
 
     raw_product_all = _series_from_mapping(prepared, resolved_mapping, "product")
     document_detail_mask = raw_product_all.map(_is_1c_document_detail_row)
     document_detail_rows = int(document_detail_mask.sum())
     if document_detail_rows:
+        detail_rows = prepared.loc[document_detail_mask]
+        exclusion_frames.append(
+            pd.DataFrame(
+                {
+                    "row_number": detail_rows["_source_row"].to_numpy(),
+                    "severity": EXCLUSION_SEVERITY_SERVICE,
+                    "reason": "Служебная строка документа 1С (не продажа)",
+                    "raw_date": _exclusion_text(
+                        _series_from_mapping(detail_rows, resolved_mapping, "date"), detail_rows.index
+                    ).to_numpy(),
+                    "product": _exclusion_text(raw_product_all, detail_rows.index).to_numpy(),
+                    "quantity": "",
+                    "revenue": "",
+                }
+            ).head(EXCLUSION_DETAIL_LIMIT)
+        )
+        exclusion_counts["Служебные строки 1С"] = document_detail_rows
         prepared = prepared.loc[~document_detail_mask].copy()
         warnings.append(
             f"\u0418\u0437 \u0430\u043d\u0430\u043b\u0438\u0437\u0430 \u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u044b \u0441\u043b\u0443\u0436\u0435\u0431\u043d\u044b\u0435 \u0441\u0442\u0440\u043e\u043a\u0438 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u043e\u0432 1\u0421: {document_detail_rows}."
@@ -907,6 +948,8 @@ def prepare_sales_data(
     else:
         prepared["manager"] = "Не указан"
 
+    raw_quantity_source = _series_from_mapping(prepared, resolved_mapping, "quantity")
+    raw_revenue_source = _series_from_mapping(prepared, resolved_mapping, "revenue")
     quantity = coerce_numeric(_series_from_mapping(prepared, resolved_mapping, "quantity"), fill_value=0)
     if quantity is None:
         quantity = pd.Series(0, index=prepared.index, dtype="float64")
@@ -968,9 +1011,62 @@ def prepare_sales_data(
     prepared["month_label"] = prepared["month"].dt.strftime("%Y-%m")
 
     initial_rows = len(prepared)
-    prepared = prepared.dropna(subset=["date", "product", "revenue"])
-    prepared = prepared[prepared["product"] != ""]
-    prepared = prepared[prepared["product_key"] != ""]
+    missing_date = prepared["date"].isna()
+    missing_revenue = prepared["revenue"].isna()
+    missing_product = prepared["product"].isna() | prepared["product"].eq("") | prepared["product_key"].eq("")
+    excluded_mask = missing_date | missing_revenue | missing_product
+    if excluded_mask.any():
+        excluded = prepared.loc[excluded_mask]
+        date_text = _exclusion_text(raw_date, excluded.index)
+        revenue_text = _exclusion_text(raw_revenue_source, excluded.index)
+        bad_date = missing_date.loc[excluded.index] & date_text.ne("")
+        empty_date = missing_date.loc[excluded.index] & date_text.eq("")
+        bad_revenue = missing_revenue.loc[excluded.index] & revenue_text.ne("")
+        empty_revenue = missing_revenue.loc[excluded.index] & revenue_text.eq("")
+        no_product = missing_product.loc[excluded.index]
+        blank = pd.Series("", index=excluded.index, dtype="object")
+        reason_parts = pd.DataFrame(
+            {
+                "bad_date": ("Дата не распознана: «" + date_text + "»").where(bad_date, ""),
+                "empty_date": blank.where(~empty_date, "Пустая дата (строка итога, группы или незаполненная)"),
+                "bad_revenue": ("Выручка не распознана: «" + revenue_text + "»").where(bad_revenue, ""),
+                "empty_revenue": blank.where(~empty_revenue, "Пустая выручка"),
+                "no_product": blank.where(~no_product, "Пустое название товара"),
+            }
+        )
+        is_error = bad_date | bad_revenue
+        excluded_detail = pd.DataFrame(
+            {
+                "row_number": excluded["_source_row"].to_numpy(),
+                "severity": is_error.map(
+                    {True: EXCLUSION_SEVERITY_ERROR, False: EXCLUSION_SEVERITY_EMPTY}
+                ).to_numpy(),
+                "reason": reason_parts.apply(
+                    lambda row: "; ".join(part for part in row if part), axis=1
+                ).to_numpy(),
+                "raw_date": date_text.to_numpy(),
+                "product": _exclusion_text(raw_product, excluded.index).to_numpy(),
+                "quantity": _exclusion_text(raw_quantity_source, excluded.index).to_numpy(),
+                "revenue": revenue_text.to_numpy(),
+            }
+        )
+        excluded_detail = excluded_detail.sort_values(
+            "severity",
+            key=lambda values: values.ne(EXCLUSION_SEVERITY_ERROR),
+            kind="stable",
+        ).head(EXCLUSION_DETAIL_LIMIT)
+        exclusion_frames.insert(0, excluded_detail)
+        error_row_count = int(is_error.sum())
+        for label, mask in (
+            ("Дата не распознана", bad_date),
+            ("Выручка не распознана", bad_revenue),
+            ("Пустая дата", empty_date),
+            ("Пустая выручка", empty_revenue),
+            ("Пустое название товара", no_product),
+        ):
+            if int(mask.sum()):
+                exclusion_counts[label] = int(mask.sum())
+    prepared = prepared.loc[~excluded_mask]
 
     dropped_rows = initial_rows - len(prepared)
     if dropped_rows:
@@ -979,7 +1075,24 @@ def prepare_sales_data(
     if prepared.empty:
         raise ValueError("После очистки не осталось строк для анализа. Проверьте формат выгрузки.")
 
-    return PreparedSalesData(data=prepared, warnings=warnings)
+    exclusions = (
+        pd.concat(exclusion_frames, ignore_index=True)
+        if exclusion_frames
+        else pd.DataFrame(columns=EXCLUSION_COLUMNS)
+    )
+    stats = {
+        "raw_rows": raw_row_count,
+        "loaded_rows": len(prepared),
+        "excluded_rows": raw_row_count - len(prepared),
+        "error_rows": error_row_count,
+        "reason_counts": exclusion_counts,
+    }
+    return PreparedSalesData(
+        data=prepared.drop(columns=["_source_row"]),
+        warnings=warnings,
+        exclusions=exclusions,
+        stats=stats,
+    )
 
 
 def build_overview_metrics(frame: pd.DataFrame) -> dict[str, float]:

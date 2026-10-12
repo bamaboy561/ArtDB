@@ -2811,6 +2811,54 @@ WORKSPACE_UI_CSS = f"""
         border-color: #FECACA;
         color: #991B1B;
     }}
+
+    /* ====== LOAD REPORT STRIP ====== */
+    .load-report-strip {{
+        border: 1px solid #FECACA;
+        border-left: 5px solid #DC2626;
+        background: #FEF2F2;
+        border-radius: 12px;
+        padding: 0.75rem 0.95rem;
+        margin: 0 0 0.6rem;
+        color: #7F1D1D;
+        font-size: 0.86rem;
+    }}
+    .load-report-strip-title {{
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        font-size: 0.95rem;
+        margin-bottom: 0.3rem;
+    }}
+    .load-report-strip ul {{
+        margin: 0.1rem 0 0.35rem 1.1rem;
+        padding: 0;
+    }}
+    .load-report-strip li {{
+        margin: 0.12rem 0;
+        line-height: 1.4;
+    }}
+    .load-report-strip-hint {{
+        color: #991B1B;
+        font-size: 0.78rem;
+    }}
+
+    /* ====== METRIC VALUES: LONG TEXT ====== */
+    .metric-value.is-long {{
+        font-size: 1.45rem !important;
+    }}
+    .metric-value.is-text {{
+        font-size: 1.02rem !important;
+        line-height: 1.3 !important;
+        letter-spacing: 0 !important;
+    }}
+    @media (max-width: 900px) {{
+        .metric-value.is-long {{
+            font-size: 1.05rem !important;
+        }}
+        .metric-value.is-text {{
+            font-size: 0.9rem !important;
+        }}
+    }}
 </style>
 """
 
@@ -3478,13 +3526,38 @@ def style_chart_traces(figure: go.Figure) -> None:
 RU_MONTHS_SHORT = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 VALUE_AXIS_TRACE_TYPES = {"bar", "scatter", "waterfall"}
+MONTH_KEY_IN_TEXT = re.compile(r"(?<![\d-])(20\d{2})-(0[1-9]|1[0-2])(?![\d-])")
+CHART_LABEL_MAX_LENGTH = 30
+
+
+def humanize_month_keys(text: object) -> str:
+    return MONTH_KEY_IN_TEXT.sub(
+        lambda match: f"{RU_MONTHS_SHORT[int(match.group(2)) - 1]} {match.group(1)}",
+        str(text),
+    )
+
+
+def humanize_card_texts(items: list[dict]) -> list[dict]:
+    return [
+        {key: humanize_month_keys(value) if isinstance(value, str) else value for key, value in item.items()}
+        for item in items
+    ]
+
+
+def metric_value_class(value: object) -> str:
+    length = len(str(value))
+    if length > 22:
+        return "metric-value is-text"
+    if length > 13:
+        return "metric-value is-long"
+    return "metric-value"
 
 
 def _axis_layout_key(letter: str, reference: object) -> str:
     return f"{letter}axis{str(reference or letter)[1:]}"
 
 
-def _short_number_ticks(low: float, high: float) -> tuple[list[float], list[str]] | None:
+def _short_number_ticks(low: float, high: float, divisions: float = 4) -> tuple[list[float], list[str]] | None:
     span = max(abs(low), abs(high))
     if not math.isfinite(span) or span < 10_000:
         return None
@@ -3494,7 +3567,7 @@ def _short_number_ticks(low: float, high: float) -> tuple[list[float], list[str]
         unit, unit_label = 1e6, "млн"
     else:
         unit, unit_label = 1e3, "тыс"
-    raw_step = span / 4
+    raw_step = span / divisions
     magnitude = 10 ** math.floor(math.log10(raw_step))
     step = next(factor * magnitude for factor in (1, 2, 2.5, 5, 10) if factor * magnitude >= raw_step)
     # Headroom beyond the largest single value keeps stacked bars labelled too.
@@ -3505,6 +3578,7 @@ def _short_number_ticks(low: float, high: float) -> tuple[list[float], list[str]
 
 def localize_figure_axes(figure: go.Figure) -> None:
     month_axes: dict[str, set[str]] = {}
+    text_axes: dict[str, list[str]] = {}
     date_axes: set[str] = set()
     value_ranges: dict[str, tuple[float, float]] = {}
 
@@ -3524,6 +3598,7 @@ def localize_figure_axes(figure: go.Figure) -> None:
                 # Text labels that look like dates or numbers must stay labels.
                 if figure.layout[axis_key].type is None:
                     figure.update_layout({axis_key: dict(type="category")})
+                text_axes.setdefault(axis_key, []).extend(series.tolist())
                 continue
             if pd.api.types.is_datetime64_any_dtype(series):
                 date_axes.add(axis_key)
@@ -3538,6 +3613,30 @@ def localize_figure_axes(figure: go.Figure) -> None:
                 continue
             low, high = value_ranges.get(axis_key, (0.0, 0.0))
             value_ranges[axis_key] = (min(low, float(numeric.min())), max(high, float(numeric.max())))
+
+    for axis_key, labels in text_axes.items():
+        unique_labels = list(dict.fromkeys(labels))
+        if (
+            axis_key in month_axes
+            or figure.layout[axis_key].tickvals is not None
+            or len(unique_labels) > 60
+            or not any(len(label) > CHART_LABEL_MAX_LENGTH for label in unique_labels)
+        ):
+            continue
+        figure.update_layout(
+            {
+                axis_key: dict(
+                    tickmode="array",
+                    tickvals=unique_labels,
+                    ticktext=[
+                        label
+                        if len(label) <= CHART_LABEL_MAX_LENGTH
+                        else label[: CHART_LABEL_MAX_LENGTH - 1].rstrip() + "…"
+                        for label in unique_labels
+                    ],
+                )
+            }
+        )
 
     for axis_key, month_keys in month_axes.items():
         ordered = sorted(month_keys)
@@ -3581,11 +3680,16 @@ def localize_figure_axes(figure: go.Figure) -> None:
         if axis.type in {"log", "date", "category"} or axis.tickvals is not None or axis.tickformat:
             continue
         updates: dict[str, object] = {}
+        if axis.tickangle is None:
+            updates["tickangle"] = 0
         if not axis.hoverformat:
             updates["hoverformat"] = ",.0f" if max(abs(low), abs(high)) >= 1000 else ",.1~f"
-        ticks = _short_number_ticks(low, high)
+        horizontal_value_axis = axis_key.startswith("xaxis")
+        ticks = _short_number_ticks(low, high, 2.5 if horizontal_value_axis else 4)
         if ticks is not None:
             updates.update(tickmode="array", tickvals=ticks[0], ticktext=ticks[1])
+        elif horizontal_value_axis and axis.nticks is None:
+            updates["nticks"] = 5
         if updates:
             figure.update_layout({axis_key: updates})
 
@@ -3742,7 +3846,7 @@ def infer_dashboard_tone(*values: object) -> str:
 
 def render_metric_cards(cards: list[dict[str, str]]) -> None:
     cards_html: list[str] = []
-    for card in cards:
+    for card in humanize_card_texts(cards):
         delta = card.get("delta") or ""
         delta_class = "metric-delta"
         if delta.startswith("+"):
@@ -3761,7 +3865,7 @@ def render_metric_cards(cards: list[dict[str, str]]) -> None:
             '''
 
         delta_html = f'<div class="{delta_class}">{escape(delta)}</div>' if delta else ""
-        inner = f'<div class="metric-label">{escape(card["label"])}</div><div class="metric-value">{escape(card["value"])}</div>{delta_html}{progress_html}'
+        inner = f'<div class="metric-label">{escape(card["label"])}</div><div class="{metric_value_class(card["value"])}">{escape(card["value"])}</div>{delta_html}{progress_html}'
         tone = card.get("tone") or infer_dashboard_tone(card.get("label", ""), delta)
         cards_html.append(f'<div class="metric-card {escape(str(tone))}">{inner}</div>')
 
@@ -3800,6 +3904,296 @@ def render_order_status_stepper(status: str) -> None:
             f"{escape(PROCUREMENT_ORDER_STATUS_LABELS.get(step, step))}</div>"
         )
     render_html_block(f'<div class="order-stepper">{"".join(parts)}</div>')
+
+
+LOAD_REPORT_NOTE_SKIP_MARKERS = ("Из анализа исключен", "пересекающиеся выгрузки")
+LOAD_FILE_REPORT_NAMES = {
+    "salon": "Салон",
+    "report_date": "Дата отчёта",
+    "source_filename": "Файл",
+    "uploaded_at": "Загружен",
+    "raw_rows": "Строк в файле",
+    "loaded_rows": "Принято в анализ",
+    "excluded_rows": "Исключено",
+    "error_rows": "Из них ошибок",
+    "overlap_rows": "Перекрыто свежей выгрузкой",
+    "reasons": "Причины исключения",
+    "problem": "Проблема с файлом",
+}
+LOAD_EXCLUSION_NAMES = {
+    "salon": "Салон",
+    "report_date": "Дата отчёта",
+    "source_filename": "Файл",
+    "row_number": "№ строки",
+    "severity": "Тип",
+    "reason": "Причина",
+    "raw_date": "Дата в строке",
+    "product": "Товар",
+    "quantity": "Количество",
+    "revenue": "Выручка в строке",
+}
+LOAD_OVERLAP_NAMES = {
+    "salon": "Салон",
+    "sales_date": "Дата продаж",
+    "report_date": "Дата отчёта (не учтён)",
+    "source_filename": "Файл (не учтён)",
+    "rows": "Строк не учтено",
+    "winner_report_date": "Дата отчёта (учтён)",
+    "winner_filename": "Файл (учтён)",
+}
+
+
+def build_load_report(
+    file_report: pd.DataFrame,
+    exclusions: pd.DataFrame,
+    overlaps: pd.DataFrame,
+    warnings: list[str],
+) -> dict[str, object]:
+    notes = [
+        str(warning)
+        for warning in warnings
+        if not any(marker in str(warning) for marker in LOAD_REPORT_NOTE_SKIP_MARKERS)
+    ]
+    numeric = file_report.copy()
+    for column in ("raw_rows", "loaded_rows", "excluded_rows", "error_rows", "overlap_rows"):
+        numeric[column] = pd.to_numeric(numeric.get(column), errors="coerce").fillna(0).astype(int)
+    problem_files = numeric[numeric["problem"].fillna("").astype(str).str.strip() != ""]
+    error_files = numeric[numeric["error_rows"] > 0]
+    return {
+        "file_report": numeric,
+        "exclusions": exclusions,
+        "overlaps": overlaps,
+        "notes": notes,
+        "file_count": len(numeric),
+        "raw_rows": int(numeric["raw_rows"].sum()),
+        "loaded_rows": int(numeric["loaded_rows"].sum()) - int(numeric["overlap_rows"].sum()),
+        "excluded_rows": int(numeric["excluded_rows"].sum()),
+        "error_rows": int(numeric["error_rows"].sum()),
+        "overlap_rows": int(numeric["overlap_rows"].sum()),
+        "problem_files": problem_files,
+        "error_files": error_files,
+    }
+
+
+def build_single_file_load_report(prepared_result: object, filename: str, salon_name: str) -> dict[str, object]:
+    stats = getattr(prepared_result, "stats", None) or {}
+    reason_counts = stats.get("reason_counts") or {}
+    file_report = pd.DataFrame(
+        [
+            {
+                "upload_id": "current",
+                "salon": salon_name or "Без привязки",
+                "report_date": "текущая загрузка",
+                "source_filename": filename,
+                "uploaded_at": "",
+                "raw_rows": stats.get("raw_rows", 0),
+                "loaded_rows": stats.get("loaded_rows", 0),
+                "excluded_rows": stats.get("excluded_rows", 0),
+                "error_rows": stats.get("error_rows", 0),
+                "overlap_rows": 0,
+                "reasons": "; ".join(f"{label}: {count}" for label, count in reason_counts.items()),
+                "problem": "",
+            }
+        ]
+    )
+    exclusions = getattr(prepared_result, "exclusions", pd.DataFrame())
+    if not exclusions.empty:
+        exclusions = exclusions.copy()
+        exclusions.insert(0, "source_filename", filename)
+        exclusions.insert(0, "report_date", "текущая загрузка")
+        exclusions.insert(0, "salon", salon_name or "Без привязки")
+    return build_load_report(file_report, exclusions, pd.DataFrame(), list(getattr(prepared_result, "warnings", [])))
+
+
+def describe_load_file(row: pd.Series) -> str:
+    report_date = pd.to_datetime(row.get("report_date"), errors="coerce")
+    date_text = report_date.strftime("%d.%m.%Y") if pd.notna(report_date) else str(row.get("report_date") or "")
+    return f"{row.get('salon')} · отчёт {date_text} · {row.get('source_filename')}"
+
+
+def render_load_report_strip(report: dict[str, object], *, show_link: bool) -> None:
+    problem_files: pd.DataFrame = report["problem_files"]
+    error_files: pd.DataFrame = report["error_files"]
+    if problem_files.empty and error_files.empty:
+        return
+    lines: list[str] = []
+    for _, row in problem_files.head(4).iterrows():
+        lines.append(f"<li><b>{escape(describe_load_file(row))}</b> — {escape(str(row['problem']))}</li>")
+    for _, row in error_files.head(4).iterrows():
+        lines.append(
+            f"<li><b>{escape(describe_load_file(row))}</b> — строк с ошибками: "
+            f"{format_number(row['error_rows'])} ({escape(str(row['reasons']))})</li>"
+        )
+    hidden = max(len(problem_files) - 4, 0) + max(len(error_files) - 4, 0)
+    if hidden:
+        lines.append(f"<li>…и ещё файлов: {hidden}</li>")
+    headline_parts = []
+    if not problem_files.empty:
+        headline_parts.append(f"не обработано файлов: {len(problem_files)}")
+    if report["error_rows"]:
+        headline_parts.append(f"строк с ошибками в данных: {format_number(report['error_rows'])}")
+    render_html_block(
+        f"""
+        <div class="load-report-strip">
+            <div class="load-report-strip-title">⚠️ В загруженных данных есть проблемы — {escape(", ".join(headline_parts))}</div>
+            <ul>{"".join(lines)}</ul>
+            <div class="load-report-strip-hint">Эти строки не попали в расчёты. Полный список с номерами строк — в отчёте о загрузке.</div>
+        </div>
+        """
+    )
+    if show_link:
+        st.button(
+            "Открыть отчёт о загрузке →",
+            key="load_report_open_data_screen",
+            on_click=navigate_to_screen,
+            args=("Данные",),
+        )
+
+
+def render_load_report_details(report: dict[str, object], current_user: dict[str, str], *, key_prefix: str) -> None:
+    file_report: pd.DataFrame = report["file_report"]
+    exclusions: pd.DataFrame = report["exclusions"]
+    overlaps: pd.DataFrame = report["overlaps"]
+    notes: list[str] = report["notes"]
+
+    render_snapshot_strip(
+        [
+            {
+                "label": "Файлов в расчёте",
+                "value": format_number(report["file_count"]),
+                "hint": f"строк в файлах: {format_number(report['raw_rows'])}",
+                "tone": "info",
+            },
+            {
+                "label": "Принято в анализ",
+                "value": format_number(report["loaded_rows"]),
+                "hint": "строк продаж после всех проверок",
+                "tone": "success",
+            },
+            {
+                "label": "Исключено строк",
+                "value": format_number(report["excluded_rows"]),
+                "hint": "пустые, служебные и ошибочные",
+                "tone": "warning" if report["excluded_rows"] else "success",
+            },
+            {
+                "label": "Ошибок в данных",
+                "value": format_number(report["error_rows"]),
+                "hint": "значение есть, но не распознано",
+                "tone": "danger" if report["error_rows"] else "success",
+            },
+            {
+                "label": "Перекрыто свежей выгрузкой",
+                "value": format_number(report["overlap_rows"]),
+                "hint": "одна дата загружена дважды",
+                "tone": "warning" if report["overlap_rows"] else "success",
+            },
+            {
+                "label": "Проблемных файлов",
+                "value": format_number(len(report["problem_files"])),
+                "hint": "не найдены или не прочитаны",
+                "tone": "danger" if len(report["problem_files"]) else "success",
+            },
+        ]
+    )
+
+    files_tab, rows_tab, overlaps_tab, notes_tab = st.tabs(
+        [
+            f"По файлам ({len(file_report)})",
+            f"Исключённые строки ({format_number(report['excluded_rows'])})",
+            f"Повторные выгрузки ({len(overlaps)})",
+            f"Примечания ({len(notes)})",
+        ]
+    )
+
+    file_display = file_report.drop(columns=["upload_id"], errors="ignore").rename(columns=LOAD_FILE_REPORT_NAMES)
+    with files_tab:
+        st.caption("Каждая строка — один загруженный файл: сколько строк в нём было, сколько принято и почему остальные исключены.")
+        st.dataframe(file_display, use_container_width=True, hide_index=True, height=min(460, 80 + len(file_display) * 36))
+
+    exclusion_display = pd.DataFrame(columns=list(LOAD_EXCLUSION_NAMES.values()))
+    with rows_tab:
+        if exclusions.empty:
+            st.success("Ни одна строка не исключена — все строки файлов попали в анализ.")
+        else:
+            severity_options = ["Все типы", *sorted(exclusions["severity"].dropna().astype(str).unique().tolist())]
+            file_labels = {
+                "Все файлы": None,
+                **{
+                    describe_load_file(row): (row["salon"], row["report_date"], row["source_filename"])
+                    for _, row in exclusions[["salon", "report_date", "source_filename"]].drop_duplicates().iterrows()
+                },
+            }
+            filter_file_col, filter_type_col = st.columns([1.6, 1], gap="small")
+            with filter_file_col:
+                selected_file_label = st.selectbox(
+                    "Файл",
+                    options=list(file_labels),
+                    key=f"{key_prefix}_exclusions_file",
+                )
+            with filter_type_col:
+                default_severity = "Ошибка в данных" if "Ошибка в данных" in severity_options else "Все типы"
+                selected_severity = st.selectbox(
+                    "Тип строки",
+                    options=severity_options,
+                    index=severity_options.index(default_severity),
+                    key=f"{key_prefix}_exclusions_severity",
+                )
+            filtered_exclusions = exclusions
+            selected_file = file_labels[selected_file_label]
+            if selected_file is not None:
+                filtered_exclusions = filtered_exclusions[
+                    (filtered_exclusions["salon"] == selected_file[0])
+                    & (filtered_exclusions["report_date"] == selected_file[1])
+                    & (filtered_exclusions["source_filename"] == selected_file[2])
+                ]
+            if selected_severity != "Все типы":
+                filtered_exclusions = filtered_exclusions[filtered_exclusions["severity"] == selected_severity]
+            exclusion_display = filtered_exclusions.rename(columns=LOAD_EXCLUSION_NAMES)[
+                [name for name in LOAD_EXCLUSION_NAMES.values() if name in filtered_exclusions.rename(columns=LOAD_EXCLUSION_NAMES).columns]
+            ]
+            st.caption(
+                f"Показано строк: {format_number(len(exclusion_display))}. "
+                "«№ строки» — порядковый номер строки данных в файле, не считая заголовка. "
+                "Для очень больших файлов подробности хранятся по первым 3 000 исключённым строкам, счётчики всегда полные."
+            )
+            if exclusion_display.empty:
+                st.info("Под выбранный фильтр исключённых строк нет.")
+            else:
+                st.dataframe(
+                    exclusion_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(420, 80 + len(exclusion_display) * 36),
+                )
+
+    overlap_display = overlaps.rename(columns=LOAD_OVERLAP_NAMES) if not overlaps.empty else pd.DataFrame()
+    with overlaps_tab:
+        if overlaps.empty:
+            st.success("Повторных выгрузок за одни и те же даты нет.")
+        else:
+            st.caption("За эти даты продаж есть несколько файлов. В расчёт взят самый свежий, строки из более старого не учитываются, чтобы продажи не задвоились.")
+            st.dataframe(overlap_display, use_container_width=True, hide_index=True, height=min(420, 80 + len(overlap_display) * 36))
+
+    with notes_tab:
+        if not notes:
+            st.success("Дополнительных примечаний по загрузке нет.")
+        for note in notes:
+            st.markdown(f"- {note}")
+
+    export_sheets = {"По файлам": file_display}
+    if not exclusions.empty:
+        export_sheets["Исключённые строки"] = exclusions.rename(columns=LOAD_EXCLUSION_NAMES)
+    if not overlap_display.empty:
+        export_sheets["Повторные выгрузки"] = overlap_display
+    st.download_button(
+        "Скачать отчёт о загрузке в Excel",
+        data=to_excel_report_bytes(export_sheets, report_title="Отчёт о загрузке данных"),
+        file_name="load_report.xlsx",
+        mime=EXCEL_MIME,
+        key=f"{key_prefix}_load_report_export",
+        icon=":material/download:",
+    )
 
 
 def open_product_from_search() -> None:
@@ -3874,6 +4268,7 @@ def render_clickable_metric_cards(
     *,
     per_row: int = 3,
 ) -> None:
+    cards = humanize_card_texts(cards)
     for row_start in range(0, len(cards), per_row):
         columns = st.columns(per_row, gap="small")
         for offset, (column, card) in enumerate(zip(columns, cards[row_start : row_start + per_row])):
@@ -3894,7 +4289,7 @@ def render_clickable_metric_cards(
                 f'<div class="metric-card {escape(str(tone))}">'
                 f'{build_sparkline_svg(card.get("spark") or [])}'
                 f'<div class="metric-label">{escape(card["label"])}</div>'
-                f'<div class="metric-value">{escape(card["value"])}</div>'
+                f'<div class="{metric_value_class(card["value"])}">{escape(card["value"])}</div>'
                 f"{delta_html}{hint_html}</div>"
             )
             with column:
@@ -4022,6 +4417,7 @@ def render_data_source_cards(items: list[dict[str, str]]) -> None:
 
 
 def render_snapshot_strip(items: list[dict[str, str]]) -> None:
+    items = humanize_card_texts(items)
     cards_html: list[str] = []
     for item in items:
         delta = item.get("delta", "")
@@ -6192,7 +6588,7 @@ def format_display_frame(
                 lambda value: "—"
                 if is_missing(value)
                 else (
-                    pd.to_datetime(value, errors="coerce").strftime("%Y-%m")
+                    humanize_month_keys(pd.to_datetime(value, errors="coerce").strftime("%Y-%m"))
                     if pd.notna(pd.to_datetime(value, errors="coerce"))
                     else str(value)
                 )
@@ -7575,7 +7971,7 @@ def render_overview_action_center(
             </div>
             """
         )
-        for index, item in enumerate(unique_items):
+        for index, item in enumerate(humanize_card_texts(unique_items)):
             target = resolve_signal_target(item["title"], screen_options or [])
             with st.container(key=f"signal_card_{index}"):
                 render_html_block(
@@ -8841,6 +9237,7 @@ main_col = st.container()
 mobile_navigation_slot = main_col.empty()
 mobile_bottom_navigation_slot = main_col.empty()
 hero_slot = main_col.container()
+load_report_slot = main_col.container()
 control_col = main_col
 
 if work_mode in upload_modes:
@@ -9123,9 +9520,9 @@ if work_mode in upload_modes:
             data["salon"] = selected_salon_name
         source_label = f"Текущая выгрузка: {filename}"
 
+load_report: dict[str, object] | None = None
 if prepared_result is not None and work_mode in {"Разовая загрузка", "Новая выгрузка", "Загрузка салона"}:
-    for warning in prepared_result.warnings:
-        st.warning(warning)
+    load_report = build_single_file_load_report(prepared_result, filename, selected_salon_name)
 
 if work_mode not in upload_modes:
     selected_archive_salons = []
@@ -9138,10 +9535,16 @@ if work_mode not in upload_modes:
     manifest_view = archive_result.manifest.copy()
     data = archive_result.data
 
-    for warning in archive_result.warnings:
-        st.warning(warning)
+    load_report = build_load_report(
+        archive_result.file_report,
+        archive_result.exclusions,
+        archive_result.overlaps,
+        archive_result.warnings,
+    )
 
     if data.empty:
+        if not load_report["problem_files"].empty:
+            render_load_report_strip(load_report, show_link=False)
         if current_user["role"] == "salon":
             st.info("У этого салона пока нет сохранённых выгрузок. Загрузите первый файл и сохраните его в архив.")
         else:
@@ -10173,6 +10576,16 @@ with sidebar_health_slot:
             args=("Закупки",),
             use_container_width=True,
         )
+
+if load_report is not None:
+    with load_report_slot:
+        render_load_report_strip(load_report, show_link=active_screen != "Данные")
+        if work_mode in upload_modes and active_screen != "Данные":
+            with st.expander(
+                f"Отчёт о загрузке файла: исключено строк — {format_number(load_report['excluded_rows'])}",
+                expanded=bool(load_report["error_rows"]),
+            ):
+                render_load_report_details(load_report, current_user, key_prefix="upload_load_report")
 
 with hero_slot:
     render_dataset_hero(
@@ -11765,19 +12178,31 @@ if active_screen == "Финансы":
                     },
                     {
                         "label": "Сумма склада",
-                        "value": format_money(stock_value_total),
-                        "delta": stock_value_delta,
+                        "value": (
+                            format_money(stock_value_total)
+                            if not is_missing(stock_value_total) and stock_value_total > 0
+                            else "Нет данных"
+                        ),
+                        "delta": (
+                            stock_value_delta
+                            if not is_missing(stock_value_total) and stock_value_total > 0
+                            else "загрузите файл остатков"
+                        ),
                         "tone": "warning" if not is_missing(stock_value_total) and stock_value_total > total_margin else "info",
                     },
                     {
                         "label": "Оборачиваемость",
-                        "value": "н/д" if is_missing(inventory_turnover) else f"{inventory_turnover:.1f}x/мес",
+                        "value": "Нет данных" if is_missing(inventory_turnover) else f"{inventory_turnover:.1f}x/мес",
                         "delta": "прогноз COGS / остаток",
                         "tone": "success" if not is_missing(inventory_turnover) and inventory_turnover >= 1 else "warning",
                     },
                     {
                         "label": "Покрытие запасов",
-                        "value": "н/д" if is_missing(inventory_coverage_days) else f"{inventory_coverage_days:.0f} дней",
+                        "value": (
+                            "Нет данных"
+                            if is_missing(inventory_coverage_days) or is_missing(stock_value_total) or stock_value_total <= 0
+                            else f"{inventory_coverage_days:.0f} дней"
+                        ),
                         "delta": "по текущему прогнозу спроса",
                         "tone": "warning" if not is_missing(inventory_coverage_days) and inventory_coverage_days > 90 else "info",
                     },
@@ -11886,7 +12311,11 @@ if active_screen == "Финансы":
                         "Деньги в остатках",
                         "Оценка товарного запаса по средней себестоимости из продаж и прогноза закупок.",
                     )
-                    stock_value_frame = financial_inventory.dropna(subset=["stock_value"]).head(12).sort_values("stock_value", ascending=True)
+                    stock_value_frame = (
+                        financial_inventory[pd.to_numeric(financial_inventory["stock_value"], errors="coerce") > 0]
+                        .head(12)
+                        .sort_values("stock_value", ascending=True)
+                    )
                     if stock_value_frame.empty:
                         st.info("Чтобы увидеть деньги в остатках, загрузите остатки и убедитесь, что в продажах есть себестоимость/маржа.")
                     else:
@@ -12795,8 +13224,24 @@ if active_screen == "ABC-анализ":
                 "Детальная таблица",
                 "Расшифровка по каждой позиции.",
             )
+            abc_class_choice = (
+                st.segmented_control(
+                    "Класс ABC",
+                    ["Все", "A", "B", "C"],
+                    default="Все",
+                    key="abc_detail_class_filter",
+                    label_visibility="collapsed",
+                )
+                or "Все"
+            )
+            abc_detail_data = (
+                abc_tab_data
+                if abc_class_choice == "Все"
+                else abc_tab_data[abc_tab_data["abc_class"].astype(str) == abc_class_choice]
+            )
+            st.caption(f"Позиций в таблице: {format_number(len(abc_detail_data))}.")
             abc_display = format_display_frame_for_role(
-                abc_tab_data,
+                abc_detail_data,
                 current_user,
                 {
                     "group_name": "Товар",
@@ -16815,6 +17260,13 @@ if active_screen == "Данные":
         data_center_flash_message = st.session_state.pop("data_center_flash_message", "")
         if data_center_flash_message:
             st.success(data_center_flash_message)
+        if load_report is not None:
+            with st.container(border=True):
+                render_panel_header(
+                    "Отчёт о загрузке: что исключено и почему",
+                    "По каждому файлу видно, сколько строк принято, какие исключены, в какой дате отчёта и по какой причине.",
+                )
+                render_load_report_details(load_report, current_user, key_prefix="data_load_report")
         sample_path = Path("sample_sales_data.csv")
         data_period_text = format_date_range_values(data["date"].min(), data["date"].max())
         archive_upload_count = len(manifest_view) if manifest_view is not None else 0

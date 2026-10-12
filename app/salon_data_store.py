@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 import json
 import os
@@ -37,11 +37,30 @@ MANIFEST_COLUMNS = [
 PARSED_CACHE_VERSION = 1
 
 
+FILE_REPORT_COLUMNS = [
+    "upload_id",
+    "salon",
+    "report_date",
+    "source_filename",
+    "uploaded_at",
+    "raw_rows",
+    "loaded_rows",
+    "excluded_rows",
+    "error_rows",
+    "overlap_rows",
+    "reasons",
+    "problem",
+]
+
+
 @dataclass
 class ArchiveLoadResult:
     data: pd.DataFrame
     manifest: pd.DataFrame
     warnings: list[str]
+    file_report: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=FILE_REPORT_COLUMNS))
+    exclusions: pd.DataFrame = field(default_factory=pd.DataFrame)
+    overlaps: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def ensure_store() -> None:
@@ -327,7 +346,7 @@ def _parse_sheet_name(sheet_name: Any) -> str | int | None:
     return int(text) if text.isdigit() else text
 
 
-def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, str | None, pd.DataFrame]:
     helper_columns = [
         "_archive_upload_id",
         "_archive_uploaded_at",
@@ -335,7 +354,7 @@ def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, st
     ]
     required_columns = {"date", "salon", *helper_columns}
     if data.empty or not required_columns.issubset(data.columns):
-        return data.drop(columns=helper_columns, errors="ignore"), None
+        return data.drop(columns=helper_columns, errors="ignore"), None, pd.DataFrame()
 
     working = data.copy()
     working["_archive_sales_date"] = pd.to_datetime(
@@ -355,7 +374,7 @@ def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, st
         return working.drop(
             columns=[*helper_columns, "_archive_sales_date", "_archive_uploaded_sort", "_archive_report_sort"],
             errors="ignore",
-        ), None
+        ), None, pd.DataFrame()
 
     coverage_columns = [
         "salon",
@@ -373,7 +392,7 @@ def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, st
         return working.drop(
             columns=[*helper_columns, "_archive_sales_date", "_archive_uploaded_sort", "_archive_report_sort"],
             errors="ignore",
-        ), None
+        ), None, pd.DataFrame()
 
     winners = (
         coverage.sort_values(
@@ -396,6 +415,27 @@ def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, st
         how="inner",
         validate="many_to_one",
     )
+    superseded = valid[["salon", "_archive_sales_date", "_archive_upload_id"]].merge(
+        winners.rename(columns={"_archive_upload_id": "_winner_upload_id"}),
+        on=["salon", "_archive_sales_date"],
+        how="inner",
+    )
+    superseded = superseded[superseded["_archive_upload_id"] != superseded["_winner_upload_id"]]
+    overlap_details = (
+        superseded.groupby(
+            ["salon", "_archive_sales_date", "_archive_upload_id", "_winner_upload_id"],
+            as_index=False,
+        )
+        .size()
+        .rename(
+            columns={
+                "_archive_sales_date": "sales_date",
+                "_archive_upload_id": "upload_id",
+                "_winner_upload_id": "winner_upload_id",
+                "size": "rows",
+            }
+        )
+    )
     if not invalid.empty:
         resolved = pd.concat([resolved, invalid], ignore_index=True, sort=False)
 
@@ -411,7 +451,7 @@ def _resolve_archive_date_overlaps(data: pd.DataFrame) -> tuple[pd.DataFrame, st
         "Для каждой даты использована самая свежая выгрузка; "
         f"из повторного подсчёта исключено строк: {dropped_rows}."
     )
-    return clean, warning
+    return clean, warning, overlap_details
 
 
 def register_upload(
@@ -495,12 +535,32 @@ def load_archive_data(
         manifest = manifest[manifest["salon"].astype(str).isin(salons)].copy()
 
     frames: list[pd.DataFrame] = []
+    file_rows: list[dict[str, Any]] = []
+    exclusion_frames: list[pd.DataFrame] = []
+
+    def describe_file(row: dict[str, Any], **values: Any) -> dict[str, Any]:
+        return {
+            "upload_id": str(row["upload_id"]),
+            "salon": str(row["salon"]),
+            "report_date": str(row["report_date"]),
+            "source_filename": str(row["source_filename"]),
+            "uploaded_at": str(row["uploaded_at"]),
+            "raw_rows": 0,
+            "loaded_rows": 0,
+            "excluded_rows": 0,
+            "error_rows": 0,
+            "overlap_rows": 0,
+            "reasons": "",
+            "problem": "",
+            **values,
+        }
 
     for row in manifest.to_dict(orient="records"):
         stored_path = Path(str(row["stored_path"]))
         cache_path = _parsed_cache_path(stored_path)
         if not stored_path.exists() and not cache_path.exists():
             warnings.append(f"Не найден архивный файл: {stored_path}")
+            file_rows.append(describe_file(row, problem="Файл не найден в архиве"))
             continue
 
         try:
@@ -525,16 +585,75 @@ def load_archive_data(
             frame["_archive_report_date"] = str(row["report_date"])
             frames.append(frame)
 
+            stats = prepared.stats or {}
+            reason_counts = stats.get("reason_counts") or {}
+            file_rows.append(
+                describe_file(
+                    row,
+                    raw_rows=int(stats.get("raw_rows", len(raw_data))),
+                    loaded_rows=int(stats.get("loaded_rows", len(frame))),
+                    excluded_rows=int(stats.get("excluded_rows", 0)),
+                    error_rows=int(stats.get("error_rows", 0)),
+                    reasons="; ".join(f"{label}: {count}" for label, count in reason_counts.items()),
+                )
+            )
+            if not prepared.exclusions.empty:
+                file_exclusions = prepared.exclusions.copy()
+                file_exclusions.insert(0, "source_filename", str(row["source_filename"]))
+                file_exclusions.insert(0, "report_date", str(row["report_date"]))
+                file_exclusions.insert(0, "salon", str(row["salon"]))
+                exclusion_frames.append(file_exclusions)
+
             for warning in prepared.warnings:
                 warnings.append(f"{row['salon']} / {row['report_date']}: {warning}")
         except Exception as error:
             warnings.append(f"{row['salon']} / {row['report_date']}: не удалось обработать файл ({error})")
+            file_rows.append(describe_file(row, problem=f"Не удалось обработать файл: {error}"))
+
+    file_report = pd.DataFrame(file_rows, columns=FILE_REPORT_COLUMNS)
+    exclusions = pd.concat(exclusion_frames, ignore_index=True) if exclusion_frames else pd.DataFrame()
 
     if not frames:
-        return ArchiveLoadResult(data=pd.DataFrame(), manifest=manifest, warnings=warnings)
+        return ArchiveLoadResult(
+            data=pd.DataFrame(),
+            manifest=manifest,
+            warnings=warnings,
+            file_report=file_report,
+            exclusions=exclusions,
+        )
 
     data = pd.concat(frames, ignore_index=True)
-    data, overlap_warning = _resolve_archive_date_overlaps(data)
+    data, overlap_warning, overlap_details = _resolve_archive_date_overlaps(data)
+    overlaps = pd.DataFrame()
     if overlap_warning:
         warnings.append(overlap_warning)
-    return ArchiveLoadResult(data=data, manifest=manifest, warnings=warnings)
+    if not overlap_details.empty:
+        file_lookup = file_report.set_index("upload_id")
+        overlaps = overlap_details.assign(
+            report_date=overlap_details["upload_id"].map(file_lookup["report_date"]),
+            source_filename=overlap_details["upload_id"].map(file_lookup["source_filename"]),
+            winner_report_date=overlap_details["winner_upload_id"].map(file_lookup["report_date"]),
+            winner_filename=overlap_details["winner_upload_id"].map(file_lookup["source_filename"]),
+        )[
+            [
+                "salon",
+                "sales_date",
+                "report_date",
+                "source_filename",
+                "rows",
+                "winner_report_date",
+                "winner_filename",
+            ]
+        ].sort_values(["salon", "sales_date"]).reset_index(drop=True)
+        overlap_totals = overlap_details.groupby("upload_id")["rows"].sum()
+        file_report["overlap_rows"] = (
+            file_report["upload_id"].map(overlap_totals).fillna(0).astype(int)
+        )
+    return ArchiveLoadResult(
+        data=data,
+        manifest=manifest,
+        warnings=warnings,
+        file_report=file_report,
+        exclusions=exclusions,
+        overlaps=overlaps,
+    )
