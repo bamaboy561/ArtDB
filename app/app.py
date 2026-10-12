@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from datetime import date, timedelta
 from html import escape
@@ -527,7 +528,16 @@ DASHBOARD_CSS = f"""
 
     .section-intro,
     .section-marker,
-    .nav-shell,
+    .nav-shell {{
+        background: {SURFACE_COLOR};
+        border: 1px solid {BORDER_COLOR};
+        border-left: 4px solid {SECONDARY_COLOR};
+        border-radius: 14px;
+        padding: 0.85rem 0.95rem;
+        margin: 0 0 0.78rem 0;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }}
+
     .login-shell {{
         background: linear-gradient(145deg, {PRIMARY_COLOR} 0%, #004d80 55%, {SECONDARY_COLOR} 100%);
         border-radius: 18px;
@@ -2543,13 +2553,123 @@ WORKSPACE_UI_CSS = f"""
 
     /* ====== METRIC GRID: 6 cards never leave an orphan ====== */
     @media (min-width: 901px) {{
-        .metric-grid:has(> .metric-card:nth-child(6):last-child) {{
+        .metric-grid:has(> .metric-card:nth-child(6):last-child),
+        .snapshot-strip:has(> .snapshot-card:nth-child(6):last-child) {{
             grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
         }}
     }}
     @media (min-width: 1700px) {{
-        .metric-grid:has(> .metric-card:nth-child(6):last-child) {{
+        .metric-grid:has(> .metric-card:nth-child(6):last-child),
+        .snapshot-strip:has(> .snapshot-card:nth-child(6):last-child) {{
             grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+        }}
+    }}
+
+    /* ====== SIDEBAR: BRAND + MENU ====== */
+    section[data-testid="stSidebar"] .sidebar-brand {{
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.1rem 0 0.9rem;
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }}
+    section[data-testid="stSidebar"] .sidebar-brand-avatar {{
+        width: 40px;
+        height: 40px;
+        flex: 0 0 40px;
+        display: grid;
+        place-items: center;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #4ade80, #22d3ee);
+        color: #06243f !important;
+        font-family: 'Manrope', sans-serif;
+        font-weight: 900;
+        font-size: 1.05rem;
+    }}
+    section[data-testid="stSidebar"] .sidebar-brand-name {{
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        font-size: 0.98rem;
+        line-height: 1.2;
+    }}
+    section[data-testid="stSidebar"] .sidebar-brand-meta {{
+        color: #9fb3d1 !important;
+        font-size: 0.74rem;
+        margin-top: 0.1rem;
+    }}
+    section[data-testid="stSidebar"] .st-key-sidebar_main_nav [role="radiogroup"] {{
+        gap: 2px;
+        width: 100%;
+    }}
+    section[data-testid="stSidebar"] .st-key-sidebar_main_nav label[data-baseweb="radio"] {{
+        width: 100%;
+        margin: 0;
+        padding: 9px 12px;
+    }}
+    section[data-testid="stSidebar"] .st-key-sidebar_main_nav label[data-baseweb="radio"] > div:first-child {{
+        display: none;
+    }}
+    section[data-testid="stSidebar"] .st-key-sidebar_main_nav label[data-baseweb="radio"]:has(input:checked) {{
+        background: linear-gradient(90deg, rgba(74, 222, 128, 0.24), rgba(74, 222, 128, 0.05)) !important;
+    }}
+    @media (min-width: 901px) {{
+        .app-shell-header {{
+            display: none !important;
+        }}
+    }}
+
+    /* ====== CLICKABLE KPI CARDS ====== */
+    [class*="st-key-kpi_card_"] {{
+        position: relative;
+        gap: 0 !important;
+    }}
+    [class*="st-key-kpi_card_"] .metric-card {{
+        min-height: 132px;
+    }}
+    [class*="st-key-kpi_card_"] [class*="st-key-kpi_open_"] {{
+        position: absolute !important;
+        inset: 0;
+        z-index: 2;
+    }}
+    [class*="st-key-kpi_card_"] .stButton {{
+        height: 100%;
+    }}
+    [class*="st-key-kpi_card_"] .stButton > button {{
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        opacity: 0 !important;
+        cursor: pointer;
+    }}
+    [class*="st-key-kpi_card_"]:has(.stButton):hover .metric-card {{
+        transform: translateY(-5px) scale(1.015) !important;
+        box-shadow: 0 22px 52px rgba(0, 52, 97, 0.18), 0 6px 16px rgba(0, 0, 0, 0.08) !important;
+    }}
+    [class*="st-key-kpi_card_"]:has(button:focus-visible) .metric-card {{
+        outline: 3px solid #1d6fc9;
+        outline-offset: 2px;
+    }}
+    .metric-card-go {{
+        position: absolute;
+        right: 0.9rem;
+        bottom: 0.7rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #1d6fc9;
+        opacity: 0;
+        transform: translateX(-6px);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+    }}
+    [class*="st-key-kpi_card_"]:hover .metric-card-go,
+    [class*="st-key-kpi_card_"]:has(button:focus-visible) .metric-card-go {{
+        opacity: 1;
+        transform: translateX(0);
+    }}
+    @media (hover: none) {{
+        .metric-card-go {{
+            opacity: 0.85;
+            transform: none;
         }}
     }}
 </style>
@@ -2844,6 +2964,82 @@ def inject_chart_motion() -> None:
 
 
 inject_chart_motion()
+
+
+COUNT_UP_JS = r"""
+(() => {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const SELECTOR = '.metric-value, .overview-hero-stat-value';
+  const PATTERN = /^(\D*?)(-?\d(?:[\d\s\u00a0\u202f]*\d)?(?:[.,]\d+)?)(\D*)$/;
+  const format = (value, decimals, sep, decSep) => {
+    const parts = Math.abs(value).toFixed(decimals).split('.');
+    const whole = sep ? parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, sep) : parts[0];
+    return (value < 0 ? '-' : '') + whole + (parts[1] ? decSep + parts[1] : '');
+  };
+  const animate = (el) => {
+    if (el.__countUpRunning) return;
+    const finalText = el.textContent;
+    if (el.dataset.countUp === finalText) return;
+    el.dataset.countUp = finalText;
+    const match = finalText.trim().match(PATTERN);
+    if (!match) return;
+    const numText = match[2];
+    const sepMatch = numText.match(/\d([\s\u00a0\u202f])\d/);
+    const decMatch = numText.match(/([.,])(\d+)$/);
+    const sep = sepMatch ? sepMatch[1] : '';
+    const decimals = decMatch ? decMatch[2].length : 0;
+    const decSep = decMatch ? decMatch[1] : '.';
+    const target = parseFloat(numText.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
+    if (!isFinite(target) || target === 0) return;
+    const startedAt = performance.now();
+    const duration = 900;
+    el.__countUpRunning = true;
+    const step = (now) => {
+      if (!el.isConnected) return;
+      const progress = Math.min(1, (now - startedAt) / duration);
+      if (progress >= 1) {
+        el.textContent = finalText;
+        el.__countUpRunning = false;
+        return;
+      }
+      const eased = 1 - Math.pow(1 - progress, 3);
+      el.textContent = match[1] + format(target * eased, decimals, sep, decSep) + match[3];
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
+  const scan = () => document.querySelectorAll(SELECTOR).forEach(animate);
+  let scheduled = false;
+  new MutationObserver(() => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => { scheduled = false; scan(); });
+  }).observe(document.body, { childList: true, subtree: true });
+  scan();
+})();
+"""
+
+
+def inject_count_up() -> None:
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          const parentDoc = window.parent && window.parent.document;
+          if (!parentDoc || parentDoc.getElementById('artdb-count-up')) return;
+          const script = parentDoc.createElement('script');
+          script.id = 'artdb-count-up';
+          script.textContent = {json.dumps(COUNT_UP_JS)};
+          parentDoc.head.appendChild(script);
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+inject_count_up()
 
 
 def is_missing(value: object) -> bool:
@@ -3298,6 +3494,54 @@ def render_metric_cards(cards: list[dict[str, str]]) -> None:
     st.markdown(f'<div class="metric-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
 
+def navigate_to_screen(target_screen: str, analytics_screen: str = "") -> None:
+    set_mobile_navigation_target(target_screen)
+    if analytics_screen:
+        st.session_state["analytics_screen_nav"] = analytics_screen
+        st.session_state["mobile_analytics_screen_nav"] = analytics_screen
+
+
+def render_clickable_metric_cards(
+    cards: list[dict],
+    screen_options: list[str],
+    *,
+    per_row: int = 3,
+) -> None:
+    for row_start in range(0, len(cards), per_row):
+        columns = st.columns(per_row, gap="small")
+        for offset, (column, card) in enumerate(zip(columns, cards[row_start : row_start + per_row])):
+            index = row_start + offset
+            delta = card.get("delta") or ""
+            delta_class = "metric-delta"
+            if delta.startswith("+"):
+                delta_class += " positive"
+            elif delta.startswith("-"):
+                delta_class += " negative"
+            tone = card.get("tone") or infer_dashboard_tone(card.get("label", ""), delta)
+            target_screen, target_section = card.get("target") or ("", "")
+            clickable = target_screen in screen_options
+            target_label = SCREEN_NAV_LABELS.get(target_section or target_screen, target_screen)
+            hint_html = f'<div class="metric-card-go">{escape(target_label)} →</div>' if clickable else ""
+            delta_html = f'<div class="{delta_class}">{escape(delta)}</div>' if delta else ""
+            card_html = (
+                f'<div class="metric-card {escape(str(tone))}">'
+                f'<div class="metric-label">{escape(card["label"])}</div>'
+                f'<div class="metric-value">{escape(card["value"])}</div>'
+                f"{delta_html}{hint_html}</div>"
+            )
+            with column:
+                with st.container(key=f"kpi_card_{index}"):
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    if clickable:
+                        st.button(
+                            f"Открыть раздел «{target_label}»",
+                            key=f"kpi_open_{index}",
+                            on_click=navigate_to_screen,
+                            args=(target_screen, target_section),
+                            use_container_width=True,
+                        )
+
+
 def render_section_intro(title: str, description: str) -> None:
     render_html_block(
         f"""
@@ -3722,6 +3966,20 @@ SCREEN_NAV_LABELS = {
 }
 
 
+SCREEN_NAV_ICONS = {
+    "Обзор": ":material/home:",
+    "ABC-анализ": ":material/donut_large:",
+    "Карточка SKU": ":material/sell:",
+    "Финансы": ":material/payments:",
+    "Аналитика": ":material/insights:",
+    "Поставщики": ":material/local_shipping:",
+    "Закупки": ":material/inventory_2:",
+    "План / факт": ":material/flag:",
+    "Данные": ":material/upload_file:",
+    "Управление": ":material/settings:",
+}
+
+
 def sync_session_value(source_key: str, target_key: str) -> None:
     value = st.session_state.get(source_key)
     if value is not None:
@@ -3754,6 +4012,7 @@ def render_screen_switcher(
     key: str,
     description: str = "",
     sync_key: str | None = None,
+    icons: dict[str, str] | None = None,
 ) -> str:
     if not options:
         return ""
@@ -3764,12 +4023,17 @@ def render_screen_switcher(
     current_value = st.session_state.get(key, options[0])
     widget_index = None if key in st.session_state else options.index(current_value)
 
+    def format_option(option: object) -> str:
+        label = SCREEN_NAV_LABELS.get(str(option), str(option))
+        icon = (icons or {}).get(str(option), "")
+        return f"{icon} {label}" if icon else label
+
     return str(
         st.radio(
             title,
             options=options,
             index=widget_index,
-            format_func=lambda option: SCREEN_NAV_LABELS.get(str(option), str(option)),
+            format_func=format_option,
             horizontal=False,
             label_visibility="collapsed",
             key=key,
@@ -4168,41 +4432,6 @@ def render_user_strip(current_user: dict[str, str]) -> None:
                 <div class="user-meta">Контакт: {escape(contact)} | Контур: {escape(salon_text)}</div>
             </div>
             <div class="role-pill {escape(current_user['role'])}">{escape(role_label(current_user['role']))}</div>
-        </div>
-        """
-    )
-
-
-def render_sidebar_navigation(current_user: dict[str, str], work_mode: str) -> None:
-    if current_user["role"] == "salon":
-        items = [
-            ("Мой архив", work_mode == "Архив салона"),
-            ("Ежедневная загрузка", work_mode == "Новая выгрузка"),
-            ("Локальная аналитика", work_mode in {"Архив салона", "Новая выгрузка"}),
-        ]
-    elif current_user["role"] == "admin":
-        items = [
-            ("Сеть салонов", work_mode == "Сводка по сети"),
-            ("Загрузка по салонам", work_mode == "Загрузка салона"),
-            ("Разовый анализ", work_mode == "Разовая загрузка"),
-            ("Управление", True),
-        ]
-    else:
-        items = [
-            ("Сеть салонов", work_mode == "Сводка по сети"),
-            ("Загрузка по салонам", work_mode == "Загрузка салона"),
-            ("Разовый анализ", work_mode == "Разовая загрузка"),
-            ("Сводный контроль", True),
-        ]
-
-    items_html = "".join(
-        f'<div class="nav-item{" active" if active else ""}">{escape(label)}</div>' for label, active in items
-    )
-    render_html_block(
-        f"""
-        <div class="nav-shell">
-            <div class="nav-title">Рабочие зоны</div>
-            {items_html}
         </div>
         """
     )
@@ -6716,6 +6945,24 @@ def render_intro(current_user: dict[str, str]) -> None:
     )
 
 
+def render_sidebar_brand(current_user: dict[str, str], salon_name: str = "") -> None:
+    display_name = str(current_user.get("display_name") or current_user.get("username") or "")
+    meta = role_label(current_user["role"])
+    if salon_name:
+        meta = f"{meta} · {salon_name}"
+    render_html_block(
+        f"""
+        <div class="sidebar-brand">
+            <div class="sidebar-brand-avatar">{escape(display_name[:1].upper() or "A")}</div>
+            <div>
+                <div class="sidebar-brand-name">{escape(display_name)}</div>
+                <div class="sidebar-brand-meta">ArtDB · {escape(meta)}</div>
+            </div>
+        </div>
+        """
+    )
+
+
 def render_dataset_hero(
     filename: str,
     data: pd.DataFrame,
@@ -8156,13 +8403,13 @@ if current_user["role"] == "salon" and selected_salon_name not in registered_sal
 
 # --- Sidebar Configuration ---
 with st.sidebar:
-    st.markdown(f"**Пользователь:** {current_user['display_name']}")
-    st.caption(f"Роль: {role_label(current_user['role'])}")
-    if current_user["role"] == "salon":
-        st.caption(f"Салон: {selected_salon_name}")
-
-    st.markdown("---")
-    st.header("Режим работы")
+    render_sidebar_brand(
+        current_user,
+        selected_salon_name if current_user["role"] == "salon" else "",
+    )
+    sidebar_nav_slot = st.container(key="sidebar_main_nav")
+    sidebar_health_slot = st.container()
+    st.markdown('<div class="sidebar-section-label">Источник данных</div>', unsafe_allow_html=True)
 
     if current_user["role"] == "salon":
         work_mode = st.radio("Режим салона", ["Архив салона", "Новая выгрузка"], index=0, key="main_work_mode")
@@ -8196,11 +8443,10 @@ with st.sidebar:
             replace_existing_upload = st.checkbox("Заменять файл за эту дату", value=True, key="main_replace_upload")
 
     st.markdown("---")
-    render_sidebar_navigation(current_user, work_mode)
-
     if can_manage_access(current_user):
         with st.expander("Быстрое создание", expanded=False):
             render_sidebar_admin_quick_actions(current_user, registered_salons)
+    sidebar_tools_slot = st.container()
 
     if st.button("Выйти", key="main_logout_button", use_container_width=True):
         revoke_auth_session(get_persistent_auth_token())
@@ -8219,6 +8465,7 @@ if upload_flash_message:
 main_col = st.container()
 mobile_navigation_slot = main_col.empty()
 mobile_bottom_navigation_slot = main_col.empty()
+hero_slot = main_col.container()
 control_col = main_col
 
 if work_mode in upload_modes:
@@ -8635,14 +8882,13 @@ except Exception:
 _sidebar_critical = int(st.session_state.get("_health_critical_count", 0))
 _sidebar_reorder = int(st.session_state.get("_health_reorder_count", 0))
 
-with st.sidebar:
-    st.markdown('<div class="sidebar-section-label">Рабочее пространство</div>', unsafe_allow_html=True)
-
+with sidebar_nav_slot:
     active_screen = render_screen_switcher(
-        "Основной экран",
+        "Разделы",
         screen_options,
         key="primary_screen_nav",
         sync_key="mobile_primary_screen_nav",
+        icons=SCREEN_NAV_ICONS,
     )
 
     if active_screen == "Аналитика":
@@ -8726,6 +8972,7 @@ with st.sidebar:
                 key="procurement_min_active_months",
             )
 
+with sidebar_tools_slot:
     if is_network_role(current_user["role"]):
         with st.expander("Telegram", expanded=False):
             st.caption("Управленческая сводка, риски, отчёты и заказы поставщикам в одном чате.")
@@ -9500,14 +9747,14 @@ if needs_procurement_analysis:
 st.session_state["_health_critical_count"] = int(procurement_overview.get("critical_stock_count", 0) or 0)
 st.session_state["_health_reorder_count"] = int(procurement_overview.get("reorder_sku_count", 0) or 0)
 
-with st.sidebar:
+with sidebar_health_slot:
     render_sidebar_health_widget(
         overdue=_sidebar_overdue,
         critical=int(procurement_overview.get("critical_stock_count", 0) or 0),
         reorder=int(procurement_overview.get("reorder_sku_count", 0) or 0),
     )
 
-with main_col:
+with hero_slot:
     render_dataset_hero(
         source_label,
         data,
@@ -9519,6 +9766,7 @@ with main_col:
         salon_name=selected_salon_name or "Все салоны",
     )
 
+with main_col:
     if active_screen == "Обзор":
         _rev_delta_str = (
             f"{format_change_percent(latest_revenue_delta)} к предыдущему месяцу"
@@ -9535,6 +9783,7 @@ with main_col:
                 "label": "Выручка",
                 "value": format_money(overview["total_revenue"]),
                 "delta": _rev_delta_str,
+                "target": ("Финансы", "") if margin_visible else ("Аналитика", "Сравнение месяцев"),
             },
         ]
         if margin_visible:
@@ -9544,11 +9793,13 @@ with main_col:
                         "label": "Валовая маржа",
                         "value": format_money(overview["total_margin"]),
                         "delta": _mar_delta_str,
+                        "target": ("Аналитика", "Маржинальность"),
                     },
                     {
                         "label": "Маржинальность",
                         "value": format_percent(overview["margin_pct"]),
                         "delta": "",
+                        "target": ("Аналитика", "Маржинальность"),
                     },
                 ]
             )
@@ -9564,6 +9815,7 @@ with main_col:
                         else "Не задан"
                     ),
                     "delta": str(plan_fact_summary.iloc[-1].get("month_label", "")),
+                    "target": ("План / факт", ""),
                     "tone": (
                         "success"
                         if not is_missing(latest_plan_execution) and float(latest_plan_execution) >= 100
@@ -9579,6 +9831,7 @@ with main_col:
                     "value": f"{format_number(procurement_overview.get('reorder_sku_count', 0))} SKU",
                     "delta": f"Критичных: {format_number(procurement_overview.get('critical_stock_count', 0))}",
                     "tone": "danger" if procurement_overview.get("critical_stock_count", 0) else "success",
+                    "target": ("Закупки", ""),
                 }
             )
         else:
@@ -9588,6 +9841,7 @@ with main_col:
                     "value": "По запросу",
                     "delta": "Точный расчёт в разделе «Закупки»",
                     "tone": "info",
+                    "target": ("Закупки", ""),
                 }
             )
         overview_cards.append(
@@ -9595,9 +9849,10 @@ with main_col:
                 "label": "Продано единиц",
                 "value": format_number(overview["total_quantity"]),
                 "delta": f"Позиций: {format_number(overview['product_count'])}",
+                "target": ("ABC-анализ", ""),
             }
         )
-        render_metric_cards(overview_cards)
+        render_clickable_metric_cards(overview_cards, screen_options)
 
 if active_screen == "Карточка SKU":
     with main_col:
@@ -11295,6 +11550,11 @@ if active_screen == "Обзор":
                     "Динамика продаж",
                     "Факт, маржа и ближайший прогноз по месяцам.",
                 )
+                show_forecast = not forecast_data.empty and st.toggle(
+                    "Показывать прогноз",
+                    value=True,
+                    key="overview_show_forecast",
+                )
                 trend_chart = go.Figure()
                 trend_revenue_colors = [CHART_SOFT_BLUE] * len(monthly_summary)
                 if trend_revenue_colors:
@@ -11321,7 +11581,7 @@ if active_screen == "Обзор":
                             marker=dict(size=9, color=CHART_ACCENT_COLOR, symbol="circle"),
                         )
                     )
-                if not forecast_data.empty:
+                if show_forecast:
                     trend_chart.add_trace(
                         go.Bar(
                             x=forecast_data["month_label"],
@@ -11360,7 +11620,7 @@ if active_screen == "Обзор":
                 trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="", bargap=0.24)
                 polish_figure(trend_chart, height=340)
                 st.plotly_chart(trend_chart, use_container_width=True)
-                if not forecast_data.empty:
+                if show_forecast:
                     st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
 
         with overview_right:
@@ -11373,28 +11633,40 @@ if active_screen == "Обзор":
                     f'<div class="sidebar-section-label" style="margin-top:0.75rem;">Быстрый переход</div>',
                     unsafe_allow_html=True,
                 )
-                if _sidebar_overdue > 0 and st.button(
-                    f"⚠️ Заказы в работе ({_sidebar_overdue} просрочено)",
-                    key="overview_go_to_orders",
-                    use_container_width=True,
-                    type="secondary",
-                ):
-                    st.session_state["primary_screen_nav"] = "Закупки"
-                    st.session_state["mobile_primary_screen_nav"] = "Закупки"
-                    st.rerun()
-                if int(procurement_overview.get("critical_stock_count", 0) or 0) > 0 and st.button(
-                    f"📦 Закупить срочно ({procurement_overview.get('critical_stock_count', 0)} SKU)",
-                    key="overview_go_to_procurement",
-                    use_container_width=True,
-                    type="secondary",
-                ):
-                    st.session_state["primary_screen_nav"] = "Закупки"
-                    st.session_state["mobile_primary_screen_nav"] = "Закупки"
-                    st.rerun()
+                if _sidebar_overdue > 0:
+                    st.button(
+                        f"⚠️ Заказы в работе ({_sidebar_overdue} просрочено)",
+                        key="overview_go_to_orders",
+                        use_container_width=True,
+                        type="secondary",
+                        on_click=navigate_to_screen,
+                        args=("Закупки",),
+                    )
+                if int(procurement_overview.get("critical_stock_count", 0) or 0) > 0:
+                    st.button(
+                        f"📦 Закупить срочно ({procurement_overview.get('critical_stock_count', 0)} SKU)",
+                        key="overview_go_to_procurement",
+                        use_container_width=True,
+                        type="secondary",
+                        on_click=navigate_to_screen,
+                        args=("Закупки",),
+                    )
 
-    if not salon_summary.empty and len(salon_summary) > 1:
-        with main_col:
-            with st.container(border=True):
+    show_salon_breakdown = not salon_summary.empty and len(salon_summary) > 1
+    show_supplier_breakdown = not supplier_sales_summary.empty and len(supplier_sales_summary) > 1
+    breakdown_labels = ["Категории", "Топ товаров", "Менеджеры"]
+    if show_supplier_breakdown:
+        breakdown_labels.append("Поставщики")
+    if show_salon_breakdown:
+        breakdown_labels.append("Салоны")
+    with main_col:
+        with st.container(border=True):
+            render_panel_header("Разрезы продаж", "Переключайте вкладки, чтобы посмотреть один и тот же период с разных сторон.")
+            breakdown_tabs = dict(zip(breakdown_labels, st.tabs(breakdown_labels)))
+
+    if show_salon_breakdown:
+        with breakdown_tabs["Салоны"]:
+            with st.container():
                 render_panel_header("Салоны сети", "Выручка по точкам, а для руководителя ещё и маржа.")
                 salon_chart = go.Figure()
                 salon_chart.add_trace(
@@ -11423,15 +11695,15 @@ if active_screen == "Обзор":
                 polish_figure(salon_chart, height=360)
                 st.plotly_chart(salon_chart, use_container_width=True)
 
-    if not supplier_sales_summary.empty and len(supplier_sales_summary) > 1:
-        with main_col:
+    if show_supplier_breakdown:
+        with breakdown_tabs["Поставщики"]:
             supplier_chart_data = supplier_sales_summary.head(12).sort_values("revenue", ascending=True)
             supplier_table = supplier_sales_summary.copy()
             if overview["total_revenue"]:
                 supplier_table["revenue_share_pct"] = supplier_table["revenue"] / overview["total_revenue"] * 100
             else:
                 supplier_table["revenue_share_pct"] = 0.0
-            with st.container(border=True):
+            with st.container():
                 render_panel_header(
                     "Поставщики",
                     "Продажи, маржа и доля выручки по поставщикам в текущем срезе.",
@@ -11498,13 +11770,13 @@ if active_screen == "Обзор":
                     )
 
     with main_col:
-        second_left, second_right = st.columns(2, gap="medium")
+        second_left, second_right = breakdown_tabs["Категории"], breakdown_tabs["Менеджеры"]
         category_chart_data = category_summary.head(10).sort_values("revenue", ascending=True)
         manager_chart_data = manager_summary.head(10).sort_values("revenue", ascending=True)
         overview_breakdown_height = compact_bar_chart_height(max(len(category_chart_data), len(manager_chart_data), 3))
 
         with second_left:
-            with st.container(border=True):
+            with st.container():
                 render_panel_header("Категории", "Вклад категорий в выручку.")
                 if margin_visible:
                     category_chart = px.bar(
@@ -11528,7 +11800,7 @@ if active_screen == "Обзор":
                 st.plotly_chart(category_chart, use_container_width=True)
 
         with second_right:
-            with st.container(border=True):
+            with st.container():
                 render_panel_header("Менеджеры", "Результаты по команде продаж.")
                 if margin_visible:
                     manager_chart = px.bar(
@@ -11551,7 +11823,7 @@ if active_screen == "Обзор":
                 polish_figure(manager_chart, height=overview_breakdown_height)
                 st.plotly_chart(manager_chart, use_container_width=True)
 
-        with st.container(border=True):
+        with breakdown_tabs["Топ товаров"]:
             render_panel_header("Топ товаров", "Лидеры по выручке.")
             top_products_display = format_display_frame_for_role(
                 top_products,
