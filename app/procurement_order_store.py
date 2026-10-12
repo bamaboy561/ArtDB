@@ -254,13 +254,14 @@ def create_procurement_order(
     status: str = "draft",
 ) -> dict[str, Any]:
     ensure_procurement_order_store()
-    normalized_items = _normalize_order_items_frame(items_frame)
+    new_order_id = _generate_order_id()
+    normalized_items = _normalize_order_items_frame(items_frame.assign(order_id=new_order_id))
     if normalized_items.empty:
         raise ValueError("Для создания заказа нужен хотя бы один товар с количеством больше нуля.")
 
     normalized_order = _normalize_order_record(
         {
-            "order_id": _generate_order_id(),
+            "order_id": new_order_id,
             "supplier": supplier,
             "status": status,
             "order_date": order_date,
