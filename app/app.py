@@ -2675,6 +2675,88 @@ WORKSPACE_UI_CSS = f"""
             transform: none;
         }}
     }}
+
+    /* ====== KPI SPARKLINES ====== */
+    .metric-card {{
+        isolation: isolate;
+    }}
+    .metric-spark {{
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: 46px;
+        z-index: -1;
+        pointer-events: none;
+        color: #1d6fc9;
+    }}
+    .metric-card.success .metric-spark {{ color: #059669; }}
+    .metric-card.warning .metric-spark {{ color: #d97706; }}
+    .metric-card.danger .metric-spark {{ color: #dc2626; }}
+
+    /* ====== CLICKABLE SIGNALS ====== */
+    .st-key-overview_signals {{
+        gap: 0.15rem !important;
+    }}
+    .signal-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.7rem;
+        padding: 0 0 0.45rem;
+        border-bottom: 1px solid #EEF2F6;
+    }}
+    [class*="st-key-signal_card_"] {{
+        position: relative;
+        gap: 0 !important;
+        border-radius: 10px;
+        transition: background 0.15s ease;
+    }}
+    [class*="st-key-signal_card_"] .overview-action-item {{
+        padding: 0.55rem 0.45rem;
+        border-bottom: 0;
+    }}
+    [class*="st-key-signal_card_"] [class*="st-key-signal_open_"] {{
+        position: absolute !important;
+        inset: 0;
+        z-index: 2;
+    }}
+    [class*="st-key-signal_card_"] .stButton {{
+        height: 100%;
+    }}
+    [class*="st-key-signal_card_"] .stButton > button {{
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        opacity: 0 !important;
+        cursor: pointer;
+    }}
+    [class*="st-key-signal_card_"]:has(.stButton):hover {{
+        background: #EEF4FB;
+    }}
+    [class*="st-key-signal_card_"]:has(button:focus-visible) {{
+        outline: 3px solid #1d6fc9;
+        outline-offset: 1px;
+    }}
+
+    /* ====== MOBILE: KPI CARDS TWO PER ROW ====== */
+    @media (max-width: 900px) {{
+        .metric-value {{
+            font-size: 1.25rem !important;
+        }}
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-kpi_card_"]) {{
+            flex-wrap: wrap !important;
+            gap: 0.5rem !important;
+        }}
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-kpi_card_"]) > [data-testid="stColumn"] {{
+            flex: 1 1 calc(50% - 0.5rem) !important;
+            min-width: calc(50% - 0.5rem) !important;
+        }}
+        [class*="st-key-kpi_card_"] .metric-card {{
+            min-height: 104px;
+        }}
+    }}
 </style>
 """
 
@@ -3627,11 +3709,80 @@ def render_metric_cards(cards: list[dict[str, str]]) -> None:
     st.markdown(f'<div class="metric-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
 
-def navigate_to_screen(target_screen: str, analytics_screen: str = "") -> None:
+def navigate_to_screen(target_screen: str, analytics_screen: str = "", advanced_screen: str = "") -> None:
     set_mobile_navigation_target(target_screen)
     if analytics_screen:
         st.session_state["analytics_screen_nav"] = analytics_screen
         st.session_state["mobile_analytics_screen_nav"] = analytics_screen
+    if advanced_screen:
+        st.session_state["advanced_screen_nav"] = advanced_screen
+        st.session_state["mobile_advanced_screen_nav"] = advanced_screen
+
+
+def open_product_from_search() -> None:
+    product_id = st.session_state.get("global_product_search")
+    if not product_id:
+        return
+    st.session_state["sku_portfolio_pending_product_id"] = str(product_id)
+    st.session_state["global_product_search"] = None
+    navigate_to_screen("Карточка SKU")
+
+
+def build_period_presets(min_date: date, max_date: date) -> dict[str, tuple[date, date]]:
+    candidates = {
+        "Весь период": (min_date, max_date),
+        "Последний месяц": (max(min_date, max_date.replace(day=1)), max_date),
+        "7 дней": (max(min_date, max_date - timedelta(days=6)), max_date),
+        "30 дней": (max(min_date, max_date - timedelta(days=29)), max_date),
+        "90 дней": (max(min_date, max_date - timedelta(days=89)), max_date),
+    }
+    presets: dict[str, tuple[date, date]] = {}
+    for label, date_range in candidates.items():
+        if date_range not in presets.values():
+            presets[label] = date_range
+    return presets
+
+
+def apply_period_preset(presets: dict[str, tuple[date, date]]) -> None:
+    choice = st.session_state.get("main_period_preset")
+    if choice in presets:
+        st.session_state["main_selected_dates"] = presets[choice]
+
+
+def build_sparkline_svg(values: list[object]) -> str:
+    points = [float(value) for value in values if not is_missing(value)][-12:]
+    if len(points) < 2:
+        return ""
+    low, high = min(points), max(points)
+    span = (high - low) or 1.0
+    step = 100 / (len(points) - 1)
+    line = " ".join(
+        f"{index * step:.1f},{26 - (value - low) / span * 20:.1f}" for index, value in enumerate(points)
+    )
+    return (
+        '<svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">'
+        f'<polygon points="0,30 {line} 100,30" fill="currentColor" opacity="0.13"></polygon>'
+        f'<polyline points="{line}" fill="none" stroke="currentColor" stroke-width="1.6" '
+        'vector-effect="non-scaling-stroke" opacity="0.5"></polyline></svg>'
+    )
+
+
+SIGNAL_TARGET_RULES = (
+    (("закуп", "остат", "дефицит", "заказ"), ("Закупки", "", "")),
+    (("возврат",), ("Аналитика", "Расширенный", "Возвраты")),
+    (("марж",), ("Аналитика", "Маржинальность", "")),
+    (("план",), ("План / факт", "", "")),
+    (("категори", "товар", "abc"), ("ABC-анализ", "", "")),
+    (("месяц", "выручк"), ("Аналитика", "Сравнение месяцев", "")),
+)
+
+
+def resolve_signal_target(title: str, screen_options: list[str]) -> tuple[str, str, str] | None:
+    normalized = title.casefold()
+    for keywords, target in SIGNAL_TARGET_RULES:
+        if target[0] in screen_options and any(keyword in normalized for keyword in keywords):
+            return target
+    return None
 
 
 def render_clickable_metric_cards(
@@ -3658,6 +3809,7 @@ def render_clickable_metric_cards(
             delta_html = f'<div class="{delta_class}">{escape(delta)}</div>' if delta else ""
             card_html = (
                 f'<div class="metric-card {escape(str(tone))}">'
+                f'{build_sparkline_svg(card.get("spark") or [])}'
                 f'<div class="metric-label">{escape(card["label"])}</div>'
                 f'<div class="metric-value">{escape(card["value"])}</div>'
                 f"{delta_html}{hint_html}</div>"
@@ -7295,6 +7447,7 @@ def render_insight_panel(insights: list[tuple[str, str]]) -> None:
 def render_overview_action_center(
     insights: list[tuple[str, str]],
     focus_cards: list[dict[str, str]],
+    screen_options: list[str] | None = None,
 ) -> None:
     combined: list[dict[str, str]] = []
     for title, body in insights:
@@ -7330,31 +7483,37 @@ def render_overview_action_center(
     if not unique_items:
         return
 
-    items_html = "".join(
-        dedent(
+    with st.container(border=True, key="overview_signals"):
+        render_html_block(
             f"""
-            <div class="overview-action-item {escape(item['tone'])}">
-                <div class="overview-action-indicator"></div>
-                <div>
-                    <div class="overview-action-item-title">{escape(item['title'])}</div>
-                    <div class="overview-action-item-body">{escape(item['body'])}</div>
-                </div>
-            </div>
-            """
-        ).strip()
-        for item in unique_items
-    )
-    render_html_block(
-        f"""
-        <section class="overview-action-center">
-            <div class="overview-action-header">
+            <div class="signal-header">
                 <div class="overview-action-title">Что важно сейчас</div>
                 <div class="overview-action-count">{len(unique_items)} сигналов</div>
             </div>
-            <div class="overview-action-list">{items_html}</div>
-        </section>
-        """
-    )
+            """
+        )
+        for index, item in enumerate(unique_items):
+            target = resolve_signal_target(item["title"], screen_options or [])
+            with st.container(key=f"signal_card_{index}"):
+                render_html_block(
+                    f"""
+                    <div class="overview-action-item {escape(item['tone'])}">
+                        <div class="overview-action-indicator"></div>
+                        <div>
+                            <div class="overview-action-item-title">{escape(item['title'])}</div>
+                            <div class="overview-action-item-body">{escape(item['body'])}</div>
+                        </div>
+                    </div>
+                    """
+                )
+                if target:
+                    st.button(
+                        f"Открыть раздел: {item['title']}",
+                        key=f"signal_open_{index}",
+                        on_click=navigate_to_screen,
+                        args=target,
+                        use_container_width=True,
+                    )
 
 
 def build_overview_focus_cards(
@@ -9580,7 +9739,9 @@ with main_col:
     filter_shell = st.container(border=True)
     with filter_shell:
         render_sticky_header_marker()
-        filter_title_col, filter_reset_col = st.columns([4.6, 1], gap="small")
+        filter_title_col, filter_search_col, filter_reset_col = st.columns([2.6, 2, 1], gap="small")
+        with filter_search_col:
+            product_search_slot = st.container()
         with filter_title_col:
             st.markdown(
                 '<div class="filter-toolbar-heading"><div><div class="filter-toolbar-title">Фильтры и срез данных</div>'
@@ -9599,6 +9760,22 @@ with main_col:
                 ):
                     st.session_state.pop(filter_key, None)
                 st.rerun()
+
+        period_presets = build_period_presets(min_date, max_date)
+        if len(period_presets) > 1:
+            current_date_range = tuple(st.session_state.get("main_selected_dates") or ())
+            st.session_state["main_period_preset"] = next(
+                (label for label, date_range in period_presets.items() if date_range == current_date_range),
+                None,
+            )
+            st.segmented_control(
+                "Быстрый период",
+                list(period_presets),
+                key="main_period_preset",
+                on_change=apply_period_preset,
+                args=(period_presets,),
+                label_visibility="collapsed",
+            )
 
         with st.expander("Настроить фильтры", expanded=False):
             date_col, salon_col, category_col = st.columns([1.15, 1, 1], gap="small")
@@ -9744,6 +9921,21 @@ product_summary = (
     if needs_product_summary
     else pd.DataFrame()
 )
+if not product_summary.empty:
+    product_search_options = build_product_detail_options(product_summary)
+    if not product_search_options.empty:
+        product_search_labels = product_search_options.set_index("option_id")["option_label"].to_dict()
+        with product_search_slot:
+            st.selectbox(
+                "Поиск товара",
+                options=product_search_options["option_id"].tolist(),
+                index=None,
+                format_func=lambda option_id: product_search_labels.get(option_id, option_id),
+                placeholder="Найти товар или SKU…",
+                key="global_product_search",
+                label_visibility="collapsed",
+                on_change=open_product_from_search,
+            )
 category_summary = (
     cached_build_product_summary(data, data_cache_key, "category")
     if needs_breakdown_summaries
@@ -9929,6 +10121,7 @@ with main_col:
                 "value": format_money(overview["total_revenue"]),
                 "delta": _rev_delta_str,
                 "target": ("Финансы", "") if margin_visible else ("Аналитика", "Сравнение месяцев"),
+                "spark": monthly_summary["revenue"].tolist(),
             },
         ]
         if margin_visible:
@@ -9939,12 +10132,20 @@ with main_col:
                         "value": format_money(overview["total_margin"]),
                         "delta": _mar_delta_str,
                         "target": ("Аналитика", "Маржинальность"),
+                        "spark": monthly_summary["margin"].tolist(),
                     },
                     {
                         "label": "Маржинальность",
                         "value": format_percent(overview["margin_pct"]),
                         "delta": "",
                         "target": ("Аналитика", "Маржинальность"),
+                        "spark": [
+                            (margin_value / revenue_value * 100) if revenue_value else 0.0
+                            for margin_value, revenue_value in zip(
+                                monthly_summary["margin"].tolist(),
+                                monthly_summary["revenue"].tolist(),
+                            )
+                        ],
                     },
                 ]
             )
@@ -9995,6 +10196,7 @@ with main_col:
                 "value": format_number(overview["total_quantity"]),
                 "delta": f"Позиций: {format_number(overview['product_count'])}",
                 "target": ("ABC-анализ", ""),
+                "spark": monthly_summary["quantity"].tolist(),
             }
         )
         render_clickable_metric_cards(overview_cards, screen_options)
@@ -11769,7 +11971,7 @@ if active_screen == "Обзор":
                     st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
 
         with overview_right:
-            render_overview_action_center(insights, overview_focus_cards)
+            render_overview_action_center(insights, overview_focus_cards, screen_options)
 
             # Quick navigation buttons
             _has_alerts = _sidebar_overdue > 0 or int(procurement_overview.get("critical_stock_count", 0) or 0) > 0
@@ -11942,7 +12144,43 @@ if active_screen == "Обзор":
                     category_chart.update_layout(yaxis_title="")
                 category_chart.update_yaxes(automargin=True)
                 polish_figure(category_chart, height=overview_breakdown_height)
-                if all_categories:
+                category_view = (
+                    st.segmented_control(
+                        "Вид графика",
+                        ["Столбцы", "Доли"],
+                        default="Столбцы",
+                        key="overview_category_view",
+                        label_visibility="collapsed",
+                    )
+                    or "Столбцы"
+                )
+                if category_view == "Доли":
+                    category_share_data = category_summary.loc[
+                        category_summary["revenue"] > 0, ["group_name", "revenue"]
+                    ].sort_values("revenue", ascending=False)
+                    if len(category_share_data) > 8:
+                        category_share_data = pd.concat(
+                            [
+                                category_share_data.head(8),
+                                pd.DataFrame(
+                                    [{"group_name": "Прочее", "revenue": category_share_data["revenue"].iloc[8:].sum()}]
+                                ),
+                            ],
+                            ignore_index=True,
+                        )
+                    category_share_chart = px.pie(
+                        category_share_data,
+                        names="group_name",
+                        values="revenue",
+                        color_discrete_sequence=CHART_COLORS,
+                    )
+                    category_share_chart.update_traces(
+                        textinfo="percent+label",
+                        hovertemplate="%{label}<br>%{value:,.0f}<br>%{percent}<extra></extra>",
+                    )
+                    polish_figure(category_share_chart, height=max(overview_breakdown_height, 320))
+                    st.plotly_chart(category_share_chart, use_container_width=True)
+                elif all_categories:
                     st.plotly_chart(
                         category_chart,
                         use_container_width=True,
@@ -12000,6 +12238,25 @@ if active_screen == "Обзор":
 
         with breakdown_tabs["Топ товаров"]:
             render_panel_header("Топ товаров", "Лидеры по выручке.")
+            top_products_chart_data = top_products.sort_values("revenue", ascending=True).copy()
+            top_products_chart_data["short_name"] = (
+                top_products_chart_data["group_name"].astype(str).str.slice(0, 46)
+            )
+            top_products_chart = px.bar(
+                top_products_chart_data,
+                x="revenue",
+                y="short_name",
+                orientation="h",
+                color_discrete_sequence=[PRIMARY_COLOR],
+                labels={"short_name": "Товар", "revenue": "Выручка"},
+            )
+            top_products_chart.update_layout(yaxis_title="")
+            top_products_chart.update_yaxes(automargin=True)
+            polish_figure(
+                top_products_chart,
+                height=compact_bar_chart_height(max(len(top_products_chart_data), 3)),
+            )
+            st.plotly_chart(top_products_chart, use_container_width=True)
             top_products_display = format_display_frame_for_role(
                 top_products,
                 current_user,
@@ -12017,6 +12274,46 @@ if active_screen == "Обзор":
                 hide_index=True,
                 height=300,
             )
+
+    with main_col:
+        overview_export_names = {
+            "month_label": "Месяц",
+            "group_name": "Название",
+            "revenue": "Выручка",
+            "cost": "Себестоимость",
+            "margin": "Маржа",
+            "margin_pct": "Маржа, %",
+            "quantity": "Количество",
+            "sales_lines": "Строк продаж",
+        }
+        overview_export_sources = {
+            "По месяцам": monthly_summary,
+            "Категории": category_summary,
+            "Менеджеры": manager_summary,
+            "Товары": product_summary,
+        }
+        if show_supplier_breakdown:
+            overview_export_sources["Поставщики"] = supplier_sales_summary
+        if show_salon_breakdown:
+            overview_export_sources["Салоны"] = salon_summary
+        overview_export_sheets = {
+            sheet_name: prepare_excel_report_frame(
+                frame,
+                current_user,
+                overview_export_names,
+                columns=[column for column in overview_export_names if column in frame.columns],
+            )
+            for sheet_name, frame in overview_export_sources.items()
+            if not frame.empty
+        }
+        st.download_button(
+            "Скачать сводку в Excel",
+            data=to_excel_report_bytes(overview_export_sheets, report_title="Сводка продаж"),
+            file_name="sales_overview.xlsx",
+            mime=EXCEL_MIME,
+            key="overview_export_excel",
+            icon=":material/download:",
+        )
 
 if active_screen == "ABC-анализ":
     with main_col:
