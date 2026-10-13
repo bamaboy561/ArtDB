@@ -47,7 +47,7 @@ from data_center import (
 )
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
-from db import log_audit_event
+from db import database_enabled, list_audit_logs, log_audit_event
 from product_identity import apply_product_category_rules, normalize_product_match_key
 from inventory_analytics import (
     guess_inventory_column_mapping,
@@ -2859,6 +2859,65 @@ WORKSPACE_UI_CSS = f"""
             font-size: 0.9rem !important;
         }}
     }}
+
+    /* ====== PLAN PACE ====== */
+    .plan-pace {{
+        display: grid;
+        gap: 0.9rem;
+    }}
+    .plan-pace-head {{
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 0.3rem;
+    }}
+    .plan-pace-label {{
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        color: #003461;
+        font-size: 0.95rem;
+    }}
+    .plan-pace-pct {{
+        font-family: 'Manrope', sans-serif;
+        font-weight: 900;
+        font-size: 1.05rem;
+        color: #003461;
+    }}
+    .plan-pace-pct.success {{ color: #047857; }}
+    .plan-pace-pct.warning {{ color: #B45309; }}
+    .plan-pace-pct.danger {{ color: #B91C1C; }}
+    .plan-pace-track {{
+        position: relative;
+        height: 14px;
+        border-radius: 999px;
+        background: #E8EEF4;
+        overflow: visible;
+    }}
+    .plan-pace-fill {{
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #003461, #1d6fc9);
+        min-width: 4px;
+        transition: width 0.6s ease;
+    }}
+    .plan-pace-fill.success {{ background: linear-gradient(90deg, #059669, #34D399); }}
+    .plan-pace-fill.warning {{ background: linear-gradient(90deg, #D97706, #FBBF24); }}
+    .plan-pace-fill.danger {{ background: linear-gradient(90deg, #DC2626, #F87171); }}
+    .plan-pace-marker {{
+        position: absolute;
+        top: -4px;
+        width: 3px;
+        height: 22px;
+        border-radius: 2px;
+        background: #0F172A;
+        transform: translateX(-1px);
+    }}
+    .plan-pace-meta {{
+        margin-top: 0.4rem;
+        color: #475569;
+        font-size: 0.82rem;
+        line-height: 1.4;
+    }}
 </style>
 """
 
@@ -4194,6 +4253,152 @@ def render_load_report_details(report: dict[str, object], current_user: dict[str
         key=f"{key_prefix}_load_report_export",
         icon=":material/download:",
     )
+
+
+AUDIT_ACTION_LABELS = {
+    "auth.login": "Вход в систему",
+    "auth.logout": "Выход",
+    "auth.bootstrap_admin": "Создание первого руководителя",
+    "procurement.order_create": "Создание заказа",
+    "procurement.order_update": "Изменение заказа",
+    "procurement.order_receive": "Приёмка заказа",
+    "procurement.brand_bulk_assign": "Массовое назначение бренда",
+    "procurement.settings_upsert": "Изменение параметров закупки",
+    "procurement.stock_upload": "Загрузка остатков",
+    "plan.upsert": "Сохранение плана",
+    "plan.delete": "Удаление плана",
+    "salon.create": "Создание салона",
+    "salon.delete": "Удаление салона",
+    "sku.alias_archive": "Архивация дубля SKU",
+    "sku.alias_merge": "Объединение SKU",
+    "sku.bulk_attributes_update": "Массовое изменение SKU",
+    "supplier.keyword_rules_replace": "Изменение правил поставщиков",
+    "supplier.product_assignment_delete": "Удаление назначения поставщика",
+    "supplier.product_assignment_update": "Изменение назначения поставщика",
+    "supplier.product_assignments_upsert": "Назначение поставщиков",
+    "telegram.chat_connect": "Подключение Telegram-чата",
+    "telegram.chat_disconnect": "Отключение Telegram-чата",
+    "telegram.settings_update": "Настройки Telegram",
+    "telegram.targeted_report_send": "Отправка отчёта в Telegram",
+    "telegram.test_send": "Тестовое сообщение в Telegram",
+    "upload.save": "Загрузка файла продаж",
+    "user.create": "Создание пользователя",
+    "user.delete": "Удаление пользователя",
+    "user.password_reset": "Сброс пароля",
+    "user.role_update": "Смена роли",
+    "user.salon_reassign": "Перенос пользователя в другой салон",
+}
+
+
+def build_plan_pace(latest_plan_row: pd.Series, source_data: pd.DataFrame, *, allow_margin: bool) -> dict | None:
+    try:
+        period = pd.Period(str(latest_plan_row["month_label"]), freq="M")
+    except (ValueError, TypeError):
+        return None
+    if "date" not in source_data.columns:
+        return None
+    dates = pd.to_datetime(source_data["date"], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    last_day = dates.max()
+    last_period = last_day.to_period("M")
+    days_in_month = int(period.days_in_month)
+    if last_period < period:
+        elapsed = 0
+    elif last_period > period:
+        elapsed = days_in_month
+    else:
+        elapsed = int(last_day.day)
+
+    metrics = [("Выручка", "revenue", "revenue_plan", format_money)]
+    if allow_margin:
+        metrics.append(("Маржа", "margin", "margin_plan", format_money))
+    metrics.append(("Количество", "quantity", "quantity_plan", format_number))
+
+    rows: list[dict[str, object]] = []
+    for label, fact_column, plan_column, formatter in metrics:
+        plan_value = latest_plan_row.get(plan_column)
+        if is_missing(plan_value) or float(plan_value) <= 0:
+            continue
+        plan_value = float(plan_value)
+        fact_raw = latest_plan_row.get(fact_column)
+        fact_value = 0.0 if is_missing(fact_raw) else float(fact_raw)
+        expected_pct = elapsed / days_in_month * 100
+        execution_pct = fact_value / plan_value * 100
+        if 0 < elapsed < days_in_month:
+            projection = fact_value / elapsed * days_in_month
+            days_left = days_in_month - elapsed
+            need_per_day = max(plan_value - fact_value, 0.0) / days_left
+            outlook = (
+                f"При текущем темпе к концу месяца: {formatter(projection)} "
+                f"({format_percent(projection / plan_value * 100)} плана). "
+                + (
+                    f"Чтобы выполнить план, нужно {formatter(need_per_day)} в день."
+                    if need_per_day > 0
+                    else "План уже выполнен."
+                )
+            )
+        elif elapsed >= days_in_month:
+            outlook = "Месяц закрыт: это итоговое выполнение."
+        else:
+            outlook = "Продаж за этот месяц в данных ещё нет."
+        if elapsed == 0:
+            tone = "info"
+        elif execution_pct >= expected_pct:
+            tone = "success"
+        elif execution_pct >= expected_pct * 0.8:
+            tone = "warning"
+        else:
+            tone = "danger"
+        rows.append(
+            {
+                "label": label,
+                "fact_text": formatter(fact_value),
+                "plan_text": formatter(plan_value),
+                "execution_pct": execution_pct,
+                "expected_pct": expected_pct,
+                "outlook": outlook,
+                "tone": tone,
+            }
+        )
+    if not rows:
+        return None
+    return {
+        "rows": rows,
+        "elapsed": elapsed,
+        "days_in_month": days_in_month,
+        "month_label": str(latest_plan_row["month_label"]),
+        "last_day": last_day,
+    }
+
+
+def render_plan_pace(pace: dict) -> None:
+    rows_html = []
+    for row in pace["rows"]:
+        fill_width = max(0.0, min(float(row["execution_pct"]), 100.0))
+        marker_left = max(0.0, min(float(row["expected_pct"]), 100.0))
+        rows_html.append(
+            f"""
+            <div class="plan-pace-row">
+                <div class="plan-pace-head">
+                    <span class="plan-pace-label">{escape(str(row["label"]))}</span>
+                    <span class="plan-pace-pct {escape(str(row["tone"]))}">{escape(format_percent(row["execution_pct"]))}</span>
+                </div>
+                <div class="plan-pace-track">
+                    <div class="plan-pace-fill {escape(str(row["tone"]))}" style="width: {fill_width:.1f}%"></div>
+                    <div class="plan-pace-marker" style="left: {marker_left:.1f}%"></div>
+                </div>
+                <div class="plan-pace-meta">Факт {escape(str(row["fact_text"]))} из {escape(str(row["plan_text"]))}. {escape(str(row["outlook"]))}</div>
+            </div>
+            """
+        )
+    st.caption(
+        humanize_month_keys(
+            f"{pace['month_label']}: прошло {pace['elapsed']} из {pace['days_in_month']} дн., "
+            f"данные по {pace['last_day']:%d.%m.%Y}. Вертикальная метка на шкале — сколько должно быть выполнено к этому дню."
+        )
+    )
+    render_html_block(f'<div class="plan-pace">{"".join(dedent(item).strip() for item in rows_html)}</div>')
 
 
 def open_product_from_search() -> None:
@@ -7019,19 +7224,63 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
             st.success(flash_message)
 
     with side_control_col:
-        with st.container(border=True):
-            st.markdown('<div class="nav-shell" style="padding: 0; border: none; background: transparent; margin: 0;">', unsafe_allow_html=True)
-            st.markdown('<div class="nav-title">Раздел управления</div>', unsafe_allow_html=True)
-            section = st.radio(
+        admin_sections = ["Салоны", "Пользователи", "Пароли", "Журнал действий"]
+        if st.session_state.get("admin_section_switch") not in admin_sections:
+            st.session_state["admin_section_switch"] = "Салоны"
+        section = (
+            st.segmented_control(
                 "Раздел управления",
-                options=["Салоны", "Пользователи", "Пароли"],
+                options=admin_sections,
                 key="admin_section_switch",
                 label_visibility="collapsed",
             )
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.divider()
-            st.caption(f"Вы вошли как: {current_user['display_name']}")
-            st.caption(f"Роль: {role_label(current_user['role'])}")
+            or "Салоны"
+        )
+
+    if section == "Журнал действий":
+        with main_col:
+            with st.container(border=True):
+                render_panel_header(
+                    "Журнал действий",
+                    "Кто и когда входил в систему, создавал и менял заказы и пользователей.",
+                )
+                if not database_enabled():
+                    st.info(
+                        "Журнал ведётся только на сервере с подключённой базой данных. "
+                        "В локальном файловом режиме действия не записываются."
+                    )
+                else:
+                    audit_rows = list_audit_logs(limit=500)
+                    if not audit_rows:
+                        st.info("В журнале пока нет записей.")
+                    else:
+                        audit_frame = pd.DataFrame(audit_rows)
+                        audit_users = ["Все пользователи", *sorted(audit_frame["user_id"].dropna().astype(str).unique())]
+                        audit_user = st.selectbox("Пользователь", options=audit_users, key="admin_audit_user")
+                        if audit_user != "Все пользователи":
+                            audit_frame = audit_frame[audit_frame["user_id"].astype(str) == audit_user]
+                        audit_display = pd.DataFrame(
+                            {
+                                "Когда": pd.to_datetime(audit_frame["timestamp"], errors="coerce").dt.strftime("%d.%m.%Y %H:%M"),
+                                "Пользователь": audit_frame["user_id"],
+                                "Действие": audit_frame["action"].map(
+                                    lambda action: AUDIT_ACTION_LABELS.get(str(action), str(action))
+                                ),
+                                "Подробности": audit_frame["details"].map(
+                                    lambda details: "; ".join(f"{key}: {value}" for key, value in details.items())
+                                    if isinstance(details, dict)
+                                    else str(details or "")
+                                ),
+                                "IP": audit_frame["ip"],
+                            }
+                        )
+                        st.caption(f"Показано записей: {format_number(len(audit_display))} (последние 500).")
+                        st.dataframe(
+                            audit_display,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(560, 80 + len(audit_display) * 36),
+                        )
 
     if section == "Салоны":
         with main_col:
@@ -7619,7 +7868,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                             except Exception as error:
                                 st.error(str(error))
 
-    else:
+    elif section == "Пароли":
         password_left, password_right = st.columns([0.95, 1.05], gap="medium")
 
         with password_left:
@@ -12274,6 +12523,114 @@ if active_screen == "Финансы":
                     polish_figure(waterfall_chart, height=330)
                     st.plotly_chart(waterfall_chart, use_container_width=True)
 
+            with st.container(border=True):
+                render_panel_header(
+                    "Прибыль по месяцам",
+                    "Выручка, себестоимость и маржинальность в динамике: видно, в каком месяце маржа просела.",
+                )
+                finance_monthly_tab, finance_weak_tab = st.tabs(["По месяцам", "Товары с низкой маржой"])
+                with finance_monthly_tab:
+                    finance_monthly = cached_build_monthly_summary(data, data_cache_key).copy()
+                    if finance_monthly.empty:
+                        st.info("Недостаточно данных для помесячной динамики.")
+                    else:
+                        for finance_column in ("revenue", "cost", "margin"):
+                            finance_monthly[finance_column] = pd.to_numeric(
+                                finance_monthly[finance_column], errors="coerce"
+                            ).astype("float64")
+                        finance_monthly["margin_pct"] = (
+                            finance_monthly["margin"] / finance_monthly["revenue"] * 100
+                        ).where(finance_monthly["revenue"] != 0)
+                        finance_monthly_chart = go.Figure()
+                        finance_monthly_chart.add_trace(
+                            go.Bar(
+                                x=finance_monthly["month_label"],
+                                y=finance_monthly["revenue"],
+                                name="Выручка",
+                                marker_color=PRIMARY_COLOR,
+                            )
+                        )
+                        finance_monthly_chart.add_trace(
+                            go.Bar(
+                                x=finance_monthly["month_label"],
+                                y=finance_monthly["cost"],
+                                name="Себестоимость",
+                                marker_color="#CBD5E1",
+                            )
+                        )
+                        finance_monthly_chart.add_trace(
+                            go.Scatter(
+                                x=finance_monthly["month_label"],
+                                y=finance_monthly["margin_pct"],
+                                name="Маржа, %",
+                                yaxis="y2",
+                                mode="lines+markers",
+                                line=dict(color=CHART_ACCENT_COLOR, width=3),
+                                marker=dict(size=9),
+                            )
+                        )
+                        finance_monthly_chart.update_layout(
+                            barmode="group",
+                            xaxis_title="",
+                            yaxis_title="",
+                            yaxis2=dict(
+                                overlaying="y",
+                                side="right",
+                                ticksuffix="%",
+                                showgrid=False,
+                                rangemode="tozero",
+                            ),
+                        )
+                        polish_figure(finance_monthly_chart, height=340)
+                        st.plotly_chart(finance_monthly_chart, use_container_width=True, key="finance_monthly_chart")
+                        st.dataframe(
+                            format_display_frame(
+                                finance_monthly,
+                                {
+                                    "month_label": "Месяц",
+                                    "revenue": "Выручка",
+                                    "cost": "Себестоимость",
+                                    "margin": "Маржа",
+                                    "margin_pct": "Маржа, %",
+                                    "quantity": "Количество",
+                                },
+                                columns=["month_label", "revenue", "cost", "margin", "margin_pct", "quantity"],
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(320, 80 + len(finance_monthly) * 36),
+                        )
+                with finance_weak_tab:
+                    weak_margin_products = product_summary[
+                        pd.to_numeric(product_summary["margin_pct"], errors="coerce") < 10
+                    ].sort_values("margin", ascending=True)
+                    if weak_margin_products.empty:
+                        st.success("Товаров с маржой ниже 10% в текущем срезе нет.")
+                    else:
+                        weak_margin_revenue = float(pd.to_numeric(weak_margin_products["revenue"], errors="coerce").sum())
+                        st.warning(
+                            f"Товаров с маржой ниже 10%: {format_number(len(weak_margin_products))}. "
+                            f"На них приходится {format_money(weak_margin_revenue)} выручки "
+                            f"({format_percent(safe_pct(weak_margin_revenue, net_revenue))}). "
+                            "В таблице — сначала те, что приносят наибольший убыток."
+                        )
+                        st.dataframe(
+                            format_display_frame(
+                                weak_margin_products.head(30),
+                                {
+                                    "group_name": "Товар",
+                                    "revenue": "Выручка",
+                                    "margin": "Маржа",
+                                    "margin_pct": "Маржа, %",
+                                    "quantity": "Количество",
+                                },
+                                columns=["group_name", "revenue", "margin", "margin_pct", "quantity"],
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(420, 80 + min(len(weak_margin_products), 30) * 36),
+                        )
+
             finance_left, finance_right = st.columns(2, gap="medium")
             with finance_left:
                 with st.container(border=True):
@@ -13398,6 +13755,58 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
 
             with st.container(border=True):
                 render_panel_header(
+                    "Выручка по уровню маржи",
+                    "Какая часть выручки приходит от товаров с разной маржинальностью. Чем больше левые столбцы, тем больше продаж почти без прибыли.",
+                )
+                margin_bucket_labels = ["Убыток (ниже 0%)", "от 0 до 10%", "от 10 до 20%", "от 20 до 30%", "30% и выше"]
+                margin_bucket_source = pd.DataFrame(
+                    {
+                        "revenue": pd.to_numeric(product_summary["revenue"], errors="coerce"),
+                        "margin_pct": pd.to_numeric(product_summary["margin_pct"], errors="coerce"),
+                    }
+                ).dropna()
+                margin_bucket_source["bucket"] = pd.cut(
+                    margin_bucket_source["margin_pct"].astype("float64"),
+                    bins=[float("-inf"), 0, 10, 20, 30, float("inf")],
+                    labels=margin_bucket_labels,
+                    right=False,
+                )
+                margin_bucket_summary = (
+                    margin_bucket_source.groupby("bucket", observed=False)
+                    .agg(revenue=("revenue", "sum"), sku_count=("revenue", "size"))
+                    .reindex(margin_bucket_labels)
+                    .fillna(0)
+                    .reset_index()
+                )
+                margin_bucket_total = float(margin_bucket_summary["revenue"].sum())
+                if margin_bucket_total <= 0:
+                    st.info("Недостаточно данных о марже для такого разреза.")
+                else:
+                    margin_bucket_chart = go.Figure(
+                        go.Bar(
+                            x=margin_bucket_summary["bucket"].astype(str),
+                            y=margin_bucket_summary["revenue"].astype("float64"),
+                            marker_color=[CHART_DANGER_COLOR, "#F59E0B", "#FCD34D", "#86EFAC", SECONDARY_COLOR],
+                            text=[
+                                f"{revenue / margin_bucket_total * 100:.0f}% · {int(sku_count)} SKU"
+                                for revenue, sku_count in zip(
+                                    margin_bucket_summary["revenue"], margin_bucket_summary["sku_count"]
+                                )
+                            ],
+                            textposition="outside",
+                            name="Выручка",
+                        )
+                    )
+                    margin_bucket_chart.update_layout(showlegend=False, xaxis_title="Маржинальность товара", yaxis_title="")
+                    polish_figure(margin_bucket_chart, height=340)
+                    st.plotly_chart(margin_bucket_chart, use_container_width=True, key="margin_bucket_chart")
+                    low_bucket_share = float(margin_bucket_summary["revenue"].iloc[:2].sum()) / margin_bucket_total * 100
+                    st.caption(
+                        f"Товары с маржой ниже 10% дают {format_percent(low_bucket_share)} выручки."
+                    )
+
+            with st.container(border=True):
+                render_panel_header(
                     "Выручка vs Маржинальность",
                     "Каждая точка — отдельный товар. Правый верхний угол показывает сильные позиции, а левый нижний — слабые.",
                 )
@@ -13500,11 +13909,17 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                     "Выбор периодов",
                     "Выберите месяцы для сравнения.",
                 )
-                selected_left_month = st.selectbox("Базовый месяц", options=available_months, index=default_left_index)
+                selected_left_month = st.selectbox(
+                    "Базовый месяц",
+                    options=available_months,
+                    index=default_left_index,
+                    format_func=humanize_month_keys,
+                )
                 selected_right_month = st.selectbox(
                     "Месяц сравнения",
                     options=available_months,
                     index=default_right_index,
+                    format_func=humanize_month_keys,
                 )
 
         month_comparison = build_month_comparison(
@@ -13730,6 +14145,63 @@ if active_screen == "Поставщики":
             },
         ]
     )
+
+    supplier_sales_overview = (
+        cached_build_product_summary(data, data_cache_key, "supplier") if "supplier" in data.columns else pd.DataFrame()
+    )
+    if not supplier_sales_overview.empty:
+        with st.container(border=True):
+            render_panel_header(
+                "Продажи по поставщикам",
+                "Кто из поставщиков даёт выручку и какая часть продаж ещё не привязана к поставщику.",
+            )
+            supplier_sales_overview = supplier_sales_overview.copy()
+            supplier_sales_overview["supplier_label"] = (
+                supplier_sales_overview["group_name"].fillna("").astype(str).str.strip().replace("", "Не назначен")
+            )
+            supplier_sales_overview["revenue"] = pd.to_numeric(
+                supplier_sales_overview["revenue"], errors="coerce"
+            ).fillna(0.0)
+            supplier_unassigned_mask = supplier_sales_overview["supplier_label"].str.casefold().eq("не назначен")
+            supplier_total_revenue = float(supplier_sales_overview["revenue"].sum())
+            supplier_unassigned_revenue = float(supplier_sales_overview.loc[supplier_unassigned_mask, "revenue"].sum())
+            if supplier_unassigned_revenue > 0 and supplier_total_revenue > 0:
+                st.warning(
+                    f"Без поставщика: {format_money(supplier_unassigned_revenue)} — "
+                    f"{format_percent(supplier_unassigned_revenue / supplier_total_revenue * 100)} выручки. "
+                    "Пока поставщик не назначен, эти товары нельзя собрать в заказ конкретному поставщику."
+                )
+            else:
+                st.success("Вся выручка привязана к поставщикам.")
+            supplier_chart_frame = (
+                supplier_sales_overview.groupby("supplier_label", as_index=False)["revenue"]
+                .sum()
+                .sort_values("revenue", ascending=True)
+                .tail(12)
+            )
+            supplier_overview_chart = go.Figure(
+                go.Bar(
+                    x=supplier_chart_frame["revenue"],
+                    y=supplier_chart_frame["supplier_label"],
+                    orientation="h",
+                    marker_color=[
+                        "#CBD5E1" if label.casefold() == "не назначен" else PRIMARY_COLOR
+                        for label in supplier_chart_frame["supplier_label"]
+                    ],
+                    text=[
+                        format_percent(value / supplier_total_revenue * 100) if supplier_total_revenue else ""
+                        for value in supplier_chart_frame["revenue"]
+                    ],
+                    textposition="auto",
+                    name="Выручка",
+                )
+            )
+            supplier_overview_chart.update_layout(showlegend=False, xaxis_title="", yaxis_title="")
+            polish_figure(
+                supplier_overview_chart,
+                height=compact_bar_chart_height(max(len(supplier_chart_frame), 3)),
+            )
+            st.plotly_chart(supplier_overview_chart, use_container_width=True, key="supplier_overview_chart")
 
     if not can_edit_suppliers:
         st.info("Редактировать справочник поставщиков может только администратор. Руководитель видит текущие правила и проблемные позиции.")
@@ -16538,6 +17010,15 @@ if active_screen == "План / факт":
                 },
             ]
         render_snapshot_strip(plan_snapshot_items)
+
+        plan_pace = build_plan_pace(latest_plan_row, plan_fact_source_data, allow_margin=margin_visible)
+        if plan_pace is not None:
+            with st.container(border=True):
+                render_panel_header(
+                    "Темп выполнения плана",
+                    "Успеваем ли к концу месяца: факт против плана и прогноз при текущем темпе продаж.",
+                )
+                render_plan_pace(plan_pace)
 
         plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="medium")
 
