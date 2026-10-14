@@ -272,14 +272,16 @@ class TargetedTelegramReportTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
         self.assertEqual(workbook.sheetnames[:3], ["Сводка", "Портфель SKU", "Динамика"])
         portfolio_rows = list(workbook["Портфель SKU"].iter_rows(values_only=True))
-        self.assertEqual(len(portfolio_rows), 2)
-        self.assertIn("A-1", portfolio_rows[1])
+        # Title, explanation and spacer rows come before the table header.
+        self.assertEqual(portfolio_rows[0][0], "Портфель SKU")
+        self.assertEqual(len(portfolio_rows), 5)
+        self.assertIn("A-1", portfolio_rows[4])
         workbook.close()
 
         styled_workbook = load_workbook(BytesIO(report_file.content), read_only=False, data_only=True)
         portfolio_sheet = styled_workbook["Портфель SKU"]
-        self.assertEqual(portfolio_sheet.freeze_panes, "A2")
-        self.assertEqual(portfolio_sheet["A1"].fill.fgColor.rgb, "00003461")
+        self.assertEqual(portfolio_sheet.freeze_panes, "B5")
+        self.assertEqual(portfolio_sheet["A4"].fill.fgColor.rgb, "00003461")
         self.assertTrue(bool(portfolio_sheet.auto_filter.ref))
         styled_workbook.close()
 
@@ -309,9 +311,9 @@ class TargetedTelegramReportTests(unittest.TestCase):
         self.assertIn("B-2", message)
         workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
         detail_rows = list(workbook["Продажи SKU"].iter_rows(values_only=True))
-        self.assertEqual(len(detail_rows), 2)
-        self.assertIn("B-2", detail_rows[1])
-        self.assertNotIn("A-1", detail_rows[1])
+        self.assertEqual(len(detail_rows), 5)
+        self.assertIn("B-2", detail_rows[4])
+        self.assertNotIn("A-1", detail_rows[4])
         workbook.close()
 
     def test_message_does_not_promise_excel_when_file_is_disabled(self) -> None:
@@ -374,7 +376,7 @@ class TargetedTelegramReportTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(report_file.content), read_only=True, data_only=True)
         self.assertIn("Остатки и прогноз", workbook.sheetnames)
         self.assertIn("К заказу", workbook.sheetnames)
-        self.assertEqual(len(list(workbook["К заказу"].iter_rows(values_only=True))), 2)
+        self.assertEqual(len(list(workbook["К заказу"].iter_rows(values_only=True))), 5)
         workbook.close()
 
 

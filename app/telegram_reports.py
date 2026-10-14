@@ -13,7 +13,6 @@ from urllib import error as urlerror, parse, request
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from openpyxl.styles import Alignment, Font, PatternFill
 from PIL import Image, ImageDraw, ImageFont
 
 from procurement_analytics import (
@@ -28,13 +27,13 @@ from procurement_order_store import (
     load_procurement_orders,
 )
 from procurement_store import load_procurement_items
+from report_workbook import build_report_workbook
 from salon_data_store import load_archive_data, load_manifest, load_salons
 from sales_analytics import (
     build_abc_analysis,
     build_monthly_summary,
     build_overview_metrics,
     build_product_summary,
-    to_csv_bytes,
 )
 from telegram_settings_store import load_telegram_settings, parse_telegram_chat_ids
 
@@ -794,66 +793,26 @@ def _render_telegram_sales_card(
     return buffer.getvalue()
 
 
-def _safe_excel_sheet_name(value: object, used_names: set[str]) -> str:
-    raw_name = str(value or "Лист").strip() or "Лист"
-    safe_name = re.sub(r"[\[\]\:\*\?\/\\]", " ", raw_name)
-    safe_name = re.sub(r"\s+", " ", safe_name).strip()[:31] or "Лист"
-    candidate = safe_name
-    suffix = 2
-    while candidate.casefold() in used_names:
-        suffix_text = f" {suffix}"
-        candidate = f"{safe_name[:31 - len(suffix_text)]}{suffix_text}"
-        suffix += 1
-    used_names.add(candidate.casefold())
-    return candidate
-
-
 def _prepare_excel_frame(frame: pd.DataFrame, columns: list[str], rename_map: dict[str, str]) -> pd.DataFrame:
     export_columns = [column for column in columns if column in frame.columns]
     export_frame = frame[export_columns].copy() if export_columns else pd.DataFrame()
-    for column in export_frame.columns:
-        if pd.api.types.is_datetime64_any_dtype(export_frame[column]):
-            export_frame[column] = pd.to_datetime(export_frame[column], errors="coerce").dt.strftime("%Y-%m-%d")
     return export_frame.rename(columns=rename_map)
 
 
-def _export_excel_workbook(sheets: dict[str, pd.DataFrame]) -> bytes:
-    buffer = BytesIO()
-    used_names: set[str] = set()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for raw_sheet_name, frame in sheets.items():
-            sheet_name = _safe_excel_sheet_name(raw_sheet_name, used_names)
-            frame.to_excel(writer, sheet_name=sheet_name, index=False)
-            worksheet = writer.sheets[sheet_name]
-            worksheet.freeze_panes = "A2"
-            worksheet.auto_filter.ref = worksheet.dimensions
-            worksheet.sheet_view.showGridLines = False
-            worksheet.row_dimensions[1].height = 26
-            for header_cell in worksheet[1]:
-                header_cell.fill = PatternFill("solid", fgColor="003461")
-                header_cell.font = Font(color="FFFFFF", bold=True)
-                header_cell.alignment = Alignment(vertical="center", wrap_text=True)
-            for column_cells in worksheet.columns:
-                header = str(column_cells[0].value or "")
-                max_length = min(
-                    max([len(str(cell.value or "")) for cell in column_cells[:80]] + [len(header), 8]),
-                    42,
-                )
-                worksheet.column_dimensions[column_cells[0].column_letter].width = max_length + 2
-                header_lower = header.casefold()
-                for cell in column_cells[1:]:
-                    cell.alignment = Alignment(vertical="top", wrap_text=len(str(cell.value or "")) > 36)
-                    if isinstance(cell.value, (int, float)):
-                        if "%" in header:
-                            cell.number_format = "0.0"
-                        elif any(
-                            marker in header_lower
-                            for marker in ("выруч", "себесто", "прибыл", "марж", "сумм")
-                        ):
-                            cell.number_format = '#,##0.00'
-                        else:
-                            cell.number_format = '#,##0.##'
-    return buffer.getvalue()
+def _export_excel_workbook(
+    sheets: dict[str, pd.DataFrame],
+    *,
+    title: str = "Отчёт ArtDB",
+    subtitle: str = "",
+    descriptions: dict[str, str] | None = None,
+) -> bytes:
+    return build_report_workbook(
+        sheets,
+        title=title,
+        subtitle=subtitle,
+        descriptions=descriptions,
+        generated_at=datetime.now(get_timezone()).replace(tzinfo=None),
+    )
 
 
 def build_upload_status(today: datetime.date, salons: Iterable[str], manifest: pd.DataFrame) -> tuple[list[str], list[str]]:
@@ -1174,8 +1133,23 @@ def build_supplier_order_file(
     supplier_summary = build_procurement_supplier_summary(order_frame)
     today_label = today_label or datetime.now(get_timezone()).strftime("%Y%m%d")
 
+    order_quantity = pd.to_numeric(order_frame["recommended_order_qty"], errors="coerce").fillna(0)
+    critical_count = (
+        int(order_frame["priority"].astype(str).str.casefold().str.contains("критич").sum())
+        if "priority" in order_frame.columns
+        else 0
+    )
     sheets: dict[str, pd.DataFrame] = {
-        "Сводка": _prepare_excel_frame(
+        "Сводка": pd.DataFrame(
+            [
+                {"Показатель": "Что это", "Значение": "Заказ поставщикам по прогнозу спроса", "Единица": ""},
+                {"Показатель": "Поставщиков", "Значение": int(order_frame["supplier"].nunique()), "Единица": ""},
+                {"Показатель": "Позиций к заказу", "Значение": int(len(order_frame)), "Единица": ""},
+                {"Показатель": "Из них критичных", "Значение": critical_count, "Единица": ""},
+                {"Показатель": "Всего к заказу", "Значение": float(order_quantity.sum()), "Единица": "шт."},
+            ]
+        ),
+        "По поставщикам": _prepare_excel_frame(
             supplier_summary,
             [
                 "supplier",
@@ -1208,6 +1182,7 @@ def build_supplier_order_file(
     }
 
     supplier_limit = max(0, env_int("TELEGRAM_ORDER_SUPPLIER_SHEETS_LIMIT", 20))
+    supplier_descriptions: dict[str, str] = {}
     for supplier in supplier_summary["supplier"].astype(str).head(supplier_limit):
         supplier_frame = order_frame[order_frame["supplier"].astype(str) == supplier]
         if supplier_frame.empty:
@@ -1217,10 +1192,16 @@ def build_supplier_order_file(
             PROCUREMENT_ORDER_COLUMNS,
             PROCUREMENT_ORDER_RENAME_MAP,
         )
+        supplier_descriptions[str(supplier)] = f"Позиции к заказу у поставщика «{supplier}» — этот лист можно отправить ему как заявку."
 
     return TelegramReportFile(
         filename=f"artdb_supplier_order_{today_label}.xlsx",
-        content=_export_excel_workbook(sheets),
+        content=_export_excel_workbook(
+            sheets,
+            title="Заказ поставщикам",
+            subtitle="Рассчитан по прогнозу спроса и текущим остаткам",
+            descriptions=supplier_descriptions,
+        ),
         caption="Excel-заказ поставщикам по прогнозу потребности",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
@@ -1240,18 +1221,6 @@ def send_supplier_order_files() -> int:
         send_telegram_document(report_file)
         sent_files += 1
     return sent_files
-
-
-def _export_frame(frame: pd.DataFrame, columns: list[str], rename_map: dict[str, str]) -> bytes:
-    export_columns = [column for column in columns if column in frame.columns]
-    if not export_columns:
-        return to_csv_bytes(pd.DataFrame())
-
-    export_frame = frame[export_columns].copy()
-    for column in export_frame.columns:
-        if pd.api.types.is_datetime64_any_dtype(export_frame[column]):
-            export_frame[column] = pd.to_datetime(export_frame[column], errors="coerce").dt.strftime("%Y-%m-%d")
-    return to_csv_bytes(export_frame.rename(columns=rename_map))
 
 
 def _filter_targeted_sales_data(
@@ -1917,7 +1886,7 @@ def build_targeted_telegram_report(
     filename = f"artdb_{report_kind}{scope_suffix}_{start_date:%Y%m%d}_{end_date:%Y%m%d}.xlsx"
     report_file = TelegramReportFile(
         filename=filename,
-        content=_export_excel_workbook(sheets),
+        content=_export_excel_workbook(sheets, title=report_label, subtitle=f"Период: {period_label}"),
         caption=f"{report_label}. Период: {period_label}",
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
@@ -1973,169 +1942,251 @@ def send_targeted_telegram_report(
 def build_telegram_report_files() -> list[TelegramReportFile]:
     salons = load_salons()
     archive_result = load_archive_data(salons=salons if salons else None)
-    report_files: list[TelegramReportFile] = []
-    today_label = datetime.now(get_timezone()).strftime("%Y%m%d")
+    now = datetime.now(get_timezone())
+    today_label = now.strftime("%Y%m%d")
 
     manifest = archive_result.manifest if not archive_result.manifest.empty else load_manifest()
-    if not manifest.empty:
-        report_files.append(
-            TelegramReportFile(
-                filename=f"artdb_uploads_{today_label}.csv",
-                content=to_csv_bytes(manifest),
-                caption="Реестр загрузок ArtDB",
-            )
-        )
-
-    if archive_result.data.empty:
-        return report_files
-
-    data = archive_result.data.copy()
-    monthly_summary = build_monthly_summary(data)
-    product_summary = build_product_summary(data)
-
-    if not monthly_summary.empty:
-        report_files.append(
-            TelegramReportFile(
-                filename=f"artdb_monthly_summary_{today_label}.csv",
-                content=_export_frame(
-                    monthly_summary,
-                    ["month_label", "revenue", "margin", "quantity", "revenue_change_pct", "margin_change_pct"],
-                    {
-                        "month_label": "Месяц",
-                        "revenue": "Выручка",
-                        "margin": "Маржа",
-                        "quantity": "Количество",
-                        "revenue_change_pct": "Изменение выручки, %",
-                        "margin_change_pct": "Изменение маржи, %",
-                    },
-                ),
-                caption="Помесячная сводка продаж",
-            )
-        )
-
-    if not product_summary.empty:
-        report_files.append(
-            TelegramReportFile(
-                filename=f"artdb_top_products_{today_label}.csv",
-                content=_export_frame(
-                    product_summary.head(int(os.getenv("TELEGRAM_REPORT_TOP_ROWS", "100"))),
-                    ["group_name", "revenue", "margin", "margin_pct", "quantity", "sales_lines"],
-                    {
-                        "group_name": "Товар",
-                        "revenue": "Выручка",
-                        "margin": "Маржа",
-                        "margin_pct": "Маржа, %",
-                        "quantity": "Количество",
-                        "sales_lines": "Строк продаж",
-                    },
-                ),
-                caption="Топ товаров по продажам",
-            )
-        )
-
-    procurement_forecast = build_default_procurement_forecast(data)
-    if procurement_forecast.empty:
-        return report_files
-
-    procurement_columns = [
-        "product",
-        "category",
-        "supplier",
-        "abc_class",
-        "xyz_class",
-        "priority",
-        "stock_status",
-        "demand_state",
-        "forecast_qty",
-        "stock_on_hand",
-        "stock_in_transit",
-        "available_stock_qty",
-        "stock_coverage_days",
-        "net_requirement_qty",
-        "recommended_order_qty",
-        "last_sale_date",
-        "days_since_last_sale",
-        "notes",
-    ]
-    procurement_rename_map = {
-        "product": "SKU / Товар",
-        "category": "Категория",
-        "supplier": "Поставщик",
-        "abc_class": "ABC",
-        "xyz_class": "XYZ",
-        "priority": "Приоритет",
-        "stock_status": "Статус остатка",
-        "demand_state": "Состояние спроса",
-        "forecast_qty": "Прогноз потребности, шт",
-        "stock_on_hand": "Остаток",
-        "stock_in_transit": "В пути",
-        "available_stock_qty": "Доступно",
-        "stock_coverage_days": "Покрытие, дней",
-        "net_requirement_qty": "Чистая потребность, шт",
-        "recommended_order_qty": "Рекомендованный заказ, шт",
-        "last_sale_date": "Последняя продажа",
-        "days_since_last_sale": "Дней без продаж",
-        "notes": "Примечание",
-    }
-    report_files.append(
-        TelegramReportFile(
-            filename=f"artdb_procurement_forecast_{today_label}.csv",
-            content=_export_frame(procurement_forecast, procurement_columns, procurement_rename_map),
-            caption="Прогноз закупок",
-        )
+    uploads_sheet = _prepare_excel_frame(
+        manifest.sort_values(["report_date", "salon"], ascending=[False, True]) if not manifest.empty else manifest,
+        ["salon", "report_date", "source_filename", "uploaded_at"],
+        {
+            "salon": "Салон",
+            "report_date": "Дата отчёта",
+            "source_filename": "Файл",
+            "uploaded_at": "Загружен",
+        },
     )
 
-    supplier_summary = build_procurement_supplier_summary(procurement_forecast)
-    if not supplier_summary.empty:
-        report_files.append(
+    if archive_result.data.empty:
+        if uploads_sheet.empty:
+            return []
+        return [
             TelegramReportFile(
-                filename=f"artdb_procurement_suppliers_{today_label}.csv",
-                content=_export_frame(
-                    supplier_summary,
-                    [
-                        "supplier",
-                        "sku_count",
-                        "reorder_sku_count",
-                        "critical_sku_count",
-                        "recommended_order_qty",
-                        "net_requirement_qty",
-                        "available_stock_qty",
-                        "forecast_qty",
-                    ],
-                    {
-                        "supplier": "Поставщик",
-                        "sku_count": "SKU",
-                        "reorder_sku_count": "SKU к заказу",
-                        "critical_sku_count": "Критичных SKU",
-                        "recommended_order_qty": "Рекомендованный заказ, шт",
-                        "net_requirement_qty": "Чистая потребность, шт",
-                        "available_stock_qty": "Доступный остаток",
-                        "forecast_qty": "Прогноз спроса, шт",
-                    },
+                filename=f"artdb_daily_report_{today_label}.xlsx",
+                content=_export_excel_workbook(
+                    {"Загрузки": uploads_sheet},
+                    title="Ежедневный отчёт ArtDB",
+                    subtitle=f"на {now:%d.%m.%Y}",
                 ),
-                caption="Сводка закупок по поставщикам",
+                caption="Ежедневный отчёт ArtDB: продаж в архиве пока нет, приложен реестр загрузок",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+        ]
+
+    data = archive_result.data.copy()
+    overview = build_overview_metrics(data)
+    monthly_summary = build_monthly_summary(data)
+    product_summary = build_product_summary(data)
+    data_dates = pd.to_datetime(data["date"], errors="coerce").dropna()
+    period_label = (
+        f"{data_dates.min():%d.%m.%Y} — {data_dates.max():%d.%m.%Y}" if not data_dates.empty else "нет дат"
+    )
+    excluded_rows = (
+        int(pd.to_numeric(archive_result.file_report["excluded_rows"], errors="coerce").fillna(0).sum())
+        if not archive_result.file_report.empty
+        else 0
+    )
+    error_rows = (
+        int(pd.to_numeric(archive_result.file_report["error_rows"], errors="coerce").fillna(0).sum())
+        if not archive_result.file_report.empty
+        else 0
+    )
+
+    summary_rows: list[dict[str, object]] = [
+        {"Показатель": "Данные за период", "Значение": period_label, "Единица": ""},
+        {"Показатель": "Салонов в отчёте", "Значение": int(data["salon"].nunique()) if "salon" in data.columns else 1, "Единица": ""},
+        {"Показатель": "Файлов в архиве", "Значение": int(len(manifest)), "Единица": ""},
+        {"Показатель": "Выручка", "Значение": overview.get("total_revenue"), "Единица": "сом"},
+        {"Показатель": "Валовая прибыль", "Значение": overview.get("total_margin"), "Единица": "сом"},
+        {"Показатель": "Маржинальность", "Значение": overview.get("margin_pct"), "Единица": "%"},
+        {"Показатель": "Продано единиц", "Значение": overview.get("total_quantity"), "Единица": "шт."},
+        {"Показатель": "Товаров в продаже", "Значение": overview.get("product_count"), "Единица": ""},
+    ]
+    if len(monthly_summary) >= 2:
+        summary_rows.append(
+            {
+                "Показатель": "Изменение выручки за последний месяц",
+                "Значение": monthly_summary.iloc[-1].get("revenue_change_pct"),
+                "Единица": "%",
+            }
         )
 
-    stock_frames = build_procurement_stock_risk_frames(procurement_forecast, total_window_days=51)
-    stock_risk_report = stock_frames["report"]
-    if not stock_risk_report.empty:
-        report_files.append(
-            TelegramReportFile(
-                filename=f"artdb_stock_risks_{today_label}.csv",
-                content=_export_frame(
-                    stock_risk_report,
-                    ["risk_type", *procurement_columns],
-                    {"risk_type": "Тип риска", **procurement_rename_map},
-                ),
-                caption="Остатки и риски",
-            )
+    sheets: dict[str, pd.DataFrame] = {}
+    sheets["По месяцам"] = _prepare_excel_frame(
+        monthly_summary,
+        ["month_label", "revenue", "margin", "quantity", "revenue_change_pct", "margin_change_pct"],
+        {
+            "month_label": "Месяц",
+            "revenue": "Выручка",
+            "margin": "Валовая прибыль",
+            "quantity": "Количество",
+            "revenue_change_pct": "Изменение выручки, %",
+            "margin_change_pct": "Изменение прибыли, %",
+        },
+    )
+    sheets["Топ товаров"] = _prepare_excel_frame(
+        product_summary.head(int(os.getenv("TELEGRAM_REPORT_TOP_ROWS", "100"))),
+        ["group_name", "revenue", "margin", "margin_pct", "quantity", "sales_lines"],
+        {
+            "group_name": "Товар",
+            "revenue": "Выручка",
+            "margin": "Валовая прибыль",
+            "margin_pct": "Маржинальность, %",
+            "quantity": "Количество",
+            "sales_lines": "Строк продаж",
+        },
+    )
+
+    report_files: list[TelegramReportFile] = []
+    procurement_forecast = build_default_procurement_forecast(data)
+    if not procurement_forecast.empty:
+        procurement_columns = [
+            "product",
+            "category",
+            "supplier",
+            "abc_class",
+            "xyz_class",
+            "priority",
+            "stock_status",
+            "demand_state",
+            "forecast_qty",
+            "stock_on_hand",
+            "stock_in_transit",
+            "available_stock_qty",
+            "stock_coverage_days",
+            "net_requirement_qty",
+            "recommended_order_qty",
+            "last_sale_date",
+            "days_since_last_sale",
+            "notes",
+        ]
+        procurement_rename_map = {
+            "product": "Товар",
+            "category": "Категория",
+            "supplier": "Поставщик",
+            "abc_class": "ABC",
+            "xyz_class": "XYZ",
+            "priority": "Приоритет",
+            "stock_status": "Статус остатка",
+            "demand_state": "Состояние спроса",
+            "forecast_qty": "Прогноз спроса, шт",
+            "stock_on_hand": "Остаток, шт",
+            "stock_in_transit": "В пути, шт",
+            "available_stock_qty": "Доступно, шт",
+            "stock_coverage_days": "Покрытие, дней",
+            "net_requirement_qty": "Чистая потребность, шт",
+            "recommended_order_qty": "К заказу, шт",
+            "last_sale_date": "Последняя продажа",
+            "days_since_last_sale": "Дней без продаж",
+            "notes": "Примечание",
+        }
+        procurement_overview = build_procurement_overview(procurement_forecast)
+        summary_rows.extend(
+            [
+                {
+                    "Показатель": "Товаров пора заказывать",
+                    "Значение": procurement_overview.get("reorder_sku_count", 0),
+                    "Единица": "",
+                },
+                {
+                    "Показатель": "Из них с критичным остатком",
+                    "Значение": procurement_overview.get("critical_stock_count", 0),
+                    "Единица": "",
+                },
+                {
+                    "Показатель": "Рекомендовано к заказу",
+                    "Значение": procurement_overview.get("recommended_order_qty_total", 0),
+                    "Единица": "шт.",
+                },
+            ]
         )
+        stock_frames = build_procurement_stock_risk_frames(procurement_forecast, total_window_days=51)
+        stock_risk_report = stock_frames["report"]
+        if not stock_risk_report.empty:
+            sheets["Остатки и риски"] = _prepare_excel_frame(
+                stock_risk_report,
+                ["risk_type", *procurement_columns],
+                {"risk_type": "Тип риска", **procurement_rename_map},
+            )
+        supplier_summary = build_procurement_supplier_summary(procurement_forecast)
+        if not supplier_summary.empty:
+            sheets["Поставщики"] = _prepare_excel_frame(
+                supplier_summary,
+                [
+                    "supplier",
+                    "sku_count",
+                    "reorder_sku_count",
+                    "critical_sku_count",
+                    "recommended_order_qty",
+                    "net_requirement_qty",
+                    "available_stock_qty",
+                    "forecast_qty",
+                ],
+                {
+                    "supplier": "Поставщик",
+                    "sku_count": "Товаров",
+                    "reorder_sku_count": "Товаров к заказу",
+                    "critical_sku_count": "Критичных",
+                    "recommended_order_qty": "К заказу, шт",
+                    "net_requirement_qty": "Чистая потребность, шт",
+                    "available_stock_qty": "Доступно, шт",
+                    "forecast_qty": "Прогноз спроса, шт",
+                },
+            )
+        sheets["Прогноз закупок"] = _prepare_excel_frame(
+            procurement_forecast,
+            procurement_columns,
+            procurement_rename_map,
+        )
+        supplier_order_file = build_supplier_order_file(procurement_forecast, today_label=today_label)
+        if supplier_order_file is not None:
+            report_files.append(supplier_order_file)
 
-    supplier_order_file = build_supplier_order_file(procurement_forecast, today_label=today_label)
-    if supplier_order_file is not None:
-        report_files.append(supplier_order_file)
+    if excluded_rows:
+        summary_rows.append(
+            {"Показатель": "Строк исключено при загрузке", "Значение": excluded_rows, "Единица": ""}
+        )
+    if error_rows:
+        summary_rows.append(
+            {"Показатель": "Из них с ошибками в данных", "Значение": error_rows, "Единица": ""}
+        )
+        sheets["Ошибки в данных"] = _prepare_excel_frame(
+            archive_result.exclusions[archive_result.exclusions["severity"] == "Ошибка в данных"],
+            ["salon", "report_date", "source_filename", "row_number", "reason", "raw_date", "product", "revenue"],
+            {
+                "salon": "Салон",
+                "report_date": "Дата отчёта",
+                "source_filename": "Файл",
+                "row_number": "№ строки",
+                "reason": "Причина",
+                "raw_date": "Дата в строке",
+                "product": "Товар",
+                "revenue": "Выручка в строке",
+            },
+        )
+    if not uploads_sheet.empty:
+        sheets["Загрузки"] = uploads_sheet
 
+    workbook_sheets = {"Сводка": pd.DataFrame(summary_rows), **sheets}
+    report_files.insert(
+        0,
+        TelegramReportFile(
+            filename=f"artdb_daily_report_{today_label}.xlsx",
+            content=_export_excel_workbook(
+                workbook_sheets,
+                title="Ежедневный отчёт ArtDB",
+                subtitle=f"на {now:%d.%m.%Y} · данные за {period_label}",
+                descriptions={
+                    "Ошибки в данных": "Строки файлов, где дата или выручка не распознаны: они не попали в расчёты.",
+                },
+            ),
+            caption=(
+                "Ежедневный отчёт ArtDB одним файлом: сводка, продажи по месяцам, "
+                "топ товаров, закупки и остатки"
+            ),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    )
     return report_files
 
 
