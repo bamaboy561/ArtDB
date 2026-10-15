@@ -610,6 +610,29 @@ def set_service_state(service_name: str, last_run_key: str) -> None:
             )
 
 
+def claim_service_run(service_name: str, run_key: str) -> bool:
+    """Atomically mark run_key as taken; True only for the single caller that took it."""
+    if not database_enabled():
+        return True
+    ensure_database_ready()
+    with get_db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO service_state (service_name, last_run_key, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (service_name)
+                DO UPDATE SET
+                    last_run_key = EXCLUDED.last_run_key,
+                    updated_at = NOW()
+                WHERE service_state.last_run_key IS DISTINCT FROM EXCLUDED.last_run_key
+                RETURNING service_name
+                """,
+                (service_name, run_key),
+            )
+            return cursor.fetchone() is not None
+
+
 def log_audit_event(
     *,
     user_id: str,

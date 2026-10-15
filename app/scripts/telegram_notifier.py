@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from db import database_enabled, get_service_state, set_service_state
+from db import database_enabled
 from telegram_reports import (
     build_risk_alert_message,
     get_timezone,
@@ -19,10 +19,8 @@ from telegram_reports import (
     send_telegram_report_pack,
     send_supplier_order_files,
 )
+from telegram_scheduler import run_scheduled_report_if_due
 from telegram_settings_store import load_telegram_settings
-
-
-SERVICE_NAME = "telegram-daily-summary"
 
 
 def run_once(*, with_files: bool = False) -> None:
@@ -37,21 +35,10 @@ def run_daemon() -> None:
     check_interval = max(30, int(os.getenv("TELEGRAM_CHECK_INTERVAL_SECONDS", "60")))
 
     while True:
-        settings = load_telegram_settings()
-        now = datetime.now(timezone)
-        run_key = now.strftime("%Y-%m-%d")
-        already_sent = get_service_state(SERVICE_NAME)
-        if (
-            settings.daily_enabled
-            and settings.configured
-            and (
-                now.hour > settings.report_hour
-                or (now.hour == settings.report_hour and now.minute >= settings.report_minute)
-            )
-            and already_sent != run_key
-        ):
-            send_telegram_report_pack(with_files=settings.send_report_files)
-            set_service_state(SERVICE_NAME, run_key)
+        try:
+            run_scheduled_report_if_due(datetime.now(timezone), load_telegram_settings())
+        except Exception as error:
+            print(f"Telegram scheduler error: {error}", flush=True)
         time.sleep(check_interval)
 
 

@@ -2202,6 +2202,9 @@ def send_telegram_report_pack(*, with_files: bool = True, caption: str | None = 
     sent_files = 0
     if with_files:
         for report_file in build_telegram_report_files():
-            send_telegram_document(report_file)
-            sent_files += 1
+            try:
+                send_telegram_document(report_file)
+                sent_files += 1
+            except Exception as error:
+                print(f"Telegram report file {report_file.filename} error: {error}", flush=True)
     return sent_files

@@ -943,6 +943,13 @@ def _poll_updates(menu: TelegramReportMenu, lock_connection: object | None = Non
                     cursor.execute("SELECT 1")
             for update in updates:
                 update_id = int(update.get("update_id", -1))
+                if update_id >= 0:
+                    if update_id < offset:
+                        continue
+                    # Saved before handling: a restart in the middle of a long report
+                    # must not answer the same button press twice.
+                    offset = update_id + 1
+                    set_service_state(offset_state_name, str(offset))
                 try:
                     menu.handle_update(update, allowed_chat_ids=settings.chat_ids)
                 except Exception as error:
@@ -956,10 +963,6 @@ def _poll_updates(menu: TelegramReportMenu, lock_connection: object | None = Non
                             )
                         except Exception:
                             pass
-                finally:
-                    if update_id >= 0:
-                        offset = max(offset, update_id + 1)
-                        set_service_state(offset_state_name, str(offset))
         except Exception as error:
             print(f"Telegram bot polling error: {error}", flush=True)
             if lock_connection is not None:

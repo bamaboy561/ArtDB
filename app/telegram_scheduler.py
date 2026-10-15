@@ -5,9 +5,9 @@ import os
 import threading
 import time
 
-from db import database_enabled, get_service_state, set_service_state
+from db import claim_service_run, database_enabled, get_service_state
 from telegram_reports import get_timezone, send_telegram_report_pack
-from telegram_settings_store import load_telegram_settings
+from telegram_settings_store import TelegramSettings, load_telegram_settings
 
 
 SERVICE_NAME = "telegram-daily-summary"
@@ -15,18 +15,27 @@ _START_LOCK = threading.Lock()
 _SCHEDULER_THREAD: threading.Thread | None = None
 
 
+def run_scheduled_report_if_due(now: datetime, settings: TelegramSettings) -> bool:
+    if not (settings.daily_enabled and settings.configured):
+        return False
+    if (now.hour, now.minute) < (settings.report_hour, settings.report_minute):
+        return False
+    run_key = now.strftime("%Y-%m-%d")
+    if get_service_state(SERVICE_NAME) == run_key:
+        return False
+    # The day is claimed before sending: a second instance or a failed upload
+    # must never send the same daily report again.
+    if not claim_service_run(SERVICE_NAME, run_key):
+        return False
+    send_telegram_report_pack(with_files=settings.send_report_files)
+    return True
+
+
 def _scheduler_loop() -> None:
     while True:
         check_interval = 60
         try:
-            settings = load_telegram_settings()
-            if settings.daily_enabled and settings.configured:
-                now = datetime.now(get_timezone())
-                run_key = now.strftime("%Y-%m-%d")
-                scheduled = (settings.report_hour, settings.report_minute)
-                if (now.hour, now.minute) >= scheduled and get_service_state(SERVICE_NAME) != run_key:
-                    send_telegram_report_pack(with_files=settings.send_report_files)
-                    set_service_state(SERVICE_NAME, run_key)
+            run_scheduled_report_if_due(datetime.now(get_timezone()), load_telegram_settings())
         except Exception as error:
             print(f"Telegram scheduler error: {error}", flush=True)
             check_interval = 120
