@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
+import pickle
 import re
 from typing import Any, Iterable
 import uuid
@@ -12,7 +14,7 @@ import uuid
 import pandas as pd
 
 from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
-from sales_analytics import load_input_file, prepare_sales_data
+from sales_analytics import PreparedSalesData, load_input_file, prepare_sales_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,6 +37,11 @@ MANIFEST_COLUMNS = [
 ]
 # Bump this when load_input_file changes the shape of its parsed output.
 PARSED_CACHE_VERSION = 1
+# Prepared archive files are cached on disk; the key includes the source of the
+# preparation code, so any change there invalidates the cache automatically.
+_PREPARED_CACHE_CODE_HASH = hashlib.sha1(
+    b"".join((BASE_DIR / name).read_bytes() for name in ("sales_analytics.py", "product_identity.py"))
+).hexdigest()[:12]
 
 
 FILE_REPORT_COLUMNS = [
@@ -92,7 +99,11 @@ def _parsed_cache_path(stored_path: Path) -> Path:
 
 def _remove_upload_artifacts(stored_path: Path) -> int:
     removed = 0
-    candidates = [stored_path, *stored_path.parent.glob(f"{stored_path.name}.parsed-v*.parquet")]
+    candidates = [
+        stored_path,
+        *stored_path.parent.glob(f"{stored_path.name}.parsed-v*.parquet"),
+        *stored_path.parent.glob(f"{stored_path.name}.prepared-*.pkl"),
+    ]
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
             candidate.unlink()
@@ -127,6 +138,48 @@ def _read_parsed_cache(stored_path: Path) -> pd.DataFrame | None:
     except Exception:
         cache_path.unlink(missing_ok=True)
         return None
+
+
+def _prepared_cache_path(stored_path: Path, mapping_json: str, supplier_rules: object) -> Path:
+    key = hashlib.sha1(
+        f"{_PREPARED_CACHE_CODE_HASH}|{mapping_json}|{supplier_rules!r}".encode("utf-8")
+    ).hexdigest()[:16]
+    return stored_path.with_name(f"{stored_path.name}.prepared-{key}.pkl")
+
+
+def _read_prepared_cache(cache_path: Path) -> PreparedSalesData | None:
+    if not cache_path.exists():
+        return None
+    try:
+        with cache_path.open("rb") as handle:
+            prepared = pickle.load(handle)
+        return prepared if isinstance(prepared, PreparedSalesData) else None
+    except Exception:
+        cache_path.unlink(missing_ok=True)
+        return None
+
+
+def _write_prepared_cache(cache_path: Path, prepared: PreparedSalesData) -> bool:
+    temporary_path = cache_path.with_suffix(".tmp")
+    try:
+        with temporary_path.open("wb") as handle:
+            pickle.dump(prepared, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        temporary_path.replace(cache_path)
+        return True
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        return False
+
+
+def _remove_stale_prepared_caches(directory: Path, current_names: set[str]) -> None:
+    """Drop prepared caches left over from older rules or code (one directory scan)."""
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return
+    for entry in entries:
+        if ".prepared-" in entry.name and entry.name.endswith(".pkl") and entry.name not in current_names:
+            Path(entry.path).unlink(missing_ok=True)
 
 
 def load_salons() -> list[str]:
@@ -520,6 +573,45 @@ def register_upload(
     }
 
 
+_ARCHIVE_SOURCE_COLUMNS = (
+    "salon",
+    "report_date",
+    "source_filename",
+    "_archive_upload_id",
+    "_archive_uploaded_at",
+    "_archive_report_date",
+)
+
+
+def _concat_archive_frames(frames: list[pd.DataFrame], sources: list[dict[str, Any]]) -> pd.DataFrame:
+    """Concatenate prepared files and tag every row with its source upload.
+
+    The tags are added once on the combined frame: adding them per file costs
+    more than preparing the data itself on archives with thousands of uploads.
+    """
+    columns: dict[str, None] = {}
+    for frame in frames:
+        columns.update(dict.fromkeys(frame.columns))
+        columns.update(dict.fromkeys(_ARCHIVE_SOURCE_COLUMNS))
+    data = pd.concat(
+        [frame.drop(columns=[c for c in _ARCHIVE_SOURCE_COLUMNS if c in frame.columns]) for frame in frames],
+        ignore_index=True,
+    )
+    lengths = [len(frame) for frame in frames]
+
+    def repeated(field: str) -> list[str]:
+        return [str(source[field]) for source in sources]
+
+    report_dates = repeated("report_date")
+    data["salon"] = pd.Series(repeated("salon")).repeat(lengths).to_numpy()
+    data["report_date"] = pd.to_datetime(pd.Series(report_dates), errors="coerce").repeat(lengths).to_numpy()
+    data["source_filename"] = pd.Series(repeated("source_filename")).repeat(lengths).to_numpy()
+    data["_archive_upload_id"] = pd.Series(repeated("upload_id")).repeat(lengths).to_numpy()
+    data["_archive_uploaded_at"] = pd.Series(repeated("uploaded_at")).repeat(lengths).to_numpy()
+    data["_archive_report_date"] = pd.Series(report_dates).repeat(lengths).to_numpy()
+    return data[list(columns)]
+
+
 def load_archive_data(
     *,
     salons: list[str] | None = None,
@@ -537,6 +629,9 @@ def load_archive_data(
     frames: list[pd.DataFrame] = []
     file_rows: list[dict[str, Any]] = []
     exclusion_frames: list[pd.DataFrame] = []
+    frame_sources: list[dict[str, Any]] = []
+    prepared_cache_names: dict[Path, set[str]] = {}
+    refreshed_cache_dirs: set[Path] = set()
 
     def describe_file(row: dict[str, Any], **values: Any) -> dict[str, Any]:
         return {
@@ -558,39 +653,40 @@ def load_archive_data(
     for row in manifest.to_dict(orient="records"):
         stored_path = Path(str(row["stored_path"]))
         cache_path = _parsed_cache_path(stored_path)
-        if not stored_path.exists() and not cache_path.exists():
+        prepared_cache_path = _prepared_cache_path(stored_path, str(row["mapping_json"]), supplier_rules)
+        prepared_cache_names.setdefault(prepared_cache_path.parent, set()).add(prepared_cache_path.name)
+        if not stored_path.exists() and not cache_path.exists() and not prepared_cache_path.exists():
             warnings.append(f"Не найден архивный файл: {stored_path}")
             file_rows.append(describe_file(row, problem="Файл не найден в архиве"))
             continue
 
         try:
-            raw_data = _read_parsed_cache(stored_path)
-            if raw_data is None:
-                raw_data = load_input_file(
-                    stored_path.read_bytes(),
-                    str(row["source_filename"]),
-                    csv_separator=str(row["csv_separator"] or ";"),
-                    csv_encoding=str(row["csv_encoding"] or "utf-8"),
-                    sheet_name=_parse_sheet_name(row["sheet_name"]),
-                )
-                _write_parsed_cache(stored_path, raw_data)
-            mapping = json.loads(str(row["mapping_json"]))
-            prepared = prepare_sales_data(raw_data, mapping, supplier_rules=supplier_rules)
-            frame = prepared.data.copy()
-            frame["salon"] = str(row["salon"])
-            frame["report_date"] = pd.to_datetime(str(row["report_date"]), errors="coerce")
-            frame["source_filename"] = str(row["source_filename"])
-            frame["_archive_upload_id"] = str(row["upload_id"])
-            frame["_archive_uploaded_at"] = str(row["uploaded_at"])
-            frame["_archive_report_date"] = str(row["report_date"])
+            prepared = _read_prepared_cache(prepared_cache_path)
+            if prepared is None:
+                raw_data = _read_parsed_cache(stored_path)
+                if raw_data is None:
+                    raw_data = load_input_file(
+                        stored_path.read_bytes(),
+                        str(row["source_filename"]),
+                        csv_separator=str(row["csv_separator"] or ";"),
+                        csv_encoding=str(row["csv_encoding"] or "utf-8"),
+                        sheet_name=_parse_sheet_name(row["sheet_name"]),
+                    )
+                    _write_parsed_cache(stored_path, raw_data)
+                mapping = json.loads(str(row["mapping_json"]))
+                prepared = prepare_sales_data(raw_data, mapping, supplier_rules=supplier_rules)
+                if _write_prepared_cache(prepared_cache_path, prepared):
+                    refreshed_cache_dirs.add(prepared_cache_path.parent)
+            frame = prepared.data
             frames.append(frame)
+            frame_sources.append(row)
 
             stats = prepared.stats or {}
             reason_counts = stats.get("reason_counts") or {}
             file_rows.append(
                 describe_file(
                     row,
-                    raw_rows=int(stats.get("raw_rows", len(raw_data))),
+                    raw_rows=int(stats.get("raw_rows", len(frame))),
                     loaded_rows=int(stats.get("loaded_rows", len(frame))),
                     excluded_rows=int(stats.get("excluded_rows", 0)),
                     error_rows=int(stats.get("error_rows", 0)),
@@ -610,6 +706,9 @@ def load_archive_data(
             warnings.append(f"{row['salon']} / {row['report_date']}: не удалось обработать файл ({error})")
             file_rows.append(describe_file(row, problem=f"Не удалось обработать файл: {error}"))
 
+    for directory in refreshed_cache_dirs:
+        _remove_stale_prepared_caches(directory, prepared_cache_names.get(directory, set()))
+
     file_report = pd.DataFrame(file_rows, columns=FILE_REPORT_COLUMNS)
     exclusions = pd.concat(exclusion_frames, ignore_index=True) if exclusion_frames else pd.DataFrame()
 
@@ -622,7 +721,7 @@ def load_archive_data(
             exclusions=exclusions,
         )
 
-    data = pd.concat(frames, ignore_index=True)
+    data = _concat_archive_frames(frames, frame_sources)
     data, overlap_warning, overlap_details = _resolve_archive_date_overlaps(data)
     overlaps = pd.DataFrame()
     if overlap_warning:

@@ -1099,17 +1099,37 @@ def build_risk_alert_message() -> str:
     )
 
 
+def _supplier_order_mask(procurement_forecast: pd.DataFrame) -> pd.Series | None:
+    if procurement_forecast.empty or "recommended_order_qty" not in procurement_forecast.columns:
+        return None
+    return pd.to_numeric(procurement_forecast["recommended_order_qty"], errors="coerce").fillna(0) > 0
+
+
+def has_supplier_order_items(procurement_forecast: pd.DataFrame) -> bool:
+    mask = _supplier_order_mask(procurement_forecast)
+    return bool(mask is not None and mask.any())
+
+
+def supplier_order_filename(today_label: str | None = None) -> str:
+    today_label = today_label or datetime.now(get_timezone()).strftime("%Y%m%d")
+    return f"artdb_supplier_order_{today_label}.xlsx"
+
+
+def build_supplier_order_content(procurement_forecast: pd.DataFrame) -> bytes:
+    order_file = build_supplier_order_file(procurement_forecast)
+    return order_file.content if order_file is not None else b""
+
+
 def build_supplier_order_file(
     procurement_forecast: pd.DataFrame,
     *,
     today_label: str | None = None,
 ) -> TelegramReportFile | None:
-    if procurement_forecast.empty or "recommended_order_qty" not in procurement_forecast.columns:
+    mask = _supplier_order_mask(procurement_forecast)
+    if mask is None:
         return None
 
-    order_frame = procurement_forecast[
-        pd.to_numeric(procurement_forecast["recommended_order_qty"], errors="coerce").fillna(0) > 0
-    ].copy()
+    order_frame = procurement_forecast[mask].copy()
     if order_frame.empty:
         return None
 
@@ -1131,8 +1151,6 @@ def build_supplier_order_file(
         na_position="last",
     )
     supplier_summary = build_procurement_supplier_summary(order_frame)
-    today_label = today_label or datetime.now(get_timezone()).strftime("%Y%m%d")
-
     order_quantity = pd.to_numeric(order_frame["recommended_order_qty"], errors="coerce").fillna(0)
     critical_count = (
         int(order_frame["priority"].astype(str).str.casefold().str.contains("критич").sum())
@@ -1195,7 +1213,7 @@ def build_supplier_order_file(
         supplier_descriptions[str(supplier)] = f"Позиции к заказу у поставщика «{supplier}» — этот лист можно отправить ему как заявку."
 
     return TelegramReportFile(
-        filename=f"artdb_supplier_order_{today_label}.xlsx",
+        filename=supplier_order_filename(today_label),
         content=_export_excel_workbook(
             sheets,
             title="Заказ поставщикам",

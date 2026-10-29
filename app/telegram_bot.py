@@ -19,9 +19,9 @@ from db import (
     set_service_state,
 )
 from procurement_store import load_procurement_items
-from product_identity import apply_product_category_rules, normalize_product_match_key
+from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
 from salon_data_store import load_archive_data, load_salons
-from sales_analytics import infer_supplier_from_text
+from sales_analytics import infer_supplier_series
 from sku_catalog_store import (
     apply_sku_aliases,
     apply_sku_attribute_overrides,
@@ -195,11 +195,11 @@ def _enrich_sales_catalog(
 
     if not procurement_items.empty and "product" in procurement_items.columns:
         catalog = procurement_items.copy()
-        catalog["_lookup_key"] = catalog["product"].map(normalize_product_match_key)
+        catalog["_lookup_key"] = map_unique(catalog["product"], normalize_product_match_key)
         catalog = catalog[catalog["_lookup_key"].ne("")]
-        product_lookup = enriched["product"].map(normalize_product_match_key)
+        product_lookup = map_unique(enriched["product"], normalize_product_match_key)
         product_key_lookup = (
-            enriched["product_key"].map(normalize_product_match_key)
+            map_unique(enriched["product_key"], normalize_product_match_key)
             if "product_key" in enriched.columns
             else product_lookup
         )
@@ -222,13 +222,11 @@ def _enrich_sales_catalog(
         column for column in ("product", "product_key", "item_code", "category") if column in enriched.columns
     ]
     if supplier_rules and searchable_columns and missing_supplier.any():
-        combined_text = (
-            enriched.loc[missing_supplier, searchable_columns]
-            .fillna("")
-            .astype(str)
-            .agg(" ".join, axis=1)
-        )
-        inferred = combined_text.map(lambda value: infer_supplier_from_text(value, supplier_rules))
+        missing_text = enriched.loc[missing_supplier, searchable_columns].fillna("").astype(str)
+        combined_text = missing_text.iloc[:, 0]
+        for column in searchable_columns[1:]:
+            combined_text = combined_text.str.cat(missing_text[column], sep=" ")
+        inferred = infer_supplier_series(combined_text, supplier_rules)
         inferred_mask = inferred.fillna("").astype(str).str.strip().ne("")
         enriched.loc[inferred.index[inferred_mask], "supplier"] = inferred.loc[inferred_mask].astype(str).str.strip()
 

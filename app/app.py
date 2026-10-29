@@ -5,12 +5,14 @@ import json
 import math
 import os
 import re
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from functools import partial
 from html import escape
 from io import BytesIO
 from pathlib import Path
 import secrets
+import uuid
 from textwrap import dedent
 
 import pandas as pd
@@ -48,7 +50,7 @@ from data_center import (
 from data_quality import analyze_sales_quality, build_catalog_health
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import database_enabled, list_audit_logs, log_audit_event
-from product_identity import apply_product_category_rules, normalize_product_match_key
+from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
 from inventory_analytics import (
     guess_inventory_column_mapping,
     load_inventory_input_file,
@@ -99,12 +101,13 @@ from sales_analytics import (
     detect_anomalies,
     extract_return_rows,
     guess_column_mapping,
-    infer_supplier_from_text,
+    infer_supplier_series,
     list_excel_sheets,
     load_input_file,
     prepare_sales_data,
 )
 from salon_data_store import (
+    ArchiveLoadResult,
     count_uploads_for_salon,
     delete_salon,
     load_archive_data,
@@ -133,11 +136,13 @@ from supplier_rules_store import (
 )
 from telegram_reports import (
     TARGETED_TELEGRAM_REPORT_LABELS,
-    build_supplier_order_file,
+    build_supplier_order_content,
     discover_telegram_chats,
     get_telegram_bot_profile,
+    has_supplier_order_items,
     send_targeted_telegram_report,
     send_telegram_message,
+    supplier_order_filename,
     telegram_is_configured,
 )
 from telegram_bot import start_telegram_bot
@@ -4247,7 +4252,7 @@ def render_load_report_details(report: dict[str, object], current_user: dict[str
         export_sheets["Повторные выгрузки"] = overlap_display
     st.download_button(
         "Скачать отчёт о загрузке в Excel",
-        data=to_excel_report_bytes(export_sheets, report_title="Отчёт о загрузке данных"),
+        data=partial(to_excel_report_bytes, export_sheets, report_title="Отчёт о загрузке данных"),
         file_name="load_report.xlsx",
         mime=EXCEL_MIME,
         key=f"{key_prefix}_load_report_export",
@@ -5780,12 +5785,98 @@ def cached_load_inventory_input_file(
     )
 
 
-@st.cache_resource(show_spinner=False, max_entries=1, ttl=600)
-def cached_load_archive_data(
+# Columns that SKU aliases and category rules may rewrite after enrichment.
+PRE_ALIAS_TRACKED_COLUMNS = ("product_key", "product", "item_code", "category", "brand", "supplier")
+
+
+@dataclass
+class EnrichedArchive:
+    result: ArchiveLoadResult
+    data_key: str
+    pre_alias_rows: pd.DataFrame
+
+    def pre_alias_frame(self) -> pd.DataFrame:
+        """Archive rows as they were before SKU aliases were applied (for the alias editor)."""
+        frame = self.result.data.copy()
+        if not self.pre_alias_rows.empty:
+            frame.loc[self.pre_alias_rows.index, list(self.pre_alias_rows.columns)] = self.pre_alias_rows
+        return frame
+
+
+def enrich_sales_frame(
+    data: pd.DataFrame,
+    procurement_items: pd.DataFrame,
+    *,
+    supplier_rule_items: tuple[tuple[str, str], ...],
+    supplier_product_assignments: pd.DataFrame,
+    sku_attribute_overrides: pd.DataFrame,
+    sku_aliases: pd.DataFrame,
+    keep_pre_alias: bool = False,
+    copy_data: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    data = enrich_sales_with_supplier(
+        data,
+        procurement_items,
+        supplier_rule_items=supplier_rule_items,
+        supplier_product_assignments=supplier_product_assignments,
+        copy_data=copy_data,
+    )
+    data = enrich_sales_with_brand(data, procurement_items, copy_data=False)
+    data = apply_sku_attribute_overrides(data, sku_attribute_overrides, copy_data=False)
+    pre_alias = data.copy() if keep_pre_alias else None
+    data = apply_sku_aliases(data, sku_aliases, copy_data=False)
+    data = apply_product_category_rules(data, copy_data=False)
+    return data, pre_alias
+
+
+def changed_tracked_rows(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
+    """Original values of the rows that aliases or category rules rewrote."""
+    columns = [column for column in PRE_ALIAS_TRACKED_COLUMNS if column in before.columns and column in after.columns]
+    if not columns or before.empty:
+        return pd.DataFrame()
+    changed = pd.Series(False, index=before.index)
+    for column in columns:
+        old_values = before[column].astype(object)
+        new_values = after[column].astype(object)
+        changed |= ~(old_values.eq(new_values) | (old_values.isna() & new_values.isna()))
+    return before.loc[changed, columns].copy()
+
+
+@st.cache_resource(show_spinner=False, max_entries=1, ttl=3600)
+def cached_load_enriched_archive(
     selected_salons: tuple[str, ...],
-    supplier_rule_items: tuple[tuple[str, str], ...] = (),
-):
-    return load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
+    supplier_rule_items: tuple[tuple[str, str], ...],
+    reference_key: str,
+    *,
+    _procurement_items: pd.DataFrame,
+    _supplier_product_assignments: pd.DataFrame,
+    _sku_attribute_overrides: pd.DataFrame,
+    _sku_aliases: pd.DataFrame,
+) -> EnrichedArchive:
+    """Load the archive and enrich it once; only the enriched copy stays in memory."""
+    result = load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
+    pre_alias_rows = pd.DataFrame()
+    if not result.data.empty:
+        data = enrich_sales_with_supplier(
+            result.data,
+            _procurement_items,
+            supplier_rule_items=supplier_rule_items,
+            supplier_product_assignments=_supplier_product_assignments,
+            copy_data=False,
+        )
+        data = enrich_sales_with_brand(data, _procurement_items, copy_data=False)
+        data = apply_sku_attribute_overrides(data, _sku_attribute_overrides, copy_data=False)
+        tracked = [column for column in PRE_ALIAS_TRACKED_COLUMNS if column in data.columns]
+        before_aliases = data[tracked].copy()
+        data = apply_sku_aliases(data, _sku_aliases, copy_data=False)
+        data = apply_product_category_rules(data, copy_data=False)
+        pre_alias_rows = changed_tracked_rows(before_aliases, data)
+        result.data = data
+    return EnrichedArchive(result=result, data_key=uuid.uuid4().hex, pre_alias_rows=pre_alias_rows)
+
+
+def derived_cache_key(base_key: str, *parts: object) -> str:
+    return hashlib.blake2b(repr((base_key, *parts)).encode("utf-8"), digest_size=16).hexdigest()
 
 
 def clear_application_caches() -> None:
@@ -5893,11 +5984,11 @@ def enrich_sales_with_supplier(
                 .set_index("product_lookup_key")["supplier"]
                 .to_dict()
             )
-            product_lookup = enriched["product"].map(normalize_product_match_key)
+            product_lookup = map_unique(enriched["product"], normalize_product_match_key)
             mapped_supplier = product_lookup.map(supplier_lookup)
 
             if "product_key" in enriched.columns:
-                product_key_lookup = enriched["product_key"].map(normalize_product_match_key)
+                product_key_lookup = map_unique(enriched["product_key"], normalize_product_match_key)
                 mapped_supplier = mapped_supplier.fillna(product_key_lookup.map(supplier_lookup))
 
             fill_mask = missing_supplier & mapped_supplier.fillna("").astype(str).str.strip().ne("")
@@ -5909,13 +6000,11 @@ def enrich_sales_with_supplier(
         column for column in ("product", "product_key", "item_code", "category") if column in enriched.columns
     ]
     if supplier_text_columns and missing_supplier.any():
-        combined_supplier_text = (
-            enriched.loc[missing_supplier, supplier_text_columns]
-            .fillna("")
-            .astype(str)
-            .agg(" ".join, axis=1)
-        )
-        inferred_supplier = combined_supplier_text.map(lambda value: infer_supplier_from_text(value, supplier_rule_items))
+        missing_text = enriched.loc[missing_supplier, supplier_text_columns].fillna("").astype(str)
+        combined_supplier_text = missing_text.iloc[:, 0]
+        for column in supplier_text_columns[1:]:
+            combined_supplier_text = combined_supplier_text.str.cat(missing_text[column], sep=" ")
+        inferred_supplier = infer_supplier_series(combined_supplier_text, supplier_rule_items)
         inferred_mask = inferred_supplier.fillna("").astype(str).str.strip().ne("")
         if inferred_mask.any():
             enriched.loc[inferred_supplier.index[inferred_mask], "supplier"] = (
@@ -5994,10 +6083,10 @@ def enrich_sales_with_brand(
             .set_index("product_lookup_key")["brand"]
             .to_dict()
         )
-        product_lookup = enriched["product"].map(normalize_product_match_key)
+        product_lookup = map_unique(enriched["product"], normalize_product_match_key)
         mapped_brand = product_lookup.map(brand_lookup)
         if "product_key" in enriched.columns:
-            product_key_lookup = enriched["product_key"].map(normalize_product_match_key)
+            product_key_lookup = map_unique(enriched["product_key"], normalize_product_match_key)
             mapped_brand = mapped_brand.fillna(product_key_lookup.map(brand_lookup))
 
         missing_brand = enriched["brand"].eq("") | enriched["brand"].str.casefold().eq("не назначен")
@@ -6191,6 +6280,30 @@ def _catalog_missing_text(value: object, *, empty_labels: set[str] | None = None
     return normalized in {label.casefold() for label in labels}
 
 
+@st.cache_data(show_spinner=False, max_entries=2, ttl=900)
+def cached_build_sku_data_views(
+    _cleanup_source: pd.DataFrame,
+    _alias_source: pd.DataFrame,
+    _procurement_items: pd.DataFrame,
+    _supplier_product_assignments: pd.DataFrame,
+    _sku_aliases: pd.DataFrame,
+    *,
+    cache_key: str,
+    require_item_code: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """SKU cleanup queue, catalog and merge candidates for the data screen (heavy groupbys)."""
+    return (
+        build_sku_cleanup_queue(
+            _cleanup_source,
+            _procurement_items,
+            _supplier_product_assignments,
+            require_item_code=require_item_code,
+        ),
+        build_sku_catalog_summary(_alias_source),
+        build_sku_alias_candidates(_alias_source, _sku_aliases),
+    )
+
+
 def build_sku_cleanup_queue(
     data: pd.DataFrame,
     procurement_items: pd.DataFrame,
@@ -6305,7 +6418,7 @@ def build_sku_cleanup_queue(
                 .set_index("stock_product_key")[["supplier", "stock_on_hand", "stock_in_transit"]]
                 .rename(columns={"supplier": "stock_supplier"})
             )
-            summary["stock_lookup_key"] = summary["product"].map(normalize_product_match_key)
+            summary["stock_lookup_key"] = map_unique(summary["product"], normalize_product_match_key)
             summary = summary.merge(
                 stock_lookup,
                 left_on="stock_lookup_key",
@@ -6677,10 +6790,19 @@ def _is_month_label(label: str) -> bool:
 
 
 def _format_datetime_value(value: object, *, include_time: bool) -> str:
+    date_format = "%d.%m.%Y %H:%M" if include_time else "%d.%m.%Y"
+    # Fast paths: pd.to_datetime per cell is slow on tables with thousands of rows.
+    if isinstance(value, date):
+        return value.strftime(date_format)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.strip()).strftime(date_format)
+        except ValueError:
+            pass
     parsed = pd.to_datetime(value, errors="coerce")
     if pd.isna(parsed):
         return str(value)
-    return parsed.strftime("%d.%m.%Y %H:%M" if include_time else "%d.%m.%Y")
+    return parsed.strftime(date_format)
 
 
 def format_date_value(value: object, *, fallback: str = "—") -> str:
@@ -9661,7 +9783,7 @@ if work_mode in upload_modes:
                 )
                 st.download_button(
                     "Скачать протокол проверки",
-                    data=to_excel_report_bytes(
+                    data=partial(to_excel_report_bytes, 
                         quality_protocol_sheets,
                         report_title=f"Контроль загрузки: {filename}",
                     ),
@@ -9773,6 +9895,18 @@ load_report: dict[str, object] | None = None
 if prepared_result is not None and work_mode in {"Разовая загрузка", "Новая выгрузка", "Загрузка салона"}:
     load_report = build_single_file_load_report(prepared_result, filename, selected_salon_name)
 
+procurement_items = apply_sku_aliases(
+    cached_load_procurement_items(),
+    sku_aliases,
+    aggregate_inventory=True,
+)
+requested_screen = str(
+    st.session_state.get("primary_screen_nav")
+    or st.session_state.get("mobile_primary_screen_nav")
+    or "Обзор"
+)
+enriched_archive: EnrichedArchive | None = None
+
 if work_mode not in upload_modes:
     selected_archive_salons = []
     if current_user["role"] == "salon":
@@ -9780,7 +9914,19 @@ if work_mode not in upload_modes:
     else:
         selected_archive_salons = selected_salons_for_archive if selected_salons_for_archive else registered_salons
 
-    archive_result = cached_load_archive_data(tuple(selected_archive_salons), supplier_rule_items)
+    enriched_archive = cached_load_enriched_archive(
+        tuple(selected_archive_salons),
+        supplier_rule_items,
+        ":".join(
+            dataframe_cache_key(frame)
+            for frame in (procurement_items, supplier_product_assignments, sku_attribute_overrides, sku_aliases)
+        ),
+        _procurement_items=procurement_items,
+        _supplier_product_assignments=supplier_product_assignments,
+        _sku_attribute_overrides=sku_attribute_overrides,
+        _sku_aliases=sku_aliases,
+    )
+    archive_result = enriched_archive.result
     manifest_view = archive_result.manifest.copy()
     data = archive_result.data
 
@@ -9811,28 +9957,23 @@ if data.empty:
 archive_result = None
 prepared_result = None
 
-procurement_items = apply_sku_aliases(
-    cached_load_procurement_items(),
-    sku_aliases,
-    aggregate_inventory=True,
-)
-data = enrich_sales_with_supplier(
-    data,
-    procurement_items,
-    supplier_rule_items=supplier_rule_items,
-    supplier_product_assignments=supplier_product_assignments,
-)
-data = enrich_sales_with_brand(data, procurement_items, copy_data=False)
-data = apply_sku_attribute_overrides(data, sku_attribute_overrides, copy_data=False)
-
-requested_screen = str(
-    st.session_state.get("primary_screen_nav")
-    or st.session_state.get("mobile_primary_screen_nav")
-    or "Обзор"
-)
-sku_alias_source_data = data.copy() if requested_screen == "Данные" else pd.DataFrame()
-data = apply_sku_aliases(data, sku_aliases, copy_data=False)
-data = apply_product_category_rules(data, copy_data=False)
+if enriched_archive is not None:
+    # The cached archive is already enriched. It is shared between reruns, so it
+    # is only ever filtered into new frames below, never modified in place.
+    if requested_screen == "Данные":
+        sku_alias_source_data = enriched_archive.pre_alias_frame()
+else:
+    data, pre_alias_data = enrich_sales_frame(
+        data,
+        procurement_items,
+        supplier_rule_items=supplier_rule_items,
+        supplier_product_assignments=supplier_product_assignments,
+        sku_attribute_overrides=sku_attribute_overrides,
+        sku_aliases=sku_aliases,
+        keep_pre_alias=requested_screen == "Данные",
+    )
+    if pre_alias_data is not None:
+        sku_alias_source_data = pre_alias_data
 
 margin_visible = can_view_margin(current_user)
 available_history_months = (
@@ -10575,6 +10716,9 @@ if len(selected_dates) == 2:
     data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
     if date_from != min_date or date_to != max_date:
         filter_badges.append(f"Период: {date_from:%d.%m.%Y} - {date_to:%d.%m.%Y}")
+if enriched_archive is not None and data is enriched_archive.result.data:
+    # Never hand the shared cached frame to code below that may modify its input.
+    data = data.copy()
 
 if all_salons:
     data = data[data["salon"].astype(str).isin(selected_salons_filter)]
@@ -10626,7 +10770,20 @@ has_item_codes = (
     and data["item_code"].fillna("").astype(str).str.strip().ne("").any()
 )
 product_analysis_column = "product_key" if has_item_codes and "product_key" in data.columns else "product"
-data_cache_key = dataframe_cache_key(data)
+# Archive frames are keyed by their source and the filters applied to them:
+# hashing every row on each rerun cost seconds on large archives.
+filter_state = (
+    tuple(selected_dates),
+    tuple(selected_salons_filter),
+    tuple(selected_categories),
+    tuple(selected_suppliers),
+    tuple(selected_brands),
+    tuple(selected_managers),
+)
+if enriched_archive is not None:
+    data_cache_key = derived_cache_key(enriched_archive.data_key, "data", filter_state)
+else:
+    data_cache_key = dataframe_cache_key(data)
 overview = cached_build_overview_metrics(data, data_cache_key)
 
 needs_product_summary = active_screen in {"Обзор", "Карточка SKU", "Финансы", "ABC-анализ"} or (
@@ -10704,7 +10861,11 @@ plan_scope_salons: list[str] = []
 scope_plan_summary = pd.DataFrame()
 plan_fact_summary = pd.DataFrame()
 if needs_plan_analysis:
-    plan_source_cache_key = dataframe_cache_key(plan_fact_source_data)
+    plan_source_cache_key = (
+        derived_cache_key(enriched_archive.data_key, "plan", filter_state[:2])
+        if enriched_archive is not None
+        else dataframe_cache_key(plan_fact_source_data)
+    )
     plan_monthly_summary = cached_build_monthly_summary(plan_fact_source_data, plan_source_cache_key)
     monthly_plans = load_monthly_plans()
     plan_scope_salons = (
@@ -10766,7 +10927,11 @@ if needs_procurement_analysis:
         procurement_items_for_forecast = procurement_items_for_forecast[
             procurement_supplier_text.isin(set(selected_suppliers))
         ].copy()
-    procurement_source_cache_key = dataframe_cache_key(procurement_source_data)
+    procurement_source_cache_key = (
+        derived_cache_key(enriched_archive.data_key, "procurement", filter_state[:4])
+        if enriched_archive is not None
+        else dataframe_cache_key(procurement_source_data)
+    )
     procurement_items_cache_key = dataframe_cache_key(procurement_items_for_forecast)
     inbound_orders_cache_key = dataframe_cache_key(open_procurement_orders)
     procurement_forecast = cached_build_procurement_forecast(
@@ -11528,7 +11693,7 @@ if active_screen == "Карточка SKU":
             ).strip("_")[:60] or "portfolio"
             st.download_button(
                 f"Скачать портфель «{selected_portfolio_value}»",
-                data=to_excel_report_bytes(
+                data=partial(to_excel_report_bytes, 
                     {
                         "Сводка": prepare_excel_report_frame(
                             portfolio_summary_export,
@@ -12317,7 +12482,7 @@ if active_screen == "Карточка SKU":
             ).strip("_")[:60] or "sku"
             st.download_button(
                 "Скачать карточку SKU Excel",
-                data=to_excel_report_bytes(sku_export_sheets, report_title=f"Карточка SKU: {product_title}"),
+                data=partial(to_excel_report_bytes, sku_export_sheets, report_title=f"Карточка SKU: {product_title}"),
                 file_name=f"sku_card_{safe_file_token}.xlsx",
                 mime=EXCEL_MIME,
                 use_container_width=True,
@@ -12888,7 +13053,7 @@ if active_screen == "Финансы":
 
             st.download_button(
                 "Скачать финансовый отчёт Excel",
-                data=to_excel_report_bytes(finance_export_sheets, report_title="Финансовый контроль"),
+                data=partial(to_excel_report_bytes, finance_export_sheets, report_title="Финансовый контроль"),
                 file_name="financial_control_report.xlsx",
                 mime=EXCEL_MIME,
                 use_container_width=True,
@@ -13364,7 +13529,7 @@ if active_screen == "Обзор":
         }
         st.download_button(
             "Скачать сводку в Excel",
-            data=to_excel_report_bytes(overview_export_sheets, report_title="Сводка продаж"),
+            data=partial(to_excel_report_bytes, overview_export_sheets, report_title="Сводка продаж"),
             file_name="sales_overview.xlsx",
             mime=EXCEL_MIME,
             key="overview_export_excel",
@@ -13625,7 +13790,7 @@ if active_screen == "ABC-анализ":
             )
             st.download_button(
                 "Скачать ABC-анализ",
-                data=to_excel_report_bytes(
+                data=partial(to_excel_report_bytes, 
                     {
                         "ABC-анализ": prepare_excel_report_frame(
                             abc_tab_data,
@@ -13855,7 +14020,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                 )
                 st.download_button(
                     "Скачать маржинальность по товарам",
-                    data=to_excel_report_bytes(
+                    data=partial(to_excel_report_bytes, 
                         {
                             "Маржинальность": prepare_excel_report_frame(
                                 margin_sorted,
@@ -14055,7 +14220,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                     )
                     st.download_button(
                         "Скачать сравнение месяцев",
-                        data=to_excel_report_bytes(
+                        data=partial(to_excel_report_bytes, 
                             {
                                 "Сравнение": prepare_excel_report_frame(
                                     month_comparison,
@@ -15906,7 +16071,7 @@ if active_screen == "Закупки":
                     ]
                     st.download_button(
                         "Скачать отчёт по остаткам и рискам",
-                        data=to_excel_report_bytes(
+                        data=partial(to_excel_report_bytes, 
                             {
                                 "Остатки и риски": prepare_excel_report_frame(
                                     stock_risk_report,
@@ -15922,13 +16087,14 @@ if active_screen == "Закупки":
                         key="dl_stock_risks_report",
                     )
 
-                supplier_order_file = build_supplier_order_file(procurement_forecast)
-                if supplier_order_file is not None:
+                if has_supplier_order_items(procurement_forecast):
+                    # The workbook is built only when the button is clicked: building it
+                    # on every rerun made the procurement screen several times slower.
                     st.download_button(
                         "Скачать Excel-заказ поставщикам",
-                        data=supplier_order_file.content,
-                        file_name=supplier_order_file.filename,
-                        mime=supplier_order_file.content_type,
+                        data=partial(build_supplier_order_content, procurement_forecast),
+                        file_name=supplier_order_filename(),
+                        mime=EXCEL_MIME,
                         key="dl_supplier_order_workbook",
                     )
 
@@ -16142,7 +16308,7 @@ if active_screen == "Закупки":
                     )
                     st.download_button(
                         "Скачать сводку по поставщикам",
-                        data=to_excel_report_bytes(
+                        data=partial(to_excel_report_bytes, 
                             {
                                 "Поставщики": prepare_excel_report_frame(
                                     supplier_reorder_summary,
@@ -16702,7 +16868,7 @@ if active_screen == "Закупки":
 
                             st.download_button(
                                 "Скачать заказ в Excel",
-                                data=to_excel_report_bytes(
+                                data=partial(to_excel_report_bytes, 
                                     {"Заказ": selected_order_lines_display},
                                     report_title=(
                                         f"Заказ #{str(selected_order_id)[-4:]} · "
@@ -16937,7 +17103,7 @@ if active_screen == "Закупки":
                 )
                 st.download_button(
                     "Скачать прогноз закупки",
-                    data=to_excel_report_bytes(
+                    data=partial(to_excel_report_bytes, 
                         {
                             "Прогноз закупки": prepare_excel_report_frame(
                                 procurement_table,
@@ -17261,7 +17427,7 @@ if active_screen == "План / факт":
             )
             st.download_button(
                 "Скачать план / факт",
-                data=to_excel_report_bytes(
+                data=partial(to_excel_report_bytes, 
                     {
                         "План факт": prepare_excel_report_frame(
                             plan_table,
@@ -17682,7 +17848,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         )
                         st.download_button(
                             "Скачать возвраты по товарам",
-                            data=to_excel_report_bytes(
+                            data=partial(to_excel_report_bytes, 
                                 {
                                     "Возвраты": prepare_excel_report_frame(
                                         return_product_summary,
@@ -17754,14 +17920,23 @@ if active_screen == "Данные":
         data_salon_count = int(data["salon"].nunique()) if "salon" in data.columns else 1
         mapping_count = sum(1 for value in visible_mapping.values() if value) if visible_mapping else 0
 
-        sku_cleanup_queue = build_sku_cleanup_queue(
+        sku_reference_key = ":".join(
+            dataframe_cache_key(frame) for frame in (procurement_items, supplier_product_assignments, sku_aliases)
+        )
+        sku_source_key = (
+            enriched_archive.data_key
+            if enriched_archive is not None
+            else f"{dataframe_cache_key(filter_source_data)}:{dataframe_cache_key(sku_alias_source_data)}"
+        )
+        sku_cleanup_queue, sku_alias_catalog, sku_alias_candidates = cached_build_sku_data_views(
             filter_source_data,
+            sku_alias_source_data,
             procurement_items,
             supplier_product_assignments,
+            sku_aliases,
+            cache_key=derived_cache_key(sku_source_key, "sku-views", sku_reference_key, has_item_codes),
             require_item_code=has_item_codes,
         )
-        sku_alias_catalog = build_sku_catalog_summary(sku_alias_source_data)
-        sku_alias_candidates = build_sku_alias_candidates(sku_alias_source_data, sku_aliases)
         active_sku_aliases = sku_aliases.copy()
         if not active_sku_aliases.empty and "is_archived" in active_sku_aliases.columns:
             active_sku_aliases = active_sku_aliases[
@@ -18620,7 +18795,7 @@ if active_screen == "Данные":
                 )
                 st.download_button(
                     "Скачать очередь очистки SKU",
-                    data=to_excel_report_bytes(
+                    data=partial(to_excel_report_bytes, 
                         {
                             "Очередь SKU": prepare_excel_report_frame(
                                 cleanup_view,
@@ -18725,7 +18900,7 @@ if active_screen == "Данные":
             )
             st.download_button(
                 "Скачать сводку по месяцам",
-                data=to_excel_report_bytes(
+                data=partial(to_excel_report_bytes, 
                     {
                         "Сводка по месяцам": prepare_excel_report_frame(
                             monthly_summary,

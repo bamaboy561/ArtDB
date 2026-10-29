@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from io import BytesIO
 import re
 from typing import Iterable
 
 import pandas as pd
 
-from product_identity import apply_product_category_rules
+from product_identity import apply_product_category_rules, map_unique
 
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -232,10 +233,12 @@ def prefer_total_revenue_column(frame: pd.DataFrame, mapping: dict[str, object |
         mapping["revenue"] = total_revenue_column
 
 
+_SUPPLIER_LOOKUP_SEPARATORS = re.compile(r"[^0-9a-zа-я]+")
+
+
 def normalize_supplier_lookup_text(value: object) -> str:
     text = str(value or "").casefold().replace("ё", "е")
-    text = re.sub(r"[^0-9a-zа-я]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return " ".join(_SUPPLIER_LOOKUP_SEPARATORS.sub(" ", text).split())
 
 
 def iter_supplier_patterns(
@@ -262,22 +265,72 @@ def iter_supplier_patterns(
     yield from SUPPLIER_KEYWORD_PATTERNS
 
 
-def infer_supplier_from_text(
-    value: object,
-    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
-) -> str:
+def _build_supplier_needles(
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None,
+) -> tuple[tuple[str, str], ...]:
+    needles = []
+    for supplier, patterns in iter_supplier_patterns(supplier_rules):
+        for pattern in patterns:
+            needle = normalize_supplier_lookup_text(pattern)
+            if needle:
+                needles.append((supplier, f" {needle} "))
+    return tuple(needles)
+
+
+@lru_cache(maxsize=64)
+def _cached_supplier_needles(supplier_rules: tuple) -> tuple[tuple[str, str], ...]:
+    return _build_supplier_needles(supplier_rules)
+
+
+def _match_supplier(value: object, needles: tuple[tuple[str, str], ...]) -> str:
     lookup_text = normalize_supplier_lookup_text(value)
     if not lookup_text:
         return ""
 
     haystack = f" {lookup_text} "
-    for supplier, patterns in iter_supplier_patterns(supplier_rules):
-        for pattern in patterns:
-            needle = normalize_supplier_lookup_text(pattern)
-            if needle and f" {needle} " in haystack:
-                return supplier
-
+    for supplier, needle in needles:
+        if needle in haystack:
+            return supplier
     return ""
+
+
+@lru_cache(maxsize=200_000)
+def _cached_match_supplier(value: str, supplier_rules: tuple) -> str:
+    return _match_supplier(value, _cached_supplier_needles(supplier_rules))
+
+
+def _hashable_supplier_rules(supplier_rules: object) -> tuple | None:
+    if supplier_rules is None:
+        return ()
+    if not isinstance(supplier_rules, tuple):
+        return None
+    try:
+        hash(supplier_rules)
+    except TypeError:
+        return None
+    return supplier_rules
+
+
+def infer_supplier_from_text(
+    value: object,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> str:
+    rules_key = _hashable_supplier_rules(supplier_rules)
+    if rules_key is not None and isinstance(value, str):
+        return _cached_match_supplier(value, rules_key)
+    return _match_supplier(value, _build_supplier_needles(supplier_rules))
+
+
+def infer_supplier_series(
+    values: pd.Series,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> pd.Series:
+    """Vectorised infer_supplier_from_text: each distinct text is matched once."""
+    rules_key = _hashable_supplier_rules(supplier_rules)
+    if rules_key is None:
+        needles = _build_supplier_needles(supplier_rules)
+        return map_unique(values, lambda value: _match_supplier(value, needles))
+    return map_unique(values, lambda value: infer_supplier_from_text(value, rules_key))
 
 
 def guess_column_mapping(columns: Iterable[str]) -> dict[str, str | None]:
@@ -927,7 +980,7 @@ def prepare_sales_data(
     prepared["item_code"] = clean_identifier_series(raw_item_code, prepared.index)
     prepared["product_key"] = prepared["item_code"].where(prepared["item_code"] != "", prepared["product"])
     prepared["product_key"] = prepared["product_key"].astype(str).str.strip()
-    supplier_from_product = raw_product.map(lambda value: infer_supplier_from_text(value, supplier_rules)).fillna("").astype(str).str.strip()
+    supplier_from_product = infer_supplier_series(raw_product, supplier_rules).fillna("").astype(str).str.strip()
 
     if category := resolved_mapping.get("category"):
         prepared["category"] = prepared[category].astype(str).str.strip()

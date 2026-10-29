@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 
 _PRODUCT_TOKEN_PATTERN = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
+_DIMENSION_SEPARATOR_PATTERN = re.compile(r"(?<=\d)\s*[xх×*]\s*(?=\d)")
 _MDF_TOKEN_PATTERN = re.compile(
     r"(?<![0-9a-zа-яё])(?:mdf|мдф)(?![0-9a-zа-яё])",
     re.IGNORECASE,
@@ -26,14 +29,32 @@ def _text(value: Any) -> str:
     return unicodedata.normalize("NFKC", str(value)).strip()
 
 
-def normalize_product_match_key(value: Any) -> str:
-    """Build a conservative SKU key that ignores cosmetic separators and spacing."""
-    text = _text(value).casefold().replace("ё", "е")
+def map_unique(series: pd.Series, func: Callable[[Any], Any]) -> pd.Series:
+    """Apply ``func`` once per distinct value: sales frames repeat the same SKU thousands of times."""
+    if series.empty:
+        return pd.Series([], index=series.index, dtype=object)
+    codes, uniques = pd.factorize(series, use_na_sentinel=False)
+    mapped = np.empty(len(uniques), dtype=object)
+    mapped[:] = [func(value) for value in uniques]
+    return pd.Series(mapped[codes], index=series.index)
+
+
+@lru_cache(maxsize=200_000)
+def _product_match_key_from_str(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value).strip().casefold().replace("ё", "е")
     if not text:
         return ""
 
-    text = re.sub(r"(?<=\d)\s*[xх×*]\s*(?=\d)", " x ", text)
+    text = _DIMENSION_SEPARATOR_PATTERN.sub(" x ", text)
     return " ".join(_PRODUCT_TOKEN_PATTERN.findall(text))
+
+
+def normalize_product_match_key(value: Any) -> str:
+    """Build a conservative SKU key that ignores cosmetic separators and spacing."""
+    if isinstance(value, str):
+        return _product_match_key_from_str(value)
+    text = _text(value)
+    return _product_match_key_from_str(text) if text else ""
 
 
 def refine_product_category(
@@ -80,13 +101,13 @@ def apply_product_category_rules(
         }
     ]
 
-    category_text = refined["category"].map(_text).replace("", "Без категории")
-    category_keys = category_text.map(normalize_product_match_key)
-    context = refined["product"].map(_text)
+    category_text = map_unique(refined["category"], _text).replace("", "Без категории")
+    category_keys = map_unique(category_text, normalize_product_match_key)
+    context = map_unique(refined["product"], _text)
     for column in context_columns:
-        context = context.str.cat(refined[column].map(_text), sep=" ")
+        context = context.str.cat(map_unique(refined[column], _text), sep=" ")
 
-    mdf_mask = context.str.contains(_MDF_TOKEN_PATTERN, na=False)
+    mdf_mask = map_unique(context, lambda value: bool(_MDF_TOKEN_PATTERN.search(value))).astype(bool)
     reclassify_mask = category_keys.isin(_DEFAULT_CATEGORY_LABELS) & mdf_mask
     refined["category"] = category_text
     refined.loc[reclassify_mask, "category"] = "МДФ панели"

@@ -7,6 +7,7 @@ rendered as a cover page with the key figures and a table of contents.
 
 from __future__ import annotations
 
+from copy import copy
 from datetime import date, datetime
 from io import BytesIO
 import math
@@ -219,6 +220,9 @@ def write_table_sheet(sheet: Worksheet, frame: pd.DataFrame, *, title: str, subt
 
     row_count = len(frame)
     last_data_row = FIRST_DATA_ROW + row_count - 1
+    # Cells that share a look reuse one computed style: building fresh Font/Fill/
+    # Alignment objects per cell made large workbooks take minutes to write.
+    style_cache: dict[tuple, object] = {}
     for column_index, (header, values) in enumerate(zip(headers, columns_values), start=1):
         number_format = _number_format(header, values)
         is_change = "изменен" in header.casefold() or "откл" in header.casefold()
@@ -227,47 +231,59 @@ def write_table_sheet(sheet: Worksheet, frame: pd.DataFrame, *, title: str, subt
         is_code_column = bool(texts) and all(len(text) <= 3 for text in texts)
         for offset, value in enumerate(values):
             row_index = FIRST_DATA_ROW + offset
-            cell = sheet.cell(row=row_index, column=column_index, value=value)
-            cell.border = Border(bottom=THIN)
             font_color = TEXT
-            if offset % 2 == 1:
-                cell.fill = PatternFill("solid", fgColor=ZEBRA)
+            fill_color = ZEBRA if offset % 2 == 1 else None
+            cell_format = None
             if isinstance(value, bool):
-                cell.value = "да" if value else "нет"
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+                value = "да" if value else "нет"
+                alignment = (("horizontal", "center"), ("vertical", "center"))
             elif isinstance(value, (int, float)):
-                cell.number_format = number_format
-                cell.alignment = Alignment(horizontal="right", vertical="center")
+                cell_format = number_format
+                alignment = (("horizontal", "right"), ("vertical", "center"))
                 if value < 0:
                     font_color = RED
                 elif is_change and value > 0:
                     font_color = POSITIVE
                 longest = max(longest, len(f"{value:,.0f}") + 3)
             elif isinstance(value, datetime):
-                cell.number_format = "DD.MM.YYYY HH:MM"
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell_format = "DD.MM.YYYY HH:MM"
+                alignment = (("horizontal", "center"), ("vertical", "center"))
                 longest = max(longest, 16)
             elif isinstance(value, date):
-                cell.number_format = "DD.MM.YYYY"
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell_format = "DD.MM.YYYY"
+                alignment = (("horizontal", "center"), ("vertical", "center"))
                 longest = max(longest, 11)
             else:
                 text = "" if value is None else str(value)
-                cell.alignment = Alignment(
-                    horizontal="center" if is_code_column else None,
-                    vertical="center",
-                    wrap_text=len(text) > 48,
+                alignment = (
+                    ("horizontal", "center" if is_code_column else None),
+                    ("vertical", "center"),
+                    ("wrap_text", len(text) > 48),
                 )
                 lowered = text.casefold()
                 if text and len(text) <= 40:
-                    for markers, fill_color, text_color in STATUS_FILLS:
+                    for markers, status_fill, text_color in STATUS_FILLS:
                         if any(marker in lowered for marker in markers):
-                            cell.fill = PatternFill("solid", fgColor=fill_color)
+                            fill_color = status_fill
                             font_color = text_color
                             break
                 if offset < 200:
                     longest = max(longest, min(len(text), 48))
+
+            cell = sheet.cell(row=row_index, column=column_index, value=value)
+            style_key = (fill_color, alignment, cell_format, font_color, column_index == 1)
+            cached_style = style_cache.get(style_key)
+            if cached_style is not None:
+                cell._style = copy(cached_style)
+                continue
+            cell.border = Border(bottom=THIN)
+            if fill_color is not None:
+                cell.fill = PatternFill("solid", fgColor=fill_color)
+            if cell_format is not None:
+                cell.number_format = cell_format
+            cell.alignment = Alignment(**dict(alignment))
             cell.font = Font(name="Calibri", size=10, color=font_color, bold=column_index == 1)
+            style_cache[style_key] = copy(cell._style)
         minimum_width = 28 if column_index == 1 else 10
         sheet.column_dimensions[get_column_letter(column_index)].width = max(minimum_width, min(longest + 3, 52))
 
