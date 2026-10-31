@@ -1,14 +1,15 @@
 """Order forms in the layout a supplier expects, filled from the procurement forecast."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 from io import BytesIO
 import math
 import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 
@@ -207,12 +208,18 @@ def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
     """Order lines for the form as it stands, so the ordered goods count as in transit."""
     quantities: dict[str, float] = {}
     for record in order_rows.to_dict(orient="records"):
+        # A position without sales has no site product yet: name it so that it
+        # is not lost and a saved order can rebuild the same form.
+        label = f"{record['code']} {record['name']}"
         if record["section"] == SECTION_HPL:
-            lines = ((record["product"], record["edge_or_sheets"]),)
+            lines = ((record["product"] or f"HPL {label}", record["edge_or_sheets"]),)
         else:
-            lines = ((record["product"], record["quantity"]), (record["edge_product"], record["edge_or_sheets"]))
+            lines = (
+                (record["product"] or f"{label} 18*1220*2800мм", record["quantity"]),
+                (record["edge_product"] or f"{label} 1*22мм", record["edge_or_sheets"]),
+            )
         for product, quantity in lines:
-            if product and float(quantity) > 0:
+            if float(quantity) > 0:
                 quantities[product] = quantities.get(product, 0.0) + float(quantity)
     return pd.DataFrame(
         [
@@ -228,6 +235,100 @@ def order_form_supplier(order_rows: pd.DataFrame, default: str = "WQ") -> str:
     suppliers = order_rows["supplier"].fillna("").astype(str).str.strip()
     suppliers = suppliers[suppliers.ne("") & suppliers.str.casefold().ne("не назначен")]
     return str(suppliers.mode().iloc[0]) if not suppliers.empty else default
+
+
+@dataclass
+class ParsedOrderFile:
+    """Final quantities from a form the user edited and uploaded back."""
+
+    fingerprint: str = ""
+    quantities: dict[str, tuple[int, int]] = field(default_factory=dict)
+    unknown_codes: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def _normalize_code(value: object) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return "".join(str(value if value is not None else "").casefold().split())
+
+
+def _file_quantity(value: object) -> int | None:
+    """Whole units, rounded up; None when the cell is not a usable number."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0
+    try:
+        number = float(str(value).replace(",", ".").replace(" ", "")) if isinstance(value, str) else float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or number < 0:
+        return None
+    return math.ceil(number - 1e-9)
+
+
+def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS) -> ParsedOrderFile:
+    parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
+    try:
+        sheet = load_workbook(BytesIO(content), data_only=True, read_only=True).worksheets[0]
+        table = [list(row) for row in sheet.iter_rows(values_only=True)]
+    except Exception:
+        parsed.errors.append("Не удалось прочитать файл. Нужен Excel-файл заказа в формате .xlsx.")
+        return parsed
+
+    header_index = None
+    columns: dict[str, int] = {}
+    for index, row in enumerate(table):
+        titles = {" ".join(str(cell or "").casefold().split()): position for position, cell in enumerate(row)}
+        if {"код", "кол-во", "кромка"} <= set(titles):
+            header_index, columns = index, titles
+            break
+    if header_index is None:
+        parsed.errors.append("Это не форма заказа: не нашёл колонки «Код», «кол-во» и «кромка».")
+        return parsed
+
+    by_code: dict[str, OrderFormRow] = {}
+    for form_row in rows:
+        by_code[_normalize_code(form_row.code)] = form_row
+        for term in [form_row.old_code] if form_row.old_code not in ("", "NEW") else []:
+            by_code.setdefault(_normalize_code(term), form_row)
+
+    def cell(row: list[object], title: str) -> object:
+        position = columns[title]
+        return row[position] if position < len(row) else None
+
+    for number, row in enumerate(table[header_index + 1 :], start=header_index + 2):
+        raw_code = cell(row, "код")
+        board = _file_quantity(cell(row, "кол-во"))
+        edge = _file_quantity(cell(row, "кромка"))
+        code = _normalize_code(raw_code)
+        if not code:
+            continue  # The totals row and blank lines have no code.
+        form_row = by_code.get(code)
+        if form_row is None:
+            # Section titles such as the HPL band are not goods and carry no numbers.
+            if board or edge:
+                parsed.unknown_codes.append(str(raw_code).strip())
+            continue
+        if board is None or edge is None:
+            parsed.errors.append(f"Строка {number}, код {str(raw_code).strip()}: количество должно быть числом не меньше нуля.")
+            continue
+        if form_row.section == SECTION_HPL:
+            board, edge = 0, board + edge  # Sheets, in whichever column they were typed.
+        previous = parsed.quantities.get(form_row.code, (0, 0))
+        parsed.quantities[form_row.code] = (previous[0] + board, previous[1] + edge)
+    return parsed
+
+
+def apply_order_file(order_rows: pd.DataFrame, parsed: ParsedOrderFile) -> pd.DataFrame:
+    """The form with the file's quantities: a position left blank in the file is not ordered."""
+    result = order_rows.copy()
+    result["quantity"] = [parsed.quantities.get(code, (0, 0))[0] for code in result["code"]]
+    result["edge_or_sheets"] = [parsed.quantities.get(code, (0, 0))[1] for code in result["code"]]
+    return result
+
+
+def order_file_comment(filename: str, parsed: ParsedOrderFile) -> str:
+    return f"Форма заказа WQ · файл {filename} · {parsed.fingerprint}"
 
 
 def _store_total_value(content: bytes, total_cell: str, total_value: int) -> bytes:

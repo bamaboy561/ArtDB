@@ -15,10 +15,12 @@ if str(APP_DIR) not in sys.path:
 from supplier_order_forms import (  # noqa: E402
     WQ_ORDER_ROWS,
     build_order_form_rows,
+    apply_order_file,
     build_wq_order_workbook,
     order_form_from_items,
     order_form_supplier,
     order_items_from_form,
+    parse_order_form_file,
 )
 
 
@@ -141,6 +143,92 @@ class OrderFromFormTest(unittest.TestCase):
         self.assertEqual(order_form_supplier(self.rows), "WQ")
         named = self.rows.assign(supplier="Кроношпан Китай")
         self.assertEqual(order_form_supplier(named), "Кроношпан Китай")
+
+
+class UploadedOrderFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.rows = build_order_form_rows(
+            forecast(
+                ("US77301/PGR4201 Маффин 18*1220*2800мм", 220),
+                ("PGR4201 Маффин 1*22мм", 1500),
+                ("US77311/PGR4211 Чизкейк 18*1220*2800мм", 80),
+                ("HPL Compact WQS1837-3 FR Молочный Кварцит", 10),
+            )
+        )
+        self.workbook = load_workbook(BytesIO(build_wq_order_workbook(self.rows)))
+        self.sheet = self.workbook.active
+
+    def cell_row(self, name: str) -> int:
+        for row in range(5, self.sheet.max_row + 1):
+            if self.sheet.cell(row, 6).value == name:
+                return row
+        self.fail(f"{name} is not in the form")
+
+    def content(self) -> bytes:
+        buffer = BytesIO()
+        self.workbook.save(buffer)
+        return buffer.getvalue()
+
+    def test_unchanged_file_gives_back_the_same_quantities(self) -> None:
+        parsed = parse_order_form_file(self.content())
+        self.assertEqual(parsed.errors, [])
+        applied = apply_order_file(self.rows, parsed)
+        self.assertEqual(applied["quantity"].tolist(), self.rows["quantity"].tolist())
+        self.assertEqual(applied["edge_or_sheets"].tolist(), self.rows["edge_or_sheets"].tolist())
+
+    def test_changed_and_cleared_quantities_become_final(self) -> None:
+        self.sheet.cell(self.cell_row("Маффин"), 3).value = 200
+        self.sheet.cell(self.cell_row("Чизкейк"), 3).value = None
+        applied = apply_order_file(self.rows, parse_order_form_file(self.content()))
+        items = order_items_from_form(applied).set_index("product")["quantity"]
+        self.assertEqual(items["US77301/PGR4201 Маффин 18*1220*2800мм"], 200.0)
+        self.assertNotIn("US77311/PGR4211 Чизкейк 18*1220*2800мм", items.index)
+
+    def test_position_without_sales_keeps_its_quantity_and_survives_a_saved_order(self) -> None:
+        self.sheet.cell(self.cell_row("Титан"), 3).value = 20
+        applied = apply_order_file(self.rows, parse_order_form_file(self.content()))
+        items = order_items_from_form(applied)
+        self.assertIn("WQ63142LJ Титан 18*1220*2800мм", items["product"].tolist())
+        rebuilt = order_form_from_items(items)
+        self.assertEqual(rebuilt[rebuilt["name"] == "Титан"]["quantity"].iloc[0], 20)
+
+    def test_hpl_sheets_are_read_from_either_column(self) -> None:
+        self.sheet.cell(self.cell_row("Молочный Кварцит"), 3).value = 7
+        self.sheet.cell(self.cell_row("Молочный Кварцит"), 5).value = None
+        parsed = parse_order_form_file(self.content())
+        self.assertEqual(parsed.quantities["WQS1837-3 FR"], (0, 7))
+
+    def test_code_is_matched_despite_spaces_and_number_type(self) -> None:
+        self.sheet.cell(self.cell_row("Маффин"), 2).value = " WQ63893M "
+        self.sheet.cell(self.cell_row("белый"), 2).value = 81050
+        self.sheet.cell(self.cell_row("белый"), 5).value = 5
+        parsed = parse_order_form_file(self.content())
+        self.assertEqual(parsed.quantities["WQ63893M"][0], 220)
+        self.assertEqual(parsed.quantities["81050"], (0, 5))
+
+    def test_unknown_code_and_bad_number_are_reported(self) -> None:
+        extra = self.sheet.max_row + 1
+        self.sheet.cell(extra, 2).value = "WQ999"
+        self.sheet.cell(extra, 3).value = 40
+        self.sheet.cell(self.cell_row("Маффин"), 3).value = "нет"
+        parsed = parse_order_form_file(self.content())
+        self.assertEqual(parsed.unknown_codes, ["WQ999"])
+        self.assertEqual(len(parsed.errors), 1)
+        self.assertIn("WQ63893M", parsed.errors[0])
+
+    def test_not_a_form_is_rejected(self) -> None:
+        self.assertTrue(parse_order_form_file(b"not an excel file").errors)
+        other = BytesIO()
+        workbook = load_workbook(BytesIO(build_wq_order_workbook(self.rows)))
+        workbook.active.delete_rows(4)
+        workbook.save(other)
+        self.assertTrue(parse_order_form_file(other.getvalue()).errors)
+
+    def test_fingerprint_identifies_the_same_file(self) -> None:
+        content = self.content()
+        self.assertEqual(parse_order_form_file(content).fingerprint, parse_order_form_file(content).fingerprint)
+        self.sheet.cell(self.cell_row("Маффин"), 3).value = 1
+        self.assertNotEqual(parse_order_form_file(content).fingerprint, parse_order_form_file(self.content()).fingerprint)
 
 
 class OrderWorkbookTest(unittest.TestCase):

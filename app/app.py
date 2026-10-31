@@ -131,10 +131,13 @@ from sku_catalog_store import (
 from supplier_order_forms import (
     SECTION_HPL,
     build_order_form_rows,
+    apply_order_file,
     build_wq_order_workbook,
+    order_file_comment,
     order_form_from_items,
     order_form_supplier,
     order_items_from_form,
+    parse_order_form_file,
 )
 from supplier_rules_store import (
     KEYWORD_RULE_COLUMNS,
@@ -7031,6 +7034,8 @@ def render_wq_order_form(
     procurement_forecast: pd.DataFrame,
     forecast_key: str,
     current_user: dict[str, str],
+    *,
+    lead_time_days: int,
 ) -> None:
     order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key)
     is_hpl = order_rows["section"].eq(SECTION_HPL)
@@ -7121,39 +7126,132 @@ def render_wq_order_form(
         order_items = order_items_from_form(final_rows)
         with order_col:
             if st.button(
-                "Оформить как заказ",
+                "В пути: файл не менялся",
                 width="stretch",
                 key="wq_order_form_create",
                 disabled=order_items.empty,
-                help="Сохраняет заказ в списке ниже: заказанное считается товаром в пути и не рекомендуется повторно.",
+                help="Если поставщик подтвердил заказ без изменений. Иначе загрузите исправленный файл ниже.",
             ):
-                try:
-                    supplier = order_form_supplier(final_rows)
-                    created_order = create_procurement_order(
-                        supplier=supplier,
-                        items_frame=order_items,
-                        order_date=date.today(),
-                        comment="Форма заказа WQ",
-                        created_by=current_user["username"],
-                        status="ordered",
-                    )
-                    audit_event(
-                        action="procurement.order_create",
-                        user_id=current_user["username"],
-                        details={
-                            "order_id": created_order["order_id"],
-                            "supplier": supplier,
-                            "status": "ordered",
-                            "item_count": len(order_items),
-                        },
-                    )
-                    st.session_state["procurement_flash_message"] = (
-                        f"Заказ {created_order['order_id']} создан для поставщика {supplier}."
-                    )
-                    st.session_state["procurement_selected_order_id"] = created_order["order_id"]
-                except ValueError as error:
-                    st.session_state["procurement_error_message"] = str(error)
-                st.rerun()
+                create_wq_order(final_rows, current_user, lead_time_days, comment="Форма заказа WQ")
+
+        render_wq_order_file_upload(order_rows, final_rows, current_user, lead_time_days=lead_time_days)
+
+
+def create_wq_order(
+    order_rows: pd.DataFrame,
+    current_user: dict[str, str],
+    lead_time_days: int,
+    *,
+    comment: str,
+) -> None:
+    """Save the final form as an order in transit, so the goods are not recommended again."""
+    try:
+        supplier = order_form_supplier(order_rows)
+        order_items = order_items_from_form(order_rows)
+        created_order = create_procurement_order(
+            supplier=supplier,
+            items_frame=order_items,
+            order_date=date.today(),
+            expected_date=date.today() + timedelta(days=max(int(lead_time_days), 0)),
+            comment=comment,
+            created_by=current_user["username"],
+            status="in_transit",
+        )
+        audit_event(
+            action="procurement.order_create",
+            user_id=current_user["username"],
+            details={
+                "order_id": created_order["order_id"],
+                "supplier": supplier,
+                "status": "in_transit",
+                "item_count": len(order_items),
+            },
+        )
+        st.session_state["procurement_flash_message"] = (
+            f"Заказ {created_order['order_id']} поставщику {supplier} теперь в пути."
+        )
+        st.session_state["procurement_selected_order_id"] = created_order["order_id"]
+        st.session_state["wq_order_upload_round"] = st.session_state.get("wq_order_upload_round", 0) + 1
+        st.session_state["procurement_open_tab"] = "Заказы"
+    except ValueError as error:
+        st.session_state["procurement_error_message"] = str(error)
+    st.rerun()
+
+
+def render_wq_order_file_upload(
+    order_rows: pd.DataFrame,
+    proposed_rows: pd.DataFrame,
+    current_user: dict[str, str],
+    *,
+    lead_time_days: int,
+) -> None:
+    uploaded_order = st.file_uploader(
+        "Загрузить исправленный файл заказа",
+        type=["xlsx"],
+        key=f"wq_order_file_{st.session_state.get('wq_order_upload_round', 0)}",
+        help="Количества из файла становятся финальными. Позиция, у которой количество пустое или 0, в заказ не попадёт.",
+    )
+    if uploaded_order is None:
+        return
+
+    parsed = parse_order_form_file(uploaded_order.getvalue())
+    for message in parsed.errors:
+        st.error(message)
+    if parsed.errors:
+        st.info("Исправьте файл и загрузите его снова. Заказ не создан.")
+        return
+    if parsed.unknown_codes:
+        st.warning(
+            "Этих кодов нет в форме, они не войдут в заказ: "
+            + ", ".join(parsed.unknown_codes)
+            + ". Если поставщик заменил товар, напишите мне код и название, и я добавлю его в форму."
+        )
+
+    file_rows = apply_order_file(order_rows, parsed)
+    comparison = pd.DataFrame(
+        {
+            "Код": file_rows["code"],
+            "Название": file_rows["name"],
+            "Плиты, шт": file_rows["quantity"],
+            "Кромка, м / HPL, листов": file_rows["edge_or_sheets"],
+        }
+    )
+    comparison["Предложено"] = [
+        f"{int(board)} шт · {int(edge)}" for board, edge in zip(proposed_rows["quantity"], proposed_rows["edge_or_sheets"])
+    ]
+    changed = (
+        file_rows["quantity"].ne(proposed_rows["quantity"]) | file_rows["edge_or_sheets"].ne(proposed_rows["edge_or_sheets"])
+    )
+    ordered = file_rows["quantity"].gt(0) | file_rows["edge_or_sheets"].gt(0)
+    is_hpl = file_rows["section"].eq(SECTION_HPL)
+    st.caption(
+        f"В файле: плит {int(file_rows['quantity'].sum())} шт · "
+        f"кромки {int(file_rows.loc[~is_hpl, 'edge_or_sheets'].sum())} м · "
+        f"HPL {int(file_rows.loc[is_hpl, 'edge_or_sheets'].sum())} листов · "
+        f"отличается от предложения: {int(changed.sum())}"
+    )
+    st.dataframe(comparison[ordered | changed], hide_index=True, width="stretch", height=260)
+
+    file_comment = order_file_comment(uploaded_order.name, parsed)
+    existing_orders = load_procurement_orders()
+    already_saved = (
+        not existing_orders.empty
+        and (
+            existing_orders["comment"].astype(str).str.contains(parsed.fingerprint, regex=False)
+            & existing_orders["status"].ne("cancelled")
+        ).any()
+    )
+    if already_saved:
+        st.warning("Этот файл уже оформлен как заказ. Повторно он не создаётся, чтобы не задвоить товар в пути.")
+    if not ordered.any():
+        st.warning("В файле нет ни одной позиции с количеством больше нуля.")
+    if st.button(
+        "Подтвердить: заказ в пути",
+        type="primary",
+        key="wq_order_file_confirm",
+        disabled=already_saved or not ordered.any(),
+    ):
+        create_wq_order(file_rows, current_user, lead_time_days, comment=file_comment)
 
 
 def render_access_tab(registered_salons: list[str]) -> None:
@@ -15044,7 +15142,12 @@ if active_screen == "Закупки":
         procurement_tab_labels = ["Риски и прогноз", "Заказы", "Таблица закупок"]
         if can_manage_procurement(current_user):
             procurement_tab_labels.append("Остатки и параметры")
-        procurement_tabs = dict(zip(procurement_tab_labels, st.tabs(procurement_tab_labels)))
+        procurement_tabs = dict(
+            zip(
+                procurement_tab_labels,
+                st.tabs(procurement_tab_labels, default=st.session_state.get("procurement_open_tab")),
+            )
+        )
 
         with procurement_tabs.get("Остатки и параметры", st.container()):
             if can_manage_procurement(current_user):
@@ -16308,7 +16411,12 @@ if active_screen == "Закупки":
                     )
 
         with procurement_tabs["Заказы"]:
-            render_wq_order_form(procurement_forecast, procurement_forecast_cache_key, current_user)
+            render_wq_order_form(
+                procurement_forecast,
+                procurement_forecast_cache_key,
+                current_user,
+                lead_time_days=procurement_lead_time_days,
+            )
             if can_manage_procurement(current_user):
                 with st.container(border=True):
                     render_panel_header(
