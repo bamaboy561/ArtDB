@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 import hashlib
 from io import BytesIO
 import math
@@ -10,6 +11,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 
@@ -279,6 +281,11 @@ def _file_quantity(value: object) -> int | None:
     return math.ceil(number - 1e-9)
 
 
+_BOARD_TITLES = ("плиты, шт", "кол-во")
+_EDGE_TITLES = ("кромка, м", "кромка")
+_SHEET_TITLES = ("hpl, листов",)
+
+
 def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS) -> ParsedOrderFile:
     parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
     try:
@@ -288,31 +295,33 @@ def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_OR
         parsed.errors.append("Не удалось прочитать файл. Нужен Excel-файл заказа в формате .xlsx.")
         return parsed
 
-    header_index = None
-    columns: dict[str, int] = {}
-    for index, row in enumerate(table):
-        titles = {" ".join(str(cell or "").casefold().split()): position for position, cell in enumerate(row)}
-        if {"код", "кол-во", "кромка"} <= set(titles):
-            header_index, columns = index, titles
-            break
-    if header_index is None:
-        parsed.errors.append("Это не форма заказа: не нашёл колонки «Код», «кол-во» и «кромка».")
-        return parsed
-
     by_code: dict[str, OrderFormRow] = {}
     for form_row in rows:
         by_code[_normalize_code(form_row.code)] = form_row
         for term in [form_row.old_code] if form_row.old_code not in ("", "NEW") else []:
             by_code.setdefault(_normalize_code(term), form_row)
 
-    def cell(row: list[object], title: str) -> object:
-        position = columns[title]
-        return row[position] if position < len(row) else None
+    # Each table of the form has its own header row, and files saved from the
+    # earlier form layout are still accepted.
+    columns: dict[str, int] = {}
 
-    for number, row in enumerate(table[header_index + 1 :], start=header_index + 2):
-        raw_code = cell(row, "код")
-        board = _file_quantity(cell(row, "кол-во"))
-        edge = _file_quantity(cell(row, "кромка"))
+    def cell(row: list[object], titles: tuple[str, ...]) -> object:
+        for title in titles:
+            position = columns.get(title)
+            if position is not None and position < len(row) and row[position] is not None:
+                return row[position]
+        return None
+
+    for number, row in enumerate(table, start=1):
+        titles = {" ".join(str(value or "").casefold().split()): position for position, value in enumerate(row)}
+        if "код" in titles and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES}:
+            columns = titles
+            continue
+        if not columns:
+            continue
+        raw_code = cell(row, ("код",))
+        board = _file_quantity(cell(row, _BOARD_TITLES))
+        edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES)))
         code = _normalize_code(raw_code)
         if not code:
             continue  # The totals row and blank lines have no code.
@@ -329,6 +338,8 @@ def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_OR
             board, edge = 0, board + edge  # Sheets, in whichever column they were typed.
         previous = parsed.quantities.get(form_row.code, (0, 0))
         parsed.quantities[form_row.code] = (previous[0] + board, previous[1] + edge)
+    if not columns:
+        parsed.errors.append("Это не форма заказа: не нашёл колонки с кодом и количеством.")
     return parsed
 
 
@@ -360,91 +371,139 @@ def _store_total_value(content: bytes, total_cell: str, total_value: int) -> byt
     return target.getvalue()
 
 
-def build_wq_order_workbook(order_rows: pd.DataFrame) -> bytes:
-    """The WQ form: boards with edge metres, then the HPL block with sheets, then the boards total."""
+def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None = None) -> bytes:
+    """The WQ order: a heading, the boards table with its total, then the HPL table."""
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Лист1"
+    sheet.title = "Заказ WQ"
+    sheet.sheet_view.showGridLines = False
 
-    medium = Side(style="medium")
-    thin = Side(style="thin")
-    yellow = PatternFill("solid", fgColor="FFFF00")
-    blue = PatternFill("solid", fgColor="B4C6E7")
-    centered = Alignment(horizontal="center", vertical="center")
+    navy = "003461"
+    grid = Side(style="thin", color="B8C4D0")
+    frame = Border(left=grid, right=grid, top=grid, bottom=grid)
+    band = PatternFill("solid", fgColor="DCE6F1")
+    header_fill = PatternFill("solid", fgColor=navy)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", indent=1)
+    last_column = 6
 
-    for column, width in {"A": 3.7, "B": 21.0, "C": 17.9, "D": 18.3, "E": 17.6, "F": 20.7}.items():
+    for column, width in {"A": 5, "B": 23, "C": 24, "D": 19, "E": 12, "F": 12}.items():
         sheet.column_dimensions[column].width = width
 
-    sheet["C3"] = WQ_BOARD_FORMAT
-    sheet["C3"].font = Font(name="Calibri", size=11, bold=True)
-    sheet["C3"].alignment = centered
+    def merged(row: int, start: int, end: int) -> None:
+        sheet.merge_cells(start_row=row, start_column=start, end_row=row, end_column=end)
 
-    for column, title in enumerate(("Код", "кол-во", "код старый", "кромка", "Название"), start=2):
-        cell = sheet.cell(row=4, column=column, value=title)
-        cell.fill = yellow
-        cell.font = Font(name="Calibri", size=12, bold=True)
-        cell.alignment = centered
-        cell.border = Border(left=medium, right=medium, top=medium, bottom=medium)
+    def heading(row: int, text: str, font: Font, height: float) -> None:
+        merged(row, 1, last_column)
+        cell = sheet.cell(row=row, column=1, value=text)
+        cell.font = font
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        sheet.row_dimensions[row].height = height
 
-    def write_row(row_number: int, record: dict[str, object], *, shaded_code: bool) -> None:
-        values = (
-            record["code"],
-            int(record["quantity"]) or None,
-            record["old_code"] or None,
-            int(record["edge_or_sheets"]) or None,
-            record["name"],
-        )
-        for column, value in enumerate(values, start=2):
-            cell = sheet.cell(row=row_number, column=column, value=value)
-            cell.font = Font(name="Calibri", size=11, bold=column == 2)
-            cell.alignment = Alignment(horizontal=None if column == 2 else "center", vertical="center")
-            cell.border = Border(
-                left=medium if column == 2 else thin,
-                right=medium if column == 6 else thin,
-                bottom=thin,
-            )
-        if shaded_code:
-            sheet.cell(row=row_number, column=2).fill = blue
+    def section(row: int, text: str) -> None:
+        heading(row, text, Font(name="Calibri", size=12, bold=True, color=navy), 22)
+        for column in range(1, last_column + 1):
+            sheet.cell(row=row, column=column).fill = band
+
+    def table_header(row: int, titles: dict[int, str]) -> None:
+        for column in range(1, last_column + 1):
+            cell = sheet.cell(row=row, column=column, value=titles.get(column))
+            cell.fill = header_fill
+            cell.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+            cell.alignment = center
+            cell.border = frame
+        sheet.row_dimensions[row].height = 32
+
+    def body_cell(row: int, column: int, value: object, alignment: Alignment, *, bold: bool = False) -> None:
+        cell = sheet.cell(row=row, column=column, value=value)
+        cell.font = Font(name="Calibri", size=11, bold=bold)
+        cell.alignment = alignment
+        cell.border = frame
 
     records = order_rows.to_dict(orient="records")
-    row_number = 5
-    for record in records:
-        if record["section"] == SECTION_BOARDS:
-            write_row(row_number, record, shaded_code=True)
-            row_number += 1
-
+    board_records = [record for record in records if record["section"] == SECTION_BOARDS]
     hpl_records = [record for record in records if record["section"] == SECTION_HPL]
+
+    heading(1, "Заказ поставщику WQ", Font(name="Calibri", size=16, bold=True, color=navy), 26)
+    heading(
+        2,
+        f"Дата заказа: {(order_date or date.today()):%d.%m.%Y}",
+        Font(name="Calibri", size=11, color="5B6B7B"),
+        18,
+    )
+
+    section(4, f"Плиты {WQ_BOARD_FORMAT}")
+    board_header = 5
+    table_header(
+        board_header,
+        {1: "№", 2: "Код", 3: "Название", 4: "Старый код", 5: "Плиты, шт", 6: "Кромка, м"},
+    )
+    row = board_header + 1
+    first_board = row
+    for position, record in enumerate(board_records, start=1):
+        body_cell(row, 1, position, center)
+        body_cell(row, 2, record["code"], left, bold=True)
+        body_cell(row, 3, record["name"], left)
+        body_cell(row, 4, record["old_code"] or None, center)
+        body_cell(row, 5, int(record["quantity"]) or None, center)
+        body_cell(row, 6, int(record["edge_or_sheets"]) or None, center)
+        row += 1
+    last_board = row - 1
+
+    merged(row, 1, 4)
+    for column in range(1, last_column + 1):
+        cell = sheet.cell(row=row, column=column)
+        cell.fill = band
+        cell.border = frame
+    total_label = sheet.cell(row=row, column=1, value="Итого плит, шт")
+    total_label.font = Font(name="Calibri", size=12, bold=True, color=navy)
+    total_label.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+    total_cell = f"E{row}"
+    sheet[total_cell] = f"=SUM(E{first_board}:E{last_board})"
+    sheet[total_cell].font = Font(name="Calibri", size=13, bold=True, color=navy)
+    sheet[total_cell].alignment = center
+    sheet.row_dimensions[row].height = 22
+    last_row = row
+
+    ordered_style = {"fill": PatternFill(bgColor="E2EFDA"), "font": Font(bold=True)}
+    sheet.conditional_formatting.add(
+        f"A{first_board}:F{last_board}",
+        FormulaRule(formula=[f"OR(N($E{first_board})>0,N($F{first_board})>0)"], **ordered_style),
+    )
+
     if hpl_records:
-        for column in range(2, 7):
-            cell = sheet.cell(row=row_number, column=column)
-            cell.fill = blue
-            cell.border = Border(
-                left=medium if column == 2 else None,
-                right=medium if column == 6 else None,
-                top=medium,
-                bottom=thin,
-            )
-        title = sheet.cell(row=row_number, column=2, value="HPL")
-        title.font = Font(name="Calibri", size=16, bold=True)
-        title.alignment = centered
-        sheet.row_dimensions[row_number].height = 21
-        sheet.cell(row=row_number, column=5, value="листов").alignment = centered
-        sheet.cell(row=row_number, column=5).font = Font(name="Calibri", size=11, bold=True)
-        row_number += 1
-        for record in hpl_records:
-            write_row(row_number, record, shaded_code=False)
-            row_number += 1
+        row += 2
+        section(row, "HPL")
+        row += 1
+        table_header(row, {1: "№", 2: "Код", 3: "Название", 5: "HPL, листов"})
+        merged(row, 3, 4)
+        merged(row, 5, 6)
+        row += 1
+        first_hpl = row
+        for position, record in enumerate(hpl_records, start=1):
+            body_cell(row, 1, position, center)
+            body_cell(row, 2, record["code"], left, bold=True)
+            body_cell(row, 3, record["name"], left)
+            sheet.cell(row=row, column=4).border = frame
+            merged(row, 3, 4)
+            body_cell(row, 5, int(record["edge_or_sheets"]) or None, center)
+            sheet.cell(row=row, column=6).border = frame
+            merged(row, 5, 6)
+            row += 1
+        last_row = row - 1
+        sheet.conditional_formatting.add(
+            f"A{first_hpl}:F{last_row}",
+            FormulaRule(formula=[f"N($E{first_hpl})>0"], **ordered_style),
+        )
 
-    total_cell = f"C{row_number}"
-    sheet[total_cell] = f"=SUM(C5:C{row_number - 1})"
-    sheet[total_cell].font = Font(name="Calibri", size=14, bold=True)
-    sheet[total_cell].alignment = centered
-    sheet.row_dimensions[row_number].height = 19.5
-
-    sheet.print_area = f"B3:F{row_number}"
+    sheet.freeze_panes = f"A{first_board}"
+    sheet.print_area = f"A1:F{last_row}"
+    sheet.page_setup.orientation = "portrait"
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
     sheet.page_setup.fitToWidth = 1
     sheet.page_setup.fitToHeight = 1
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.print_options.horizontalCentered = True
 
     buffer = BytesIO()
     workbook.save(buffer)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import date
 from io import BytesIO
 import sys
 import unittest
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 import pandas as pd
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -189,6 +190,19 @@ class OrderFromFormTest(unittest.TestCase):
         self.assertEqual(order_form_supplier(named), "Кроношпан Китай")
 
 
+NAME_COLUMN = 3
+CODE_COLUMN = 2
+BOARD_COLUMN = 5
+EDGE_COLUMN = 6
+
+
+def find_row(sheet, name: str) -> int:
+    for row in range(1, sheet.max_row + 1):
+        if sheet.cell(row, NAME_COLUMN).value == name:
+            return row
+    raise AssertionError(f"{name} is not in the form")
+
+
 class UploadedOrderFileTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = build_order_form_rows(
@@ -203,10 +217,7 @@ class UploadedOrderFileTest(unittest.TestCase):
         self.sheet = self.workbook.active
 
     def cell_row(self, name: str) -> int:
-        for row in range(5, self.sheet.max_row + 1):
-            if self.sheet.cell(row, 6).value == name:
-                return row
-        self.fail(f"{name} is not in the form")
+        return find_row(self.sheet, name)
 
     def content(self) -> bytes:
         buffer = BytesIO()
@@ -216,45 +227,45 @@ class UploadedOrderFileTest(unittest.TestCase):
     def test_unchanged_file_gives_back_the_same_quantities(self) -> None:
         parsed = parse_order_form_file(self.content())
         self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.unknown_codes, [])
         applied = apply_order_file(self.rows, parsed)
         self.assertEqual(applied["quantity"].tolist(), self.rows["quantity"].tolist())
         self.assertEqual(applied["edge_or_sheets"].tolist(), self.rows["edge_or_sheets"].tolist())
 
     def test_changed_and_cleared_quantities_become_final(self) -> None:
-        self.sheet.cell(self.cell_row("Маффин"), 3).value = 200
-        self.sheet.cell(self.cell_row("Чизкейк"), 3).value = None
+        self.sheet.cell(self.cell_row("Маффин"), BOARD_COLUMN).value = 200
+        self.sheet.cell(self.cell_row("Чизкейк"), BOARD_COLUMN).value = None
         applied = apply_order_file(self.rows, parse_order_form_file(self.content()))
         items = order_items_from_form(applied).set_index("product")["quantity"]
         self.assertEqual(items["US77301/PGR4201 Маффин 18*1220*2800мм"], 200.0)
         self.assertNotIn("US77311/PGR4211 Чизкейк 18*1220*2800мм", items.index)
 
     def test_position_without_sales_keeps_its_quantity_and_survives_a_saved_order(self) -> None:
-        self.sheet.cell(self.cell_row("Титан"), 3).value = 20
+        self.sheet.cell(self.cell_row("Титан"), BOARD_COLUMN).value = 20
         applied = apply_order_file(self.rows, parse_order_form_file(self.content()))
         items = order_items_from_form(applied)
         self.assertIn("WQ63142LJ Титан 18*1220*2800мм", items["product"].tolist())
         rebuilt = order_form_from_items(items)
         self.assertEqual(rebuilt[rebuilt["name"] == "Титан"]["quantity"].iloc[0], 20)
 
-    def test_hpl_sheets_are_read_from_either_column(self) -> None:
-        self.sheet.cell(self.cell_row("Молочный Кварцит"), 3).value = 7
-        self.sheet.cell(self.cell_row("Молочный Кварцит"), 5).value = None
+    def test_hpl_sheets_are_read_from_their_table(self) -> None:
+        self.sheet.cell(self.cell_row("Молочный Кварцит"), BOARD_COLUMN).value = 7
         parsed = parse_order_form_file(self.content())
         self.assertEqual(parsed.quantities["WQS1837-3 FR"], (0, 7))
 
     def test_code_is_matched_despite_spaces_and_number_type(self) -> None:
-        self.sheet.cell(self.cell_row("Маффин"), 2).value = " WQ63893M "
-        self.sheet.cell(self.cell_row("белый"), 2).value = 81050
-        self.sheet.cell(self.cell_row("белый"), 5).value = 5
+        self.sheet.cell(self.cell_row("Маффин"), CODE_COLUMN).value = " WQ63893M "
+        self.sheet.cell(self.cell_row("белый"), CODE_COLUMN).value = 81050
+        self.sheet.cell(self.cell_row("белый"), BOARD_COLUMN).value = 5
         parsed = parse_order_form_file(self.content())
         self.assertEqual(parsed.quantities["WQ63893M"][0], 220)
         self.assertEqual(parsed.quantities["81050"], (0, 5))
 
     def test_unknown_code_and_bad_number_are_reported(self) -> None:
         extra = self.sheet.max_row + 1
-        self.sheet.cell(extra, 2).value = "WQ999"
-        self.sheet.cell(extra, 3).value = 40
-        self.sheet.cell(self.cell_row("Маффин"), 3).value = "нет"
+        self.sheet.cell(extra, CODE_COLUMN).value = "WQ999"
+        self.sheet.cell(extra, BOARD_COLUMN).value = 40
+        self.sheet.cell(self.cell_row("Маффин"), BOARD_COLUMN).value = "нет"
         parsed = parse_order_form_file(self.content())
         self.assertEqual(parsed.unknown_codes, ["WQ999"])
         self.assertEqual(len(parsed.errors), 1)
@@ -262,16 +273,34 @@ class UploadedOrderFileTest(unittest.TestCase):
 
     def test_not_a_form_is_rejected(self) -> None:
         self.assertTrue(parse_order_form_file(b"not an excel file").errors)
-        other = BytesIO()
-        workbook = load_workbook(BytesIO(build_wq_order_workbook(self.rows)))
-        workbook.active.delete_rows(4)
-        workbook.save(other)
-        self.assertTrue(parse_order_form_file(other.getvalue()).errors)
+        other = Workbook()
+        other.active.append(["Номенклатура", "Количество"])
+        other.active.append(["Плита", 5])
+        buffer = BytesIO()
+        other.save(buffer)
+        self.assertTrue(parse_order_form_file(buffer.getvalue()).errors)
+
+    def test_file_saved_from_the_earlier_layout_is_still_accepted(self) -> None:
+        old = Workbook()
+        sheet = old.active
+        sheet["C3"] = "2800*1220*18мм"
+        for column, title in enumerate(("Код", "кол-во", "код старый", "кромка", "Название"), start=2):
+            sheet.cell(4, column, title)
+        sheet.append([None, "WQ63893M ", 220, "US77301/PGR4201", 1500, "Маффин"])
+        sheet.append([None, "HPL", None, None, "листов", None])
+        sheet.append([None, " WQS1837-3 FR", None, None, 10, "Молочный Кварцит"])
+        sheet.append([None, None, "=SUM(C5:C7)"])
+        buffer = BytesIO()
+        old.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue())
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.quantities["WQ63893M"], (220, 1500))
+        self.assertEqual(parsed.quantities["WQS1837-3 FR"], (0, 10))
 
     def test_fingerprint_identifies_the_same_file(self) -> None:
         content = self.content()
         self.assertEqual(parse_order_form_file(content).fingerprint, parse_order_form_file(content).fingerprint)
-        self.sheet.cell(self.cell_row("Маффин"), 3).value = 1
+        self.sheet.cell(self.cell_row("Маффин"), BOARD_COLUMN).value = 1
         self.assertNotEqual(parse_order_form_file(content).fingerprint, parse_order_form_file(self.content()).fingerprint)
 
 
@@ -285,37 +314,51 @@ class OrderWorkbookTest(unittest.TestCase):
                 ("HPL Compact WQS1837-3 FR Молочный Кварцит", 10),
             )
         )
-        content = build_wq_order_workbook(rows)
+        content = build_wq_order_workbook(rows, order_date=date(2026, 10, 31))
         self.sheet = load_workbook(BytesIO(content)).active
         self.values = load_workbook(BytesIO(content), data_only=True).active
 
-    def find_row(self, name: str) -> int:
-        for row in range(5, self.sheet.max_row + 1):
-            if self.sheet.cell(row, 6).value == name:
+    def row_of(self, name: str) -> int:
+        return find_row(self.sheet, name)
+
+    def label_row(self, label: str) -> int:
+        for row in range(1, self.sheet.max_row + 1):
+            if self.sheet.cell(row, 1).value == label:
                 return row
-        self.fail(f"{name} is not in the form")
+        self.fail(f"{label} is not in the form")
 
-    def test_layout_matches_the_supplier_form(self) -> None:
-        self.assertEqual(self.sheet["C3"].value, "2800*1220*18мм")
+    def test_heading_and_separate_tables(self) -> None:
+        self.assertEqual(self.sheet["A1"].value, "Заказ поставщику WQ")
+        self.assertIn("31.10.2026", self.sheet["A2"].value)
+        self.assertIn("2800*1220*18мм", self.sheet["A4"].value)
         self.assertEqual(
-            [self.sheet.cell(4, column).value for column in range(2, 7)],
-            ["Код", "кол-во", "код старый", "кромка", "Название"],
+            [self.sheet.cell(5, column).value for column in range(1, 7)],
+            ["№", "Код", "Название", "Старый код", "Плиты, шт", "Кромка, м"],
         )
+        hpl_title = self.label_row("HPL")
+        self.assertEqual(self.sheet.cell(hpl_title + 1, 5).value, "HPL, листов")
+        self.assertGreater(hpl_title, self.label_row("Итого плит, шт"))
 
-    def test_quantities_are_written_and_empty_rows_stay_blank(self) -> None:
-        muffin = self.find_row("Маффин")
-        self.assertEqual(self.sheet.cell(muffin, 3).value, 220)
-        self.assertEqual(self.sheet.cell(muffin, 5).value, 1500)
-        self.assertIsNone(self.sheet.cell(self.find_row("Брауни"), 3).value)
-        self.assertEqual(self.sheet.cell(self.find_row("Молочный Кварцит"), 5).value, 10)
-        self.assertIsNone(self.sheet.cell(self.find_row("Молочный Кварцит"), 3).value)
+    def test_every_position_is_listed_with_its_quantities(self) -> None:
+        muffin = self.row_of("Маффин")
+        self.assertEqual(self.sheet.cell(muffin, CODE_COLUMN).value, "WQ63893M")
+        self.assertEqual(self.sheet.cell(muffin, BOARD_COLUMN).value, 220)
+        self.assertEqual(self.sheet.cell(muffin, EDGE_COLUMN).value, 1500)
+        self.assertIsNone(self.sheet.cell(self.row_of("Брауни"), BOARD_COLUMN).value)
+        self.assertEqual(self.sheet.cell(self.row_of("Молочный Кварцит"), BOARD_COLUMN).value, 10)
+        names = [self.sheet.cell(row, NAME_COLUMN).value for row in range(1, self.sheet.max_row + 1)]
+        for form_row in WQ_ORDER_ROWS:
+            self.assertIn(form_row.name, names)
 
     def test_only_the_boards_total_is_kept(self) -> None:
-        total_row = self.sheet.max_row
-        self.assertEqual(self.sheet.cell(total_row, 3).value, f"=SUM(C5:C{total_row - 1})")
-        self.assertEqual(self.values.cell(total_row, 3).value, 300)
-        for column in (2, 4, 5, 6):
-            self.assertIsNone(self.sheet.cell(total_row, column).value)
+        total_row = self.label_row("Итого плит, шт")
+        self.assertEqual(self.sheet.cell(total_row, BOARD_COLUMN).value, f"=SUM(E6:E{total_row - 1})")
+        self.assertEqual(self.values.cell(total_row, BOARD_COLUMN).value, 300)
+        self.assertIsNone(self.sheet.cell(total_row, EDGE_COLUMN).value)
+
+    def test_header_is_frozen_and_page_fits_to_print(self) -> None:
+        self.assertEqual(self.sheet.freeze_panes, "A6")
+        self.assertTrue(self.sheet.sheet_properties.pageSetUpPr.fitToPage)
 
 
 if __name__ == "__main__":
