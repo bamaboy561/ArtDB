@@ -21,7 +21,7 @@ from db import (
 from procurement_store import load_procurement_items
 from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
 from salon_data_store import load_archive_data, load_salons
-from sales_analytics import infer_supplier_series
+from sales_analytics import apply_brand_supplier, infer_supplier_series
 from sku_catalog_store import (
     apply_sku_aliases,
     apply_sku_attribute_overrides,
@@ -159,10 +159,11 @@ def load_bot_sales_data() -> pd.DataFrame:
         aggregate_inventory=True,
     )
     archive_result = None
+    supplier_product_assignments = load_supplier_product_assignments()
     data = _enrich_sales_catalog(
         data,
         procurement_items=procurement_items,
-        supplier_product_assignments=load_supplier_product_assignments(),
+        supplier_product_assignments=supplier_product_assignments,
         supplier_rules=supplier_rules,
     )
     data = apply_sku_attribute_overrides(
@@ -170,6 +171,7 @@ def load_bot_sales_data() -> pd.DataFrame:
         load_sku_attribute_overrides(),
         copy_data=False,
     )
+    data = apply_brand_supplier(data, supplier_product_assignments, copy_data=False)
     data = apply_sku_aliases(data, aliases, copy_data=False)
     return apply_product_category_rules(data, copy_data=False)
 

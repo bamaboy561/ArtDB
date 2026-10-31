@@ -5,7 +5,7 @@ import math
 import pandas as pd
 
 from product_identity import normalize_product_match_key
-from sales_analytics import build_abc_analysis, build_product_summary
+from sales_analytics import build_abc_analysis, build_product_summary, has_assigned_brand
 
 
 PROCUREMENT_ITEM_COLUMNS = [
@@ -235,6 +235,12 @@ def build_procurement_forecast(
                 [["product", "sales_supplier"]]
             )
 
+    branded_products = (
+        set(history.loc[has_assigned_brand(history["brand"]), "product"])
+        if "brand" in history.columns
+        else set()
+    )
+
     base_summary = (
         history.groupby("product", as_index=False)
         .agg(
@@ -407,6 +413,12 @@ def build_procurement_forecast(
     procurement.loc[missing_procurement_supplier & sales_supplier.ne(""), "supplier"] = (
         sales_supplier.loc[missing_procurement_supplier & sales_supplier.ne("")]
     )
+    # In the sales of a branded product the supplier is already its brand or the
+    # one assigned by hand. Without sales only the brand itself is known.
+    sold_branded = procurement["product"].isin(branded_products) & sales_supplier.ne("")
+    procurement.loc[sold_branded, "supplier"] = sales_supplier.loc[sold_branded]
+    unsold_branded = sales_supplier.eq("") & has_assigned_brand(procurement["brand"])
+    procurement.loc[unsold_branded, "supplier"] = procurement.loc[unsold_branded, "brand"]
     procurement["notes"] = procurement["notes"].fillna("").astype(str).str.strip()
     for numeric_column in ("stock_on_hand", "stock_value"):
         procurement[numeric_column] = procurement[numeric_column].map(_safe_signed_number)

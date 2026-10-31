@@ -125,6 +125,10 @@ def build_sku_change_preview(
             field: bulk_values.get(field) or _clean_catalog_value(row.get(f"new_{field}")) or before[field]
             for field in ("supplier", "category", "brand", "item_code")
         }
+        # A new brand brings its supplier along, unless a supplier was chosen as well.
+        brand_changed = before["brand"].casefold() != after["brand"].casefold()
+        if brand_changed and after["brand"] and before["supplier"].casefold() == after["supplier"].casefold():
+            after["supplier"] = after["brand"]
         changed = [
             field
             for field in ("supplier", "category", "brand", "item_code")

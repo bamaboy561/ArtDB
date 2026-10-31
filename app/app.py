@@ -104,6 +104,8 @@ from sales_analytics import (
     detect_anomalies,
     extract_return_rows,
     guess_column_mapping,
+    apply_brand_supplier,
+    has_assigned_brand,
     infer_supplier_series,
     list_excel_sheets,
     load_input_file,
@@ -5656,6 +5658,7 @@ def enrich_sales_frame(
     )
     data = enrich_sales_with_brand(data, procurement_items, copy_data=False)
     data = apply_sku_attribute_overrides(data, sku_attribute_overrides, copy_data=False)
+    data = apply_brand_supplier(data, supplier_product_assignments, copy_data=False)
     pre_alias = data.copy() if keep_pre_alias else None
     data = apply_sku_aliases(data, sku_aliases, copy_data=False)
     data = apply_product_category_rules(data, copy_data=False)
@@ -5703,6 +5706,7 @@ def cached_load_enriched_archive(
         )
         data = enrich_sales_with_brand(data, _procurement_items, copy_data=False)
         data = apply_sku_attribute_overrides(data, _sku_attribute_overrides, copy_data=False)
+        data = apply_brand_supplier(data, _supplier_product_assignments, copy_data=False)
         tracked = [column for column in PRE_ALIAS_TRACKED_COLUMNS if column in data.columns]
         before_aliases = data[tracked].copy()
         data = apply_sku_aliases(data, _sku_aliases, copy_data=False)
@@ -11063,8 +11067,10 @@ if needs_procurement_analysis:
             .str.strip()
             .replace("", "Не назначен")
         )
+        # A product with a brand is supplied by it, even if the stored supplier is empty.
         procurement_items_for_forecast = procurement_items_for_forecast[
             procurement_supplier_text.isin(set(selected_suppliers))
+            | procurement_items_for_forecast["brand"].fillna("").astype(str).str.strip().isin(set(selected_suppliers))
         ].copy()
     procurement_source_cache_key = (
         derived_cache_key(enriched_archive.data_key, "procurement", filter_state[:4])
@@ -15776,6 +15782,15 @@ if active_screen == "Закупки":
                                     bulk_brand_rows,
                                     updated_by=current_user["username"],
                                 )
+                                # A supplier assigned by hand earlier follows the brand assigned now.
+                                bulk_brand_keys = {str(product).strip().casefold() for product in bulk_brand_products}
+                                upsert_supplier_product_assignments(
+                                    supplier_product_assignments[
+                                        supplier_product_assignments["product_key"].astype(str).str.strip().str.casefold().isin(bulk_brand_keys)
+                                        | supplier_product_assignments["product"].astype(str).str.strip().str.casefold().isin(bulk_brand_keys)
+                                    ].assign(supplier=normalized_brand_name),
+                                    updated_by=current_user["username"],
+                                )
                                 clear_application_caches()
                                 audit_event(
                                     action="procurement.brand_bulk_assign",
@@ -15848,6 +15863,27 @@ if active_screen == "Закупки":
                             procurement_editor_to_save,
                             updated_by=current_user["username"],
                         )
+                        # A branded product follows its brand, so a supplier typed
+                        # over it is kept as an assignment by hand.
+                        retyped_supplier = procurement_editor_to_save.merge(
+                            procurement_editor_source[["product", "supplier", "brand"]],
+                            on="product",
+                            suffixes=("", "_before"),
+                        )
+                        retyped_supplier = retyped_supplier[
+                            retyped_supplier["supplier"].fillna("").astype(str).str.strip().ne("")
+                            & retyped_supplier["supplier"].ne(retyped_supplier["supplier_before"])
+                            & retyped_supplier["brand"].eq(retyped_supplier["brand_before"])
+                            & has_assigned_brand(retyped_supplier["brand"])
+                        ]
+                        if not retyped_supplier.empty:
+                            upsert_supplier_product_assignments(
+                                retyped_supplier.assign(product_key=retyped_supplier["product"])[
+                                    ["product_key", "product", "supplier"]
+                                ],
+                                updated_by=current_user["username"],
+                            )
+                            clear_application_caches()
                         audit_event(
                             action="procurement.settings_upsert",
                             user_id=current_user["username"],

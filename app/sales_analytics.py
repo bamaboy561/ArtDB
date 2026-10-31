@@ -300,6 +300,9 @@ def _cached_match_supplier(value: str, supplier_rules: tuple) -> str:
     return _match_supplier(value, _cached_supplier_needles(supplier_rules))
 
 
+NO_BRAND_LABELS = {"", "не назначен", "не указан"}
+
+
 def _hashable_supplier_rules(supplier_rules: object) -> tuple | None:
     if supplier_rules is None:
         return ()
@@ -332,6 +335,41 @@ def infer_supplier_series(
         needles = _build_supplier_needles(supplier_rules)
         return map_unique(values, lambda value: _match_supplier(value, needles))
     return map_unique(values, lambda value: infer_supplier_from_text(value, rules_key))
+
+
+def has_assigned_brand(values: pd.Series) -> pd.Series:
+    return map_unique(
+        values,
+        lambda value: str(value if pd.notna(value) else "").strip().casefold() not in NO_BRAND_LABELS,
+    ).astype(bool)
+
+
+def apply_brand_supplier(
+    data: pd.DataFrame,
+    supplier_product_assignments: pd.DataFrame | None = None,
+    *,
+    copy_data: bool = True,
+) -> pd.DataFrame:
+    """A product with a brand is supplied by that brand, unless a supplier was assigned to it by hand."""
+    if data.empty or "brand" not in data.columns:
+        return data
+    enriched = data.copy() if copy_data else data
+    branded = has_assigned_brand(enriched["brand"])
+    if (
+        supplier_product_assignments is not None
+        and not supplier_product_assignments.empty
+        and "product_key" in supplier_product_assignments.columns
+    ):
+        assigned_keys = set(
+            supplier_product_assignments["product_key"].fillna("").astype(str).str.strip().str.casefold()
+        )
+        for column in ("product_key", "product"):
+            if column in enriched.columns:
+                keys = map_unique(enriched[column], lambda value: str(value if pd.notna(value) else "").strip().casefold())
+                branded &= ~keys.isin(assigned_keys)
+    if branded.any():
+        enriched.loc[branded, "supplier"] = enriched.loc[branded, "brand"].astype(str).str.strip()
+    return enriched
 
 
 def guess_column_mapping(columns: Iterable[str]) -> dict[str, str | None]:
