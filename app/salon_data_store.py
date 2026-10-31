@@ -135,9 +135,22 @@ def _remove_upload_artifacts(stored_path: Path) -> int:
     return removed
 
 
+def _temporary_path(cache_path: Path) -> Path:
+    """Several script runs can build one cache at once, so each writes a file of its own."""
+    return cache_path.with_name(f"{cache_path.name}.{uuid.uuid4().hex}.tmp")
+
+
+def _discard_temporary(temporary_path: Path) -> None:
+    # A cache that failed to save only costs a rebuild; this must not fail the upload.
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _write_parsed_cache(stored_path: Path, frame: pd.DataFrame) -> bool:
     cache_path = _parsed_cache_path(stored_path)
-    temporary_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    temporary_path = _temporary_path(cache_path)
     try:
         frame.to_parquet(temporary_path, index=False)
         temporary_path.replace(cache_path)
@@ -148,8 +161,7 @@ def _write_parsed_cache(stored_path: Path, frame: pd.DataFrame) -> bool:
                 old_cache_path.unlink(missing_ok=True)
         return True
     except Exception:
-        if temporary_path.exists():
-            temporary_path.unlink()
+        _discard_temporary(temporary_path)
         return False
 
 
@@ -184,14 +196,14 @@ def _read_prepared_cache(cache_path: Path) -> PreparedSalesData | None:
 
 
 def _write_prepared_cache(cache_path: Path, prepared: PreparedSalesData) -> bool:
-    temporary_path = cache_path.with_suffix(".tmp")
+    temporary_path = _temporary_path(cache_path)
     try:
         with temporary_path.open("wb") as handle:
             pickle.dump(prepared, handle, protocol=pickle.HIGHEST_PROTOCOL)
         temporary_path.replace(cache_path)
         return True
     except Exception:
-        temporary_path.unlink(missing_ok=True)
+        _discard_temporary(temporary_path)
         return False
 
 

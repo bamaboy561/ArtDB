@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import date
 from pathlib import Path
@@ -18,6 +19,37 @@ from product_identity import map_unique, normalize_product_match_key  # noqa: E4
 from sales_analytics import infer_supplier_from_text, infer_supplier_series  # noqa: E402
 
 MAPPING = {"date": "Дата", "product": "Товар", "quantity": "Количество", "revenue": "Выручка"}
+
+
+class CacheWriteTest(unittest.TestCase):
+    def test_writers_at_the_same_time_leave_a_readable_cache(self) -> None:
+        prepared = salon_data_store.PreparedSalesData(
+            data=pd.DataFrame({"product": ["Плита"] * 2000}),
+            warnings=[],
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            cache_path = Path(folder) / "report.xlsx.prepared-key.pkl"
+            threads = [
+                threading.Thread(target=salon_data_store._write_prepared_cache, args=(cache_path, prepared))
+                for _ in range(8)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(len(salon_data_store._read_prepared_cache(cache_path).data), 2000)
+            self.assertEqual([path.name for path in Path(folder).iterdir()], [cache_path.name])
+
+    def test_failed_write_does_not_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            cache_path = Path(folder) / "report.pkl"
+            with mock.patch("salon_data_store.pickle.dump", side_effect=OSError("disk full")):
+                self.assertFalse(salon_data_store._write_prepared_cache(cache_path, object()))
+            with (
+                mock.patch("salon_data_store.pickle.dump", side_effect=OSError("disk full")),
+                mock.patch.object(Path, "unlink", side_effect=PermissionError("in use")),
+            ):
+                self.assertFalse(salon_data_store._write_prepared_cache(cache_path, object()))
 
 
 class SupplierInferenceTest(unittest.TestCase):

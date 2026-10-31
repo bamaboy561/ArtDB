@@ -568,6 +568,17 @@ def analyze_sales_quality(
     )
 
 
+def missing_supplier_rows(procurement_forecast: pd.DataFrame) -> pd.DataFrame:
+    """The goods the "Без поставщика" card counts, biggest forecast first."""
+    if procurement_forecast is None or procurement_forecast.empty or "supplier" not in procurement_forecast.columns:
+        return pd.DataFrame(columns=["product"] if procurement_forecast is None else procurement_forecast.columns)
+    supplier = procurement_forecast["supplier"].fillna("").astype(str).str.strip()
+    missing = procurement_forecast[supplier.eq("") | supplier.str.casefold().eq("не назначен")]
+    if "forecast_qty" in missing.columns:
+        missing = missing.sort_values("forecast_qty", ascending=False, kind="stable")
+    return missing.reset_index(drop=True)
+
+
 def build_catalog_health(procurement_items: pd.DataFrame, procurement_forecast: pd.DataFrame) -> dict[str, object]:
     catalog = procurement_items.copy() if procurement_items is not None else pd.DataFrame()
     forecast = procurement_forecast.copy() if procurement_forecast is not None else pd.DataFrame()

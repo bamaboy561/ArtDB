@@ -48,7 +48,7 @@ from data_center import (
     classify_cleanup_priority,
     evaluate_freshness,
 )
-from data_quality import analyze_sales_quality, build_catalog_health
+from data_quality import analyze_sales_quality, build_catalog_health, missing_supplier_rows
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
 from db import database_enabled, list_audit_logs, log_audit_event
 from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
@@ -7035,6 +7035,92 @@ def to_excel_report_bytes(
 @st.cache_data(show_spinner=False, max_entries=4, ttl=900)
 def cached_build_order_form_rows(_procurement_forecast: pd.DataFrame, forecast_key: str) -> pd.DataFrame:
     return build_order_form_rows(_procurement_forecast)
+
+
+def render_missing_supplier_panel(procurement_forecast: pd.DataFrame, current_user: dict[str, str]) -> None:
+    """The goods behind the card: most have stock but no sales, so the suppliers screen does not list them."""
+    missing = missing_supplier_rows(procurement_forecast)
+    if missing.empty:
+        return
+    with st.expander(f"Показать позиции без поставщика ({len(missing)})"):
+        st.caption(
+            "Обычно это товары из остатков без продаж: поэтому их нет в разделе «Закупки · Поставщики». "
+            "Выберите поставщика в строке и сохраните."
+        )
+        can_edit = can_manage_procurement(current_user)
+        suppliers = sorted(
+            {
+                str(name).strip()
+                for name in procurement_forecast["supplier"].dropna()
+                if str(name).strip() and str(name).strip().casefold() != "не назначен"
+            },
+            key=str.casefold,
+        )
+        edited = st.data_editor(
+            missing[["product", "category", "brand", "stock_on_hand", "forecast_qty"]].assign(new_supplier=None),
+            hide_index=True,
+            width="stretch",
+            height=min(420, 38 + 35 * len(missing)),
+            key=f"missing_supplier_editor_{len(missing)}",
+            disabled=["product", "category", "brand", "stock_on_hand", "forecast_qty"] + ([] if can_edit else ["new_supplier"]),
+            column_order=["product", "new_supplier", "category", "brand", "stock_on_hand", "forecast_qty"],
+            column_config={
+                "product": st.column_config.TextColumn("Товар", width="large"),
+                "new_supplier": st.column_config.SelectboxColumn("Поставщик", options=suppliers),
+                "category": st.column_config.TextColumn("Категория"),
+                "brand": st.column_config.TextColumn("Бренд"),
+                "stock_on_hand": st.column_config.NumberColumn("Остаток"),
+                "forecast_qty": st.column_config.NumberColumn("Прогноз"),
+            },
+        )
+        if not can_edit:
+            return
+        chosen = edited[edited["new_supplier"].fillna("").astype(str).str.strip().ne("")]
+        if st.button(
+            f"Сохранить поставщиков ({len(chosen)})",
+            key="missing_supplier_save",
+            type="primary",
+            disabled=chosen.empty,
+        ):
+            supplier_by_product = dict(zip(chosen["product"], chosen["new_supplier"]))
+            rows = missing[missing["product"].isin(supplier_by_product)]
+            saved_count = upsert_procurement_items(
+                rows.assign(supplier=rows["product"].map(supplier_by_product))
+                .rename(columns={"manual_stock_in_transit": "stock_in_transit"})[
+                    [
+                        "product",
+                        "supplier",
+                        "brand",
+                        "stock_on_hand",
+                        "stock_value",
+                        "stock_in_transit",
+                        "min_order_qty",
+                        "order_multiple",
+                        "lead_time_days",
+                        "notes",
+                    ]
+                ],
+                updated_by=current_user["username"],
+            )
+            # Chosen by hand, so it also holds for the sales of these goods and over a later brand.
+            upsert_supplier_product_assignments(
+                pd.DataFrame(
+                    {
+                        "product_key": list(supplier_by_product),
+                        "product": list(supplier_by_product),
+                        "supplier": list(supplier_by_product.values()),
+                    }
+                ),
+                updated_by=current_user["username"],
+            )
+            clear_application_caches()
+            audit_event(
+                action="supplier.product_assignments_upsert",
+                user_id=current_user["username"],
+                details={"saved_count": int(saved_count), "source": "catalog_passport_missing_supplier"},
+            )
+            st.session_state["procurement_flash_message"] = f"Поставщик назначен позициям: {saved_count}."
+            st.rerun()
 
 
 def render_wq_order_form(
@@ -15209,6 +15295,8 @@ if active_screen == "Закупки":
                 },
             ]
         )
+
+    render_missing_supplier_panel(procurement_forecast, current_user)
 
     if procurement_forecast.empty:
         st.info(
