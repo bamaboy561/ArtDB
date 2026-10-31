@@ -7045,10 +7045,19 @@ def render_wq_order_form(
     lead_time_days: int,
 ) -> None:
     order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key)
+    site_products = tuple(procurement_forecast["product"].astype(str)) if "product" in procurement_forecast.columns else ()
     if order_rows.empty:
         with st.container(border=True):
             render_panel_header("Заказ поставщику WQ", "Форма заполняется товарами этого поставщика.")
             st.info("Сейчас в выборке нет товаров поставщика WQ. Проверьте фильтры и назначение поставщика у товаров.")
+            if can_manage_procurement(current_user):
+                render_wq_order_file_upload(
+                    order_rows,
+                    order_rows,
+                    current_user,
+                    site_products=site_products,
+                    lead_time_days=lead_time_days,
+                )
         return
     is_hpl = order_rows["section"].ne(SECTION_BOARDS)
 
@@ -7149,7 +7158,13 @@ def render_wq_order_form(
             ):
                 create_wq_order(final_rows, current_user, lead_time_days, comment="Форма заказа WQ")
 
-        render_wq_order_file_upload(order_rows, final_rows, current_user, lead_time_days=lead_time_days)
+        render_wq_order_file_upload(
+            order_rows,
+            final_rows,
+            current_user,
+            site_products=site_products,
+            lead_time_days=lead_time_days,
+        )
 
 
 def create_wq_order(
@@ -7241,6 +7256,7 @@ def render_wq_order_file_upload(
     proposed_rows: pd.DataFrame,
     current_user: dict[str, str],
     *,
+    site_products: tuple[str, ...],
     lead_time_days: int,
 ) -> None:
     uploaded_order = st.file_uploader(
@@ -7252,20 +7268,19 @@ def render_wq_order_file_upload(
     if uploaded_order is None:
         return
 
-    parsed = parse_order_form_file(uploaded_order.getvalue(), order_rows)
+    parsed = parse_order_form_file(uploaded_order.getvalue(), order_rows, site_products)
     for message in parsed.errors:
         st.error(message)
     if parsed.errors:
         st.info("Исправьте файл и загрузите его снова. Заказ не создан.")
         return
-    if parsed.unknown_codes:
-        st.warning(
-            "Этих кодов нет среди товаров поставщика на сайте, они не войдут в заказ: "
-            + ", ".join(parsed.unknown_codes)
-            + ". Если поставщик заменил товар, назначьте его этому поставщику на сайте и загрузите файл снова."
-        )
-
     file_rows = apply_order_file(order_rows, parsed)
+    if parsed.extra_rows:
+        st.info(
+            "Позиции вне списка товаров поставщика тоже вошли в заказ: файл финальный. "
+            "Если товара ещё нет на сайте, он записан под кодом и названием из файла: "
+            "при приёмке укажите приход по такой строке вручную."
+        )
     comparison = pd.DataFrame(
         {
             "Код": file_rows["code"],
@@ -7274,12 +7289,12 @@ def render_wq_order_file_upload(
             "Кромка, м / HPL и другое": file_rows["edge_or_sheets"],
         }
     )
-    comparison["Предложено"] = [
-        f"{int(board)} шт · {int(edge)}" for board, edge in zip(proposed_rows["quantity"], proposed_rows["edge_or_sheets"])
-    ]
-    changed = (
-        file_rows["quantity"].ne(proposed_rows["quantity"]) | file_rows["edge_or_sheets"].ne(proposed_rows["edge_or_sheets"])
-    )
+    proposed = proposed_rows.set_index("row_id")
+    proposed_board = file_rows["row_id"].map(proposed["quantity"]).fillna(0).astype(int)
+    proposed_edge = file_rows["row_id"].map(proposed["edge_or_sheets"]).fillna(0).astype(int)
+    comparison["Предложено"] = [f"{board} шт · {edge}" for board, edge in zip(proposed_board, proposed_edge)]
+    comparison["Примечание"] = file_rows["file_note"]
+    changed = file_rows["quantity"].ne(proposed_board) | file_rows["edge_or_sheets"].ne(proposed_edge)
     ordered = file_rows["quantity"].gt(0) | file_rows["edge_or_sheets"].gt(0)
     is_hpl = file_rows["section"].ne(SECTION_BOARDS)
     st.caption(

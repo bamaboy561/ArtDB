@@ -69,6 +69,9 @@ def find_row(sheet, name: str) -> int:
     raise AssertionError(f"{name} is not in the form")
 
 
+from supplier_order_forms import NOTE_NEW_POSITION, NOTE_OTHER_SUPPLIER  # noqa: E402
+
+
 class SupplierSelectionTest(unittest.TestCase):
     def test_supplier_name_is_recognised(self) -> None:
         for name in ("WQ", "wq", "ООО WQ", "WQ Китай"):
@@ -197,7 +200,7 @@ class UploadedOrderFileTest(unittest.TestCase):
     def test_unchanged_file_gives_back_the_same_quantities(self) -> None:
         parsed = self.parsed()
         self.assertEqual(parsed.errors, [])
-        self.assertEqual(parsed.unknown_codes, [])
+        self.assertEqual(parsed.extra_rows, [])
         applied = apply_order_file(self.rows, parsed)
         self.assertEqual(applied["quantity"].tolist(), self.rows["quantity"].tolist())
         self.assertEqual(applied["edge_or_sheets"].tolist(), self.rows["edge_or_sheets"].tolist())
@@ -225,15 +228,66 @@ class UploadedOrderFileTest(unittest.TestCase):
         self.sheet.cell(find_row(self.sheet, "Маффин"), CODE_COLUMN).value = " WQ63893M "
         self.assertEqual(row_named(apply_order_file(self.rows, self.parsed()), "Маффин")["quantity"], 220)
 
-    def test_unknown_code_and_bad_number_are_reported(self) -> None:
-        extra = self.sheet.max_row + 1
-        self.sheet.cell(extra, CODE_COLUMN).value = "WQ999"
-        self.sheet.cell(extra, BOARD_COLUMN).value = 40
+    def test_bad_number_is_reported(self) -> None:
         self.sheet.cell(find_row(self.sheet, "Маффин"), BOARD_COLUMN).value = "нет"
         parsed = self.parsed()
-        self.assertEqual(parsed.unknown_codes, ["WQ999"])
         self.assertEqual(len(parsed.errors), 1)
         self.assertIn("WQ63893M", parsed.errors[0])
+
+    def add_line(self, code, name, quantity) -> None:
+        extra = self.sheet.max_row + 1
+        self.sheet.cell(extra, CODE_COLUMN).value = code
+        self.sheet.cell(extra, CODE_COLUMN + 1).value = name
+        self.sheet.cell(extra, BOARD_COLUMN).value = quantity
+
+    def test_new_position_is_not_lost(self) -> None:
+        book = Workbook()
+        book.active.append(["№", "Код", "Название", "Старый код", "Плиты, шт", "Кромка, м"])
+        book.active.append([1, "WQ63893M", "Маффин", "US77301/PGR4201", 220, 1500])
+        book.active.append([2, "WQ999", "Новый декор", "NEW", 40, 30])
+        buffer = BytesIO()
+        book.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue(), self.rows)
+        self.assertEqual(parsed.errors, [])
+        applied = apply_order_file(self.rows, parsed)
+        self.assertEqual(row_named(applied, "Новый декор")["quantity"], 40)
+        self.assertEqual(row_named(applied, "Новый декор")["file_note"], NOTE_NEW_POSITION)
+        items = order_items_from_form(applied).set_index("product")["quantity"]
+        self.assertEqual(items["WQ999 Новый декор 18*1220*2800мм"], 40.0)
+        self.assertEqual(items["WQ999 Новый декор 1*22мм"], 30.0)
+        self.assertEqual(items[MUFFIN], 220.0)
+
+    def test_position_of_another_supplier_uses_the_site_product(self) -> None:
+        self.add_line("WQ63833M", "Моти", 40)
+        site = ("Моти 18*1220*2800мм", "Петля Моти", MUFFIN)
+        parsed = parse_order_form_file(self.content(), self.rows, site)
+        applied = apply_order_file(self.rows, parsed)
+        self.assertEqual(row_named(applied, "Моти")["file_note"], NOTE_OTHER_SUPPLIER)
+        items = order_items_from_form(applied).set_index("product")["quantity"]
+        self.assertEqual(items["Моти 18*1220*2800мм"], 40.0)
+
+    def test_name_alone_does_not_pull_in_goods_of_another_kind(self) -> None:
+        self.add_line("WQ777", "Титан", 20)
+        parsed = parse_order_form_file(self.content(), self.rows, ("Петля Титан", "Ручка Титан 128мм"))
+        self.assertEqual(row_named(apply_order_file(self.rows, parsed), "Титан")["file_note"], NOTE_NEW_POSITION)
+
+    def test_question_mark_instead_of_a_code_falls_back_to_the_name(self) -> None:
+        self.add_line("?", "Бисквит", 15)
+        parsed = self.parsed()
+        self.assertEqual(parsed.extra_rows, [])
+        self.assertEqual(row_named(apply_order_file(self.rows, parsed), "Бисквит")["quantity"], 15)
+
+    def test_hpl_line_outside_the_supplier_goes_to_sheets(self) -> None:
+        self.add_line("WQS31015-MT", "Мрамор Венато", 5)
+        applied = apply_order_file(self.rows, self.parsed())
+        line = row_named(applied, "Мрамор Венато")
+        self.assertEqual((line["quantity"], line["edge_or_sheets"], line["section"]), (0, 5, "hpl"))
+
+    def test_upload_works_when_the_site_has_no_goods_of_the_supplier(self) -> None:
+        empty = build_order_form_rows(pd.DataFrame())
+        parsed = parse_order_form_file(self.content(), empty)
+        applied = apply_order_file(empty, parsed)
+        self.assertEqual(int(applied["quantity"].sum()), 220 + 80)
 
     def test_position_without_an_article_is_matched_by_name(self) -> None:
         rows = build_order_form_rows(forecast(("Петля накладная", 12)))

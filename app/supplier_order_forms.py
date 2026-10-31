@@ -290,7 +290,8 @@ class ParsedOrderFile:
 
     fingerprint: str = ""
     quantities: dict[str, tuple[int, int]] = field(default_factory=dict)
-    unknown_codes: list[str] = field(default_factory=list)
+    # Lines of the file that are not among the supplier's goods on the site.
+    extra_rows: list[dict[str, object]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -313,13 +314,79 @@ def _file_quantity(value: object) -> int | None:
     return math.ceil(number - 1e-9)
 
 
+NOTE_OTHER_SUPPLIER = "Есть на сайте, не у этого поставщика"
+NOTE_NEW_POSITION = "Новая: на сайте не найдена"
+_MIN_NAME_LENGTH = 4
+
+
+def _find_site_product(
+    code: str,
+    old_code: str,
+    name: str,
+    wanted_kind: str,
+    site_products: list[tuple[str, str, str]],
+    *,
+    match_by_name: bool = True,
+) -> str:
+    """The site product of a file line: by code first; by name only among goods of the same kind."""
+    terms = [term for term in (code, *_old_code_terms(old_code)) if term]
+    for product, text, kind in site_products:
+        if kind in (wanted_kind, "") and any(_contains_term(text, term) for term in terms):
+            return product
+    if match_by_name and len(_normalize(name)) >= _MIN_NAME_LENGTH:
+        for product, text, kind in site_products:
+            if kind == wanted_kind and _contains_term(text, name):
+                return product
+    return ""
+
+
+def _extra_row(
+    code: str,
+    old_code: str,
+    name: str,
+    section: str,
+    site_products: list[tuple[str, str, str]],
+) -> dict[str, object]:
+    """An order line for goods outside the supplier's list: the file is final, so none are lost."""
+    known = next((row for row in WQ_ORDER_ROWS if _normalize_code(row.code) == _normalize_code(code)), None)
+    match_by_name = known.match_by_name if known else True
+    if section == SECTION_BOARDS:
+        product = _find_site_product(code, old_code, name, "board", site_products, match_by_name=match_by_name)
+        edge_product = _find_site_product(code, old_code, name, "edge", site_products, match_by_name=match_by_name)
+    else:
+        wanted = "hpl" if section == SECTION_HPL else ""
+        product = _find_site_product(code, old_code, name, wanted, site_products, match_by_name=match_by_name)
+        edge_product = ""
+    return {
+        **{column: "" for column in ORDER_FORM_COLUMNS},
+        "row_id": f"{section}:{_normalize_code(code) or _normalize_code(name)}",
+        "code": code,
+        "quantity": 0,
+        "old_code": old_code,
+        "edge_or_sheets": 0,
+        "name": name or code,
+        "section": section,
+        "available_stock_qty": 0.0,
+        "forecast_qty": 0.0,
+        "product": product,
+        "edge_product": edge_product,
+        "low_priority_skipped": False,
+        "file_note": NOTE_OTHER_SUPPLIER if product or edge_product else NOTE_NEW_POSITION,
+    }
+
+
 _BOARD_TITLES = ("плиты, шт", "кол-во")
 _EDGE_TITLES = ("кромка, м", "кромка")
+_OLD_CODE_TITLES = ("старый код", "код старый")
 _SHEET_TITLES = ("hpl, листов",)
 
 
-def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrderFile:
-    """Quantities from the file for the supplier's positions; `order_rows` lists all of them."""
+def parse_order_form_file(
+    content: bytes,
+    order_rows: pd.DataFrame,
+    site_products: tuple[str, ...] | list[str] = (),
+) -> ParsedOrderFile:
+    """Quantities from the file: `order_rows` lists the supplier's goods, `site_products` all goods of the site."""
     parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
     try:
         sheet = load_workbook(BytesIO(content), data_only=True, read_only=True).worksheets[0]
@@ -336,6 +403,14 @@ def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrd
             by_key[_normalize_code(record["name"])] = record
         if record["old_code"] not in ("", "NEW"):
             by_key.setdefault(_normalize_code(record["old_code"]), record)
+    # A code can be missing or replaced by a "?" in a file typed by hand: the name then decides.
+    for record in order_rows.to_dict(orient="records"):
+        by_key.setdefault(_normalize_code(record["name"]), record)
+    searchable = [
+        (product, text, _product_kind(text))
+        for product, text in ((str(product), _normalize(product)) for product in site_products)
+    ]
+    extras: dict[str, dict[str, object]] = {}
 
     # Each table of the form has its own header row, and files saved from the
     # earlier form layout are still accepted.
@@ -356,6 +431,8 @@ def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrd
         if not columns:
             continue
         raw_code = cell(row, ("код",))
+        if str(raw_code or "").strip() in ("?", "-"):
+            raw_code = None
         raw_name = cell(row, ("название",))
         board = _file_quantity(cell(row, _BOARD_TITLES))
         edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES)))
@@ -363,12 +440,25 @@ def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrd
         label = str(raw_code if _normalize_code(raw_code) else raw_name or "").strip()
         if not key:
             continue  # The totals row and blank lines have no code or name.
-        record = by_key.get(key)
+        record = by_key.get(key) or by_key.get(_normalize_code(cell(row, _OLD_CODE_TITLES))) or by_key.get(_normalize_code(raw_name))
         if record is None:
             # Section titles such as the HPL band are not goods and carry no numbers.
-            if board or edge:
-                parsed.unknown_codes.append(label)
-            continue
+            if not board and not edge:
+                continue
+            if board is not None and edge is not None:
+                code = str(raw_code if _normalize_code(raw_code) else "").strip()
+                catalog_row = next((row for row in WQ_ORDER_ROWS if _normalize_code(row.code) == _normalize_code(code)), None)
+                if catalog_row is not None:
+                    section = catalog_row.section
+                elif "hpl, листов" in columns:
+                    section = SECTION_HPL
+                elif set(columns) & set(_EDGE_TITLES):
+                    section = SECTION_BOARDS
+                else:
+                    section = SECTION_OTHER
+                old_code = str(cell(row, _OLD_CODE_TITLES) or "").strip()
+                record = _extra_row(code, old_code, str(raw_name or "").strip(), section, searchable)
+                record = extras.setdefault(str(record["row_id"]), record)
         if board is None or edge is None:
             parsed.errors.append(f"Строка {number}, код {label}: количество должно быть числом не меньше нуля.")
             continue
@@ -380,12 +470,16 @@ def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrd
         parsed.quantities[record["row_id"]] = (previous[0] + board, previous[1] + edge)
     if not columns:
         parsed.errors.append("Это не форма заказа: не нашёл колонки с кодом и количеством.")
+    parsed.extra_rows = list(extras.values())
     return parsed
 
 
 def apply_order_file(order_rows: pd.DataFrame, parsed: ParsedOrderFile) -> pd.DataFrame:
     """The form with the file's quantities: a position left blank in the file is not ordered."""
-    result = order_rows.copy()
+    result = order_rows.assign(file_note="")
+    if parsed.extra_rows:
+        extras = pd.DataFrame(parsed.extra_rows)
+        result = extras if result.empty else pd.concat([result, extras], ignore_index=True)
     result["quantity"] = [parsed.quantities.get(row_id, (0, 0))[0] for row_id in result["row_id"]]
     result["edge_or_sheets"] = [parsed.quantities.get(row_id, (0, 0))[1] for row_id in result["row_id"]]
     return result
