@@ -8,6 +8,7 @@ __pycache__/
 .streamlit.pid
 .claude/
 data/
+tests/private/
 .env
 .env.*
 !.env.example

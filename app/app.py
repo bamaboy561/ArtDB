@@ -153,6 +153,20 @@ from supplier_rules_store import (
     replace_supplier_keyword_rules,
     upsert_supplier_product_assignments,
 )
+from swiss_krono_order import (
+    apply_order_file as apply_swiss_krono_file,
+    build_order_rows as build_swiss_krono_rows,
+    build_order_workbook as build_swiss_krono_workbook,
+    is_swiss_krono_supplier,
+    load_catalog as load_swiss_krono_catalog,
+    order_file_comment as swiss_krono_file_comment,
+    order_items_from_rows as swiss_krono_items_from_rows,
+    order_totals as swiss_krono_totals,
+    parse_order_file as parse_swiss_krono_file,
+    rows_from_saved_order as swiss_krono_rows_from_saved_order,
+    save_template as save_swiss_krono_template,
+    template_ready as swiss_krono_template_ready,
+)
 from telegram_reports import (
     TARGETED_TELEGRAM_REPORT_LABELS,
     build_supplier_order_content,
@@ -7260,10 +7274,27 @@ def create_wq_order(
     *,
     comment: str,
 ) -> None:
+    create_form_order(
+        order_form_supplier(order_rows),
+        order_items_from_form(order_rows),
+        current_user,
+        lead_time_days,
+        comment=comment,
+        upload_round_key="wq_order_upload_round",
+    )
+
+
+def create_form_order(
+    supplier: str,
+    order_items: pd.DataFrame,
+    current_user: dict[str, str],
+    lead_time_days: int,
+    *,
+    comment: str,
+    upload_round_key: str,
+) -> None:
     """Save the final form as an order in transit, so the goods are not recommended again."""
     try:
-        supplier = order_form_supplier(order_rows)
-        order_items = order_items_from_form(order_rows)
         created_order = create_procurement_order(
             supplier=supplier,
             items_frame=order_items,
@@ -7287,11 +7318,239 @@ def create_wq_order(
             f"Заказ {created_order['order_id']} поставщику {supplier} теперь в пути."
         )
         st.session_state["procurement_selected_order_id"] = created_order["order_id"]
-        st.session_state["wq_order_upload_round"] = st.session_state.get("wq_order_upload_round", 0) + 1
+        st.session_state[upload_round_key] = st.session_state.get(upload_round_key, 0) + 1
         st.session_state["procurement_open_tab"] = "Заказы"
     except ValueError as error:
         st.session_state["procurement_error_message"] = str(error)
     st.rerun()
+
+
+@st.cache_data(show_spinner=False, max_entries=4, ttl=900)
+def cached_build_swiss_krono_rows(_procurement_forecast: pd.DataFrame, forecast_key: str) -> pd.DataFrame:
+    return build_swiss_krono_rows(_procurement_forecast)
+
+
+def render_swiss_krono_order_form(
+    procurement_forecast: pd.DataFrame,
+    forecast_key: str,
+    current_user: dict[str, str],
+    *,
+    lead_time_days: int,
+) -> None:
+    if not swiss_krono_template_ready():
+        with st.container(border=True):
+            render_panel_header("Заказ Swiss Krono", "Бланк завода заполняется товарами этого поставщика.")
+            st.info("Загрузите бланк завода: файл, который присылает Swiss Krono. Он хранится только на сервере сайта.")
+            if can_manage_procurement(current_user):
+                render_swiss_krono_template_upload(current_user)
+        return
+    order_rows = cached_build_swiss_krono_rows(procurement_forecast, forecast_key)
+    if order_rows.empty:
+        with st.container(border=True):
+            render_panel_header("Заказ Swiss Krono", "Бланк завода заполняется товарами этого поставщика.")
+            st.info("Сейчас в выборке нет товаров Swiss Krono. Назначьте им бренд или поставщика «Swiss Krono» и проверьте фильтры.")
+            if can_manage_procurement(current_user):
+                with st.expander("Обновить бланк завода"):
+                    render_swiss_krono_template_upload(current_user)
+        return
+
+    with st.container(border=True):
+        render_panel_header(
+            "Заказ Swiss Krono",
+            "Бланк завода, заказ в паллетах. Потребность округлена до ближайшей паллеты, количество можно поправить в таблице.",
+        )
+        edited = st.data_editor(
+            order_rows.set_index("row_id")[
+                [
+                    "label",
+                    "pallets",
+                    "needed_sheets",
+                    "pack",
+                    "name",
+                    "thickness",
+                    "price_group",
+                    "abc_class",
+                    "xyz_class",
+                    "priority",
+                    "available_stock_qty",
+                    "forecast_qty",
+                ]
+            ].assign(price_group=lambda frame: frame["price_group"].astype(str)),
+            hide_index=True,
+            width="stretch",
+            height=320,
+            key=f"swiss_krono_order_editor_{forecast_key}",
+            disabled=[
+                "label",
+                "name",
+                "thickness",
+                "needed_sheets",
+                "pack",
+                "price_group",
+                "abc_class",
+                "xyz_class",
+                "priority",
+                "available_stock_qty",
+                "forecast_qty",
+            ],
+            column_config={
+                "label": st.column_config.TextColumn("Декор"),
+                "name": st.column_config.TextColumn("Название"),
+                "thickness": st.column_config.NumberColumn("Толщ., мм"),
+                "needed_sheets": st.column_config.NumberColumn("Нужно, листов", format="%.0f"),
+                "pallets": st.column_config.NumberColumn("Паллет", min_value=0, step=1),
+                "pack": st.column_config.NumberColumn("Листов в паллете"),
+                "price_group": st.column_config.TextColumn("Ценовая группа"),
+                "abc_class": st.column_config.TextColumn("ABC"),
+                "xyz_class": st.column_config.TextColumn("XYZ"),
+                "priority": st.column_config.TextColumn("Приоритет"),
+                "available_stock_qty": st.column_config.NumberColumn("Доступно, листов"),
+                "forecast_qty": st.column_config.NumberColumn("Прогноз, листов"),
+            },
+        )
+        final_rows = order_rows.copy()
+        final_rows["pallets"] = final_rows["row_id"].map(edited["pallets"]).fillna(0).astype(int)
+        render_swiss_krono_totals(final_rows)
+        low_priority = order_rows.loc[order_rows["low_priority_skipped"], "label"].tolist()
+        if low_priority:
+            st.caption(
+                f"Не предложено из-за низкого приоритета ({len(low_priority)}): "
+                + ", ".join(low_priority)
+                + ". При необходимости впишите паллеты вручную."
+            )
+        order_items = swiss_krono_items_from_rows(final_rows)
+        download_col, order_col = st.columns(2, gap="small")
+        with download_col:
+            st.download_button(
+                "Скачать бланк Swiss Krono",
+                data=partial(build_swiss_krono_workbook, final_rows),
+                file_name=f"swiss_krono_zakaz_{date.today():%Y%m%d}.xlsx",
+                mime=EXCEL_MIME,
+                type="primary",
+                width="stretch",
+                key="dl_swiss_krono_order",
+                disabled=order_items.empty,
+            )
+        if not can_manage_procurement(current_user):
+            return
+        with order_col:
+            if st.button(
+                "В пути: файл не менялся",
+                width="stretch",
+                key="swiss_krono_order_create",
+                disabled=order_items.empty,
+                help="Если завод подтвердил заказ без изменений. Иначе загрузите исправленный бланк ниже.",
+            ):
+                create_form_order(
+                    order_form_supplier(final_rows, default="Swiss Krono"),
+                    order_items,
+                    current_user,
+                    lead_time_days,
+                    comment="Бланк завода Swiss Krono",
+                    upload_round_key="swiss_krono_upload_round",
+                )
+
+        with st.expander("Обновить бланк завода"):
+            st.caption("Когда завод присылает новый бланк: в нём новые материалы и ценовые группы.")
+            render_swiss_krono_template_upload(current_user)
+
+        uploaded_order = st.file_uploader(
+            "Загрузить исправленный бланк",
+            type=["xlsx"],
+            key=f"swiss_krono_file_{st.session_state.get('swiss_krono_upload_round', 0)}",
+            help="Паллеты из файла становятся финальными, по всем колонкам месяца. Строка без паллет в заказ не попадёт.",
+        )
+        if uploaded_order is None:
+            return
+        parsed = parse_swiss_krono_file(uploaded_order.getvalue(), order_rows)
+        for message in parsed.errors:
+            st.error(message)
+        if parsed.errors:
+            st.info("Исправьте файл и загрузите его снова. Заказ не создан.")
+            return
+        if parsed.unknown:
+            st.warning(
+                "Этих материалов нет среди товаров Swiss Krono на сайте, они не войдут в заказ: "
+                + ", ".join(parsed.unknown)
+                + ". Назначьте товар этому поставщику на сайте и загрузите файл снова."
+            )
+        file_rows = apply_swiss_krono_file(order_rows, parsed)
+        render_swiss_krono_totals(file_rows, label="В файле")
+        file_items = swiss_krono_items_from_rows(file_rows)
+        file_comment = swiss_krono_file_comment(uploaded_order.name, parsed)
+        existing_orders = load_procurement_orders()
+        already_saved = (
+            not existing_orders.empty
+            and (
+                existing_orders["comment"].astype(str).str.contains(parsed.fingerprint, regex=False)
+                & existing_orders["status"].ne("cancelled")
+            ).any()
+        )
+        if already_saved:
+            st.warning("Этот файл уже оформлен как заказ. Повторно он не создаётся, чтобы не задвоить товар в пути.")
+        if file_items.empty:
+            st.warning("В файле нет ни одной позиции с паллетами.")
+        if st.button(
+            "Подтвердить: заказ в пути",
+            type="primary",
+            key="swiss_krono_file_confirm",
+            disabled=already_saved or file_items.empty,
+        ):
+            create_form_order(
+                order_form_supplier(final_rows, default="Swiss Krono"),
+                file_items,
+                current_user,
+                lead_time_days,
+                comment=file_comment,
+                upload_round_key="swiss_krono_upload_round",
+            )
+
+
+def render_swiss_krono_template_upload(current_user: dict[str, str]) -> None:
+    uploaded_template = st.file_uploader(
+        "Бланк завода",
+        type=["xlsx"],
+        key=f"swiss_krono_template_{st.session_state.get('swiss_krono_template_round', 0)}",
+    )
+    if uploaded_template is None:
+        return
+    try:
+        save_swiss_krono_template(uploaded_template.getvalue())
+    except ValueError as error:
+        st.error(str(error))
+        return
+    cached_build_swiss_krono_rows.clear()
+    audit_event(
+        action="procurement.swiss_krono_template_upload",
+        user_id=current_user["username"],
+        details={"filename": uploaded_template.name},
+    )
+    st.session_state["swiss_krono_template_round"] = st.session_state.get("swiss_krono_template_round", 0) + 1
+    st.session_state["procurement_flash_message"] = "Бланк завода Swiss Krono сохранён."
+    st.session_state["procurement_open_tab"] = "Заказы"
+    st.rerun()
+
+
+def render_swiss_krono_totals(rows: pd.DataFrame, *, label: str = "К заказу") -> None:
+    """Pallets and area for fitting the wagon, and the shares the form colours red when too low."""
+    totals = swiss_krono_totals(rows)
+    _, middle_minimum, top_minimum = load_swiss_krono_catalog()
+    st.caption(
+        f"{label}: паллет {format_number(totals['pallets'])} · листов {format_number(totals['sheets'])} · "
+        f"{format_number(totals['area'])} м² · ценовые группы 3–4: {totals['middle_share']:.0%}, 5–7: {totals['top_share']:.0%}"
+    )
+    if totals["sheets"] > 0 and (totals["middle_share"] < middle_minimum or totals["top_share"] < top_minimum):
+        st.warning(
+            f"Бланк завода подсветит доли красным: группы 3–4 должны быть от {middle_minimum:.0%}, "
+            f"группы 5–7 от {top_minimum:.0%}."
+        )
+    not_listed = rows.loc[~rows["in_catalog"] & rows["needed_sheets"].gt(0), "label"].tolist()
+    if not_listed:
+        st.warning(
+            "Нет в справочнике завода, в бланк не попадут: "
+            + ", ".join(not_listed)
+            + ". Проверьте код, структуру и толщину в названии товара на сайте."
+        )
 
 
 def render_stock_arrival_review(arrival_lines: pd.DataFrame, editor_key: str) -> pd.DataFrame:
@@ -16662,6 +16921,12 @@ if active_screen == "Закупки":
                     )
 
         with procurement_tabs["Заказы"]:
+            render_swiss_krono_order_form(
+                procurement_forecast,
+                procurement_forecast_cache_key,
+                current_user,
+                lead_time_days=procurement_lead_time_days,
+            )
             render_wq_order_form(
                 procurement_forecast,
                 procurement_forecast_cache_key,
@@ -17235,6 +17500,18 @@ if active_screen == "Закупки":
                                 icon=":material/download:",
                                 use_container_width=True,
                             )
+                            if is_swiss_krono_supplier(selected_order_row["supplier"]) and swiss_krono_template_ready():
+                                st.download_button(
+                                    "Скачать в бланке Swiss Krono",
+                                    data=partial(
+                                        build_swiss_krono_workbook,
+                                        swiss_krono_rows_from_saved_order(selected_order_lines),
+                                    ),
+                                    file_name=f"swiss_krono_zakaz_{str(selected_order_id)[-12:]}.xlsx",
+                                    mime=EXCEL_MIME,
+                                    key=f"procurement_order_krono_export_{selected_order_id}",
+                                    use_container_width=True,
+                                )
                             if is_wq_supplier(selected_order_row["supplier"]):
                                 selected_order_form = order_form_from_items(selected_order_lines)
                                 st.download_button(
