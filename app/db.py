@@ -241,7 +241,8 @@ CREATE TABLE IF NOT EXISTS procurement_order_items (
     product TEXT NOT NULL,
     quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
     unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
-    comment TEXT NOT NULL DEFAULT ''
+    comment TEXT NOT NULL DEFAULT '',
+    received_quantity DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS procurement_order_items_order_idx
@@ -449,6 +450,12 @@ def _migrate_procurement_items_table(cursor: Any) -> None:
     )
 
 
+def _migrate_procurement_order_items_table(cursor: Any) -> None:
+    cursor.execute(
+        "ALTER TABLE procurement_order_items ADD COLUMN IF NOT EXISTS received_quantity DOUBLE PRECISION NOT NULL DEFAULT 0"
+    )
+
+
 def _migrate_supplier_assignments_to_brands(cursor: Any) -> None:
     cursor.execute(
         "SELECT last_run_key FROM service_state WHERE service_name = %s",
@@ -597,6 +604,7 @@ def ensure_database_ready() -> None:
             _migrate_users_table(cursor)
             _migrate_audit_logs_table(cursor)
             _migrate_procurement_items_table(cursor)
+            _migrate_procurement_order_items_table(cursor)
             _migrate_supplier_assignments_to_brands(cursor)
             _restore_migrated_supplier_assignments(cursor)
     _DB_READY = True

@@ -67,7 +67,9 @@ from procurement_order_store import (
     PROCUREMENT_ORDER_STATUSES,
     PROCUREMENT_ORDER_STATUS_LABELS,
     ACTIVE_INBOUND_ORDER_STATUSES,
+    apply_order_arrivals,
     apply_procurement_order_receipt,
+    build_arrival_lines,
     build_open_order_summary,
     build_procurement_order_overview,
     create_procurement_order,
@@ -7187,6 +7189,49 @@ def create_wq_order(
     st.rerun()
 
 
+def render_stock_arrival_review(arrival_lines: pd.DataFrame, editor_key: str) -> pd.DataFrame:
+    """The quantities to accept with a new stock file; the suggestion can be corrected."""
+    with st.container(border=True):
+        st.markdown("**Сверка с заказами в пути**")
+        st.caption(
+            "Приехало = в файле − было + продано с прошлой загрузки, но не больше, чем в пути. "
+            "Проверьте цифры: если продажи ещё не загружены или была инвентаризация, расчёт ошибётся. "
+            "На остаток это не влияет, он берётся из файла. Что не приехало, останется в пути."
+        )
+        edited = st.data_editor(
+            arrival_lines.sort_values("arrived_qty", ascending=False, kind="stable"),
+            hide_index=True,
+            width="stretch",
+            height=min(320, 38 + 35 * len(arrival_lines)),
+            key=editor_key,
+            disabled=[column for column in arrival_lines.columns if column != "arrived_qty"],
+            column_order=[
+                "product",
+                "remaining_qty",
+                "stock_before",
+                "stock_in_file",
+                "sold_qty",
+                "arrived_qty",
+                "supplier",
+                "order_id",
+            ],
+            column_config={
+                "order_id": st.column_config.TextColumn("Заказ"),
+                "supplier": st.column_config.TextColumn("Поставщик"),
+                "product": st.column_config.TextColumn("Товар"),
+                "remaining_qty": st.column_config.NumberColumn("В пути"),
+                "stock_before": st.column_config.NumberColumn("Было"),
+                "stock_in_file": st.column_config.NumberColumn("В файле"),
+                "sold_qty": st.column_config.NumberColumn("Продано"),
+                "arrived_qty": st.column_config.NumberColumn("Приехало", min_value=0.0, step=1.0),
+            },
+        )
+    arrived = pd.to_numeric(edited["arrived_qty"], errors="coerce").fillna(0.0)
+    if arrived.gt(edited["remaining_qty"]).any():
+        st.warning("Где «Приехало» больше, чем в пути, будет принято только количество в пути.")
+    return edited.assign(arrived_qty=arrived.clip(upper=edited["remaining_qty"]))
+
+
 def render_wq_order_file_upload(
     order_rows: pd.DataFrame,
     proposed_rows: pd.DataFrame,
@@ -10802,6 +10847,8 @@ with main_col:
                 else:
                     st.text_input("Менеджеры", value="Все", disabled=True, key="main_manager_scope_display")
 
+# The stock file covers the whole warehouse, whatever the screen filters show.
+stock_arrival_sales = data
 filter_badges = []
 if len(selected_dates) == 2:
     date_from, date_to = selected_dates
@@ -15487,12 +15534,49 @@ if active_screen == "Закупки":
                                                     "Чтобы обновить карточку «Сумма склада», "
                                                     "сопоставьте колонку с общей суммой остатка."
                                                 )
+                                            arrival_lines = build_arrival_lines(
+                                                procurement_orders,
+                                                procurement_order_items,
+                                                procurement_items,
+                                                apply_sku_aliases(
+                                                    prepared_inventory_result.data.loc[
+                                                        prepared_inventory_result.data["__has_stock_on_hand"].fillna(False).astype(bool),
+                                                        ["product", "stock_on_hand"],
+                                                    ],
+                                                    sku_aliases,
+                                                    aggregate_inventory=True,
+                                                ),
+                                                stock_arrival_sales,
+                                                full_snapshot=full_inventory_snapshot,
+                                            )
+                                            order_arrivals = arrival_lines
+                                            if not arrival_lines.empty:
+                                                order_arrivals = render_stock_arrival_review(
+                                                    arrival_lines,
+                                                    f"stock_arrivals_{inventory_upload_file.file_id}_{full_inventory_snapshot}",
+                                                )
+                                            has_order_arrivals = bool(
+                                                not order_arrivals.empty and order_arrivals["arrived_qty"].gt(0).any()
+                                            )
                                             if st.button(
-                                                "Сохранить остатки из файла",
+                                                "Сохранить остатки и принять приход"
+                                                if has_order_arrivals
+                                                else "Сохранить остатки из файла",
                                                 key="procurement_stock_upload_save_button",
                                                 use_container_width=True,
                                                 type="primary",
                                             ):
+                                                # Arrivals go first: if the stock fails to save, loading the
+                                                # file again sets it right, while the reverse order would lose
+                                                # the growth the arrivals are read from.
+                                                completed_orders = (
+                                                    apply_order_arrivals(
+                                                        order_arrivals,
+                                                        updated_by=current_user["username"],
+                                                    )
+                                                    if has_order_arrivals
+                                                    else set()
+                                                )
                                                 saved_count = merge_procurement_upload(
                                                     prepared_inventory_result.data,
                                                     updated_by=current_user["username"],
@@ -15587,6 +15671,15 @@ if active_screen == "Закупки":
                                                         "reconciliation_differences": (
                                                             reconciliation_differences
                                                         ),
+                                                        "order_arrivals": (
+                                                            order_arrivals.loc[
+                                                                order_arrivals["arrived_qty"].gt(0),
+                                                                ["order_id", "product", "arrived_qty"],
+                                                            ].to_dict(orient="records")
+                                                            if has_order_arrivals
+                                                            else []
+                                                        ),
+                                                        "completed_orders": sorted(completed_orders),
                                                         "categories": selected_categories or [],
                                                         "salons": selected_salons_filter or [],
                                                     },
@@ -15615,6 +15708,16 @@ if active_screen == "Закупки":
                                                             if not is_missing(
                                                                 uploaded_stock_value_total
                                                             )
+                                                            else ""
+                                                        )
+                                                        + (
+                                                            f" Принято по заказам: {format_number(order_arrivals['arrived_qty'].sum())}."
+                                                            if has_order_arrivals
+                                                            else ""
+                                                        )
+                                                        + (
+                                                            f" Заказы получены полностью: {', '.join(sorted(completed_orders))}."
+                                                            if completed_orders
                                                             else ""
                                                         )
                                                     )
@@ -16677,7 +16780,7 @@ if active_screen == "Закупки":
                             },
                             {
                                 "label": "Единиц в пути",
-                                "value": format_number(float(pd.to_numeric(_inbound_orders["total_quantity"], errors="coerce").sum())),
+                                "value": format_number(float(pd.to_numeric(_inbound_orders["remaining_quantity"], errors="coerce").sum())),
                                 "hint": "заказано и ещё не принято",
                                 "tone": "info",
                             },
@@ -16824,17 +16927,18 @@ if active_screen == "Закупки":
                             ].iloc[0]
                             selected_order_lines = procurement_order_items[
                                 procurement_order_items["order_id"] == selected_order_id
-                            ][["product", "quantity", "unit_cost", "comment"]].copy()
+                            ][["product", "quantity", "received_quantity", "unit_cost", "comment"]].copy()
                             selected_order_lines["line_total"] = (
                                 pd.to_numeric(selected_order_lines["quantity"], errors="coerce").fillna(0.0)
                                 * pd.to_numeric(selected_order_lines["unit_cost"], errors="coerce").fillna(0.0)
                             )
                             selected_order_lines = selected_order_lines[
-                                ["product", "quantity", "unit_cost", "line_total", "comment"]
+                                ["product", "quantity", "received_quantity", "unit_cost", "line_total", "comment"]
                             ]
                             order_lines_rename_map = {
                                 "product": "SKU / Товар",
                                 "quantity": "Количество",
+                                "received_quantity": "Принято",
                                 "unit_cost": "Цена закупки",
                                 "line_total": "Сумма",
                                 "comment": "Комментарий",
@@ -16872,7 +16976,15 @@ if active_screen == "Закупки":
                                     {
                                         "label": "SKU в заказе",
                                         "value": format_number(selected_order_row["sku_count"]),
-                                        "hint": f"Всего единиц: {format_number(selected_order_row['total_quantity'])}",
+                                        "hint": (
+                                            f"Всего единиц: {format_number(selected_order_row['total_quantity'])}"
+                                            + (
+                                                f" · ещё в пути: {format_number(selected_order_row['remaining_quantity'])}"
+                                                if _selected_status in ACTIVE_INBOUND_ORDER_STATUSES
+                                                and selected_order_row["remaining_quantity"] < selected_order_row["total_quantity"]
+                                                else ""
+                                            )
+                                        ),
                                     },
                                     {
                                         "label": "Ожидаемая дата",
@@ -17023,7 +17135,10 @@ if active_screen == "Закупки":
                                         st.session_state["procurement_error_message"] = str(error)
                                     st.rerun()
                                 if _selected_status == "in_transit":
-                                    st.caption("Товар приехал? Ниже выберите статус приёмки и подтвердите — остатки обновятся.")
+                                    st.caption(
+                                        "Товар приехал? Загрузите файл остатков: приход сверится с заказом при загрузке. "
+                                        "Пока файла нет, можно принять заказ целиком ниже."
+                                    )
                                 with st.expander("Изменить статус, дату или комментарий", expanded=_selected_status == "in_transit"):
                                     current_status_value = str(selected_order_row["status"]).strip()
                                     selected_order_comment = str(selected_order_row.get("comment", "") or "")

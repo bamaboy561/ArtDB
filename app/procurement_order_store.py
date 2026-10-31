@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
+from product_identity import map_unique, normalize_product_match_key
 from procurement_store import apply_procurement_receipts
 
 
@@ -46,6 +47,17 @@ ORDER_ITEM_COLUMNS = [
     "quantity",
     "unit_cost",
     "comment",
+    "received_quantity",
+]
+ARRIVAL_COLUMNS = [
+    "order_id",
+    "supplier",
+    "product",
+    "remaining_qty",
+    "stock_before",
+    "stock_in_file",
+    "sold_qty",
+    "arrived_qty",
 ]
 
 
@@ -103,6 +115,7 @@ def _normalize_order_item_record(record: dict[str, Any]) -> dict[str, Any]:
         "quantity": _safe_float(record.get("quantity", 0)),
         "unit_cost": _safe_float(record.get("unit_cost", 0)),
         "comment": str(record.get("comment", "")).strip(),
+        "received_quantity": _safe_float(record.get("received_quantity", 0)),
     }
 
 
@@ -137,8 +150,30 @@ def _normalize_order_items_frame(frame: pd.DataFrame) -> pd.DataFrame:
     normalized["quantity"] = pd.to_numeric(normalized["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
     normalized["unit_cost"] = pd.to_numeric(normalized["unit_cost"], errors="coerce").fillna(0.0).clip(lower=0.0)
     normalized["comment"] = normalized["comment"].fillna("").astype(str).str.strip()
+    normalized["received_quantity"] = pd.to_numeric(normalized["received_quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
     normalized = normalized[(normalized["order_id"] != "") & (normalized["product"] != "") & (normalized["quantity"] > 0)].copy()
     return normalized.reset_index(drop=True)
+
+
+def _write_order_items(items: pd.DataFrame) -> None:
+    PROCUREMENT_ORDER_ITEMS_PATH.write_text(
+        json.dumps(
+            [
+                _normalize_order_item_record(row)
+                for row in _normalize_order_items_frame(items).to_dict(orient="records")
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _remaining_quantity(items: pd.DataFrame) -> pd.Series:
+    """What is still on the way: an order can arrive in several deliveries."""
+    if "received_quantity" not in items.columns:
+        return items["quantity"]
+    return (items["quantity"] - items["received_quantity"]).clip(lower=0.0)
 
 
 def _generate_order_id() -> str:
@@ -211,7 +246,8 @@ def load_procurement_order_items() -> pd.DataFrame:
                         product,
                         quantity,
                         COALESCE(unit_cost, 0) AS unit_cost,
-                        comment
+                        comment,
+                        COALESCE(received_quantity, 0) AS received_quantity
                     FROM procurement_order_items
                     ORDER BY order_id, product
                     """
@@ -225,6 +261,7 @@ def load_procurement_order_items() -> pd.DataFrame:
                     "quantity": row.get("quantity"),
                     "unit_cost": row.get("unit_cost"),
                     "comment": str(row.get("comment", "")).strip(),
+                    "received_quantity": row.get("received_quantity"),
                 }
                 for row in rows
             ],
@@ -340,17 +377,7 @@ def create_procurement_order(
         ),
         encoding="utf-8",
     )
-    PROCUREMENT_ORDER_ITEMS_PATH.write_text(
-        json.dumps(
-            [
-                _normalize_order_item_record(row)
-                for row in _normalize_order_items_frame(items).to_dict(orient="records")
-            ],
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    _write_order_items(items)
     return normalized_order
 
 
@@ -377,6 +404,20 @@ def update_procurement_order(
     if database_enabled():
         with get_db_connection() as connection:
             with connection.cursor() as cursor:
+                if normalized_status in ACTIVE_INBOUND_ORDER_STATUSES:
+                    # Reopening a received order puts its goods back on the way.
+                    cursor.execute(
+                        """
+                        UPDATE procurement_order_items
+                        SET received_quantity = 0
+                        WHERE order_id = %s
+                          AND EXISTS (
+                              SELECT 1 FROM procurement_orders
+                              WHERE order_id = %s AND status = 'received'
+                          )
+                        """,
+                        (normalized_order_id, normalized_order_id),
+                    )
                 cursor.execute(
                     """
                     UPDATE procurement_orders
@@ -438,6 +479,10 @@ def update_procurement_order(
     if not mask.any():
         return None
 
+    if normalized_status in ACTIVE_INBOUND_ORDER_STATUSES and orders.loc[mask, "status"].eq("received").any():
+        items = load_procurement_order_items()
+        items.loc[items["order_id"] == normalized_order_id, "received_quantity"] = 0.0
+        _write_order_items(items)
     if normalized_status is not None:
         orders.loc[mask, "status"] = normalized_status
     if normalized_order_date is not None:
@@ -488,18 +533,228 @@ def apply_procurement_order_receipt(
     if current_status == "cancelled":
         raise ValueError("Нельзя принять отменённый заказ.")
 
-    receipt_items = items[items["order_id"].astype(str).str.strip() == normalized_order_id][["product", "quantity"]].copy()
-    if receipt_items.empty:
+    order_items = items[items["order_id"].astype(str).str.strip() == normalized_order_id]
+    if order_items.empty:
         raise ValueError("В заказе нет товарных строк для приёмки.")
 
-    apply_procurement_receipts(receipt_items, updated_by=updated_by)
-    return update_procurement_order(
+    # What an earlier stock file already brought in is on the stock, only the rest is added.
+    apply_procurement_receipts(
+        order_items.assign(quantity=_remaining_quantity(order_items))[["product", "quantity"]],
+        updated_by=updated_by,
+    )
+    updated_order = update_procurement_order(
         normalized_order_id,
         status="received",
         expected_date=expected_date,
         updated_by=updated_by,
         comment=comment if comment is not None else str(order_rows.iloc[0].get("comment", "")).strip(),
     )
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE procurement_order_items SET received_quantity = quantity WHERE order_id = %s",
+                    (normalized_order_id,),
+                )
+    else:
+        mask = items["order_id"] == normalized_order_id
+        items.loc[mask, "received_quantity"] = items.loc[mask, "quantity"]
+        _write_order_items(items)
+    return updated_order
+
+
+def build_arrival_lines(
+    orders_frame: pd.DataFrame,
+    order_items_frame: pd.DataFrame,
+    stock_before: pd.DataFrame,
+    stock_in_file: pd.DataFrame,
+    sales: pd.DataFrame,
+    *,
+    full_snapshot: bool,
+) -> pd.DataFrame:
+    """Open order lines with the quantity a new stock file suggests has arrived.
+
+    arrived = stock in the file - stored stock + sales since the stock was stored.
+    The oldest order of a product takes the arrival first. A partial file says
+    nothing about the products it does not list, so they are left out.
+    """
+    if orders_frame.empty or order_items_frame.empty:
+        return pd.DataFrame(columns=ARRIVAL_COLUMNS)
+    active_orders = orders_frame[orders_frame["status"].isin(ACTIVE_INBOUND_ORDER_STATUSES)]
+    lines = order_items_frame.merge(
+        active_orders[["order_id", "supplier", "order_date"]],
+        on="order_id",
+        how="inner",
+    )
+    lines = lines.assign(remaining_qty=_remaining_quantity(lines))
+    lines = lines[lines["remaining_qty"] > 0].copy()
+    if lines.empty:
+        return pd.DataFrame(columns=ARRIVAL_COLUMNS)
+    lines["_key"] = lines["product"].map(normalize_product_match_key)
+
+    file_stock = (
+        stock_in_file.assign(
+            _key=stock_in_file["product"].map(normalize_product_match_key),
+            stock_on_hand=pd.to_numeric(stock_in_file["stock_on_hand"], errors="coerce").fillna(0.0),
+        )
+        .groupby("_key")["stock_on_hand"]
+        .sum()
+    )
+    if not full_snapshot:
+        lines = lines[lines["_key"].isin(file_stock.index)].copy()
+        if lines.empty:
+            return pd.DataFrame(columns=ARRIVAL_COLUMNS)
+    open_keys = set(lines["_key"])
+
+    # The latest record of each product, as the procurement forecast reads it.
+    stored: dict[str, tuple[float, pd.Timestamp | None]] = {}
+    if not stock_before.empty:
+        stored_rows = stock_before.assign(_key=stock_before["product"].map(normalize_product_match_key))
+        stored_rows = stored_rows[stored_rows["_key"].isin(open_keys)]
+        if "updated_at" not in stored_rows.columns:
+            stored_rows = stored_rows.assign(updated_at="")
+        stored_rows = stored_rows.assign(_updated=stored_rows["updated_at"].fillna("").astype(str))
+        for row in stored_rows.sort_values("_updated", kind="stable").to_dict(orient="records"):
+            parsed = pd.to_datetime(row["_updated"] or None, errors="coerce", utc=True)
+            stock_value = pd.to_numeric(row.get("stock_on_hand"), errors="coerce")
+            stored[row["_key"]] = (
+                0.0 if pd.isna(stock_value) else float(stock_value),
+                None if pd.isna(parsed) else parsed.tz_localize(None).normalize(),
+            )
+
+    sold: dict[str, float] = {}
+    cutoffs = [cutoff for _, cutoff in stored.values() if cutoff is not None]
+    if cutoffs and not sales.empty:
+        recent = sales.loc[sales["date"] >= min(cutoffs) + pd.Timedelta(days=1), ["product", "date", "quantity"]]
+        recent = recent.assign(_key=map_unique(recent["product"], normalize_product_match_key))
+        recent = recent[recent["_key"].isin(open_keys)]
+        for key, group in recent.groupby("_key"):
+            cutoff = stored.get(key, (0.0, None))[1]
+            if cutoff is not None:
+                sold[key] = float(
+                    pd.to_numeric(group.loc[group["date"] >= cutoff + pd.Timedelta(days=1), "quantity"], errors="coerce").sum()
+                )
+
+    lines = lines.sort_values(["order_date", "order_id"], na_position="first", kind="stable")
+    available: dict[str, float] = {}
+    records: list[dict[str, Any]] = []
+    for row in lines.to_dict(orient="records"):
+        key = row["_key"]
+        before = stored.get(key, (0.0, None))[0]
+        in_file = float(file_stock.get(key, 0.0))
+        sold_qty = max(sold.get(key, 0.0), 0.0)
+        if key not in available:
+            available[key] = max(in_file - before + sold_qty, 0.0)
+        arrived = min(available[key], float(row["remaining_qty"]))
+        available[key] -= arrived
+        records.append(
+            {
+                "order_id": row["order_id"],
+                "supplier": row["supplier"],
+                "product": row["product"],
+                "remaining_qty": float(row["remaining_qty"]),
+                "stock_before": before,
+                "stock_in_file": in_file,
+                "sold_qty": sold_qty,
+                "arrived_qty": arrived,
+            }
+        )
+    return pd.DataFrame(records, columns=ARRIVAL_COLUMNS)
+
+
+def _apply_arrivals_to_lines(lines: list[dict[str, Any]], arrivals: dict[tuple[str, str], float]) -> set[str]:
+    """Raise `received_quantity` in place; returns the orders that have fully arrived."""
+    left = dict(arrivals)
+    for line in lines:
+        key = (line["order_id"], line["product"])
+        room = max(float(line["quantity"]) - float(line["received_quantity"]), 0.0)
+        taken = min(left.get(key, 0.0), room)
+        if taken > 0:
+            line["received_quantity"] = float(line["received_quantity"]) + taken
+            left[key] -= taken
+    touched = {order_id for (order_id, _), quantity in arrivals.items() if quantity > 0}
+    return {
+        order_id
+        for order_id in touched
+        if all(
+            float(line["quantity"]) - float(line["received_quantity"]) <= 1e-9
+            for line in lines
+            if line["order_id"] == order_id
+        )
+    }
+
+
+def apply_order_arrivals(arrivals_frame: pd.DataFrame, *, updated_by: str) -> set[str]:
+    """Record what arrived, without touching the stock: the stock file already holds it.
+
+    An order whose lines have all arrived becomes received. Returns those orders.
+    """
+    ensure_procurement_order_store()
+    arrivals = arrivals_frame[arrivals_frame["arrived_qty"] > 0]
+    if arrivals.empty:
+        return set()
+    amounts = {
+        (str(row["order_id"]), str(row["product"])): float(row["arrived_qty"])
+        for row in arrivals.to_dict(orient="records")
+    }
+    order_ids = sorted({order_id for order_id, _ in amounts})
+
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT items.line_id, items.order_id, items.product, items.quantity, items.received_quantity
+                    FROM procurement_order_items AS items
+                    JOIN procurement_orders AS orders ON orders.order_id = items.order_id
+                    WHERE items.order_id = ANY(%s) AND orders.status = ANY(%s)
+                    ORDER BY items.line_id
+                    FOR UPDATE OF items
+                    """,
+                    (order_ids, sorted(ACTIVE_INBOUND_ORDER_STATUSES)),
+                )
+                lines = [dict(row) for row in cursor.fetchall()]
+                # An order closed by someone else meanwhile has no lines here and stays closed.
+                open_ids = {line["order_id"] for line in lines}
+                completed = _apply_arrivals_to_lines(
+                    lines,
+                    {key: quantity for key, quantity in amounts.items() if key[0] in open_ids},
+                )
+                for line in lines:
+                    cursor.execute(
+                        "UPDATE procurement_order_items SET received_quantity = %s WHERE line_id = %s",
+                        (line["received_quantity"], line["line_id"]),
+                    )
+                for order_id in open_ids:
+                    cursor.execute(
+                        """
+                        UPDATE procurement_orders
+                        SET status = CASE WHEN %s THEN 'received' ELSE status END,
+                            updated_by = %s,
+                            updated_at = NOW()
+                        WHERE order_id = %s
+                        """,
+                        (order_id in completed, str(updated_by or "").strip(), order_id),
+                    )
+        return completed
+
+    orders = load_procurement_orders()
+    open_ids = set(orders.loc[orders["status"].isin(ACTIVE_INBOUND_ORDER_STATUSES), "order_id"]) & set(order_ids)
+    items = load_procurement_order_items()
+    lines = items[items["order_id"].isin(open_ids)].to_dict(orient="records")
+    completed = _apply_arrivals_to_lines(
+        lines,
+        {key: quantity for key, quantity in amounts.items() if key[0] in open_ids},
+    )
+    untouched = items[~items["order_id"].isin(open_ids)]
+    _write_order_items(pd.concat([untouched, pd.DataFrame(lines, columns=ORDER_ITEM_COLUMNS)], ignore_index=True))
+    for order_id in open_ids:
+        update_procurement_order(
+            order_id,
+            status="received" if order_id in completed else None,
+            updated_by=updated_by,
+        )
+    return completed
 
 
 def build_open_order_summary(
@@ -518,6 +773,8 @@ def build_open_order_summary(
         return pd.DataFrame(columns=columns)
 
     working = order_items_frame.merge(active_orders, on="order_id", how="inner")
+    working = working.assign(quantity=_remaining_quantity(working))
+    working = working[working["quantity"] > 0]
     if working.empty:
         return pd.DataFrame(columns=columns)
 
@@ -545,6 +802,7 @@ def build_procurement_order_overview(
         "expected_date",
         "sku_count",
         "total_quantity",
+        "remaining_quantity",
         "created_by",
         "updated_by",
         "updated_at",
@@ -553,13 +811,15 @@ def build_procurement_order_overview(
     if orders_frame.empty:
         return pd.DataFrame(columns=columns)
 
-    items_summary = pd.DataFrame(columns=["order_id", "sku_count", "total_quantity"])
+    items_summary = pd.DataFrame(columns=["order_id", "sku_count", "total_quantity", "remaining_quantity"])
     if not order_items_frame.empty:
         items_summary = (
-            order_items_frame.groupby("order_id", as_index=False)
+            order_items_frame.assign(remaining_quantity=_remaining_quantity(order_items_frame))
+            .groupby("order_id", as_index=False)
             .agg(
                 sku_count=("product", "nunique"),
                 total_quantity=("quantity", "sum"),
+                remaining_quantity=("remaining_quantity", "sum"),
             )
         )
 
@@ -567,6 +827,7 @@ def build_procurement_order_overview(
     overview["status_label"] = overview["status"].map(PROCUREMENT_ORDER_STATUS_LABELS).fillna(overview["status"])
     overview["sku_count"] = pd.to_numeric(overview["sku_count"], errors="coerce").fillna(0).astype(int)
     overview["total_quantity"] = pd.to_numeric(overview["total_quantity"], errors="coerce").fillna(0.0)
+    overview["remaining_quantity"] = pd.to_numeric(overview["remaining_quantity"], errors="coerce").fillna(0.0)
     overview = overview.sort_values(["updated_at", "order_id"], ascending=[False, False], ignore_index=True)
     for column in columns:
         if column not in overview.columns:
