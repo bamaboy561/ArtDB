@@ -79,6 +79,9 @@ ORDER_FORM_COLUMNS = [
     "available_stock_qty",
     "forecast_qty",
     "found",
+    "product",
+    "edge_product",
+    "supplier",
 ]
 
 _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
@@ -155,12 +158,16 @@ def build_order_form_rows(
             return 0.0
         return float(pd.to_numeric(frame[column], errors="coerce").fillna(0).sum())
 
+    def first_product(frame: pd.DataFrame) -> str:
+        return str(frame["product"].iloc[0]) if not frame.empty else ""
+
     records = []
     for row in rows:
         main_kind = "hpl" if row.section == SECTION_HPL else "board"
         main = forecast[_row_mask(row, texts, kinds, main_kind)]
         main_quantity = _whole_quantity(main["recommended_order_qty"]) if not main.empty else 0
         edge_found = False
+        edge = forecast.iloc[0:0]
         if row.section == SECTION_HPL:
             quantity, edge_or_sheets = 0, main_quantity
         else:
@@ -183,9 +190,44 @@ def build_order_form_rows(
                 "available_stock_qty": total(main, "available_stock_qty"),
                 "forecast_qty": total(main, "forecast_qty"),
                 "found": (not main.empty) or edge_found,
+                "product": first_product(main),
+                "edge_product": first_product(edge),
+                "supplier": first_value(main, "supplier", ""),
             }
         )
     return pd.DataFrame(records, columns=ORDER_FORM_COLUMNS)
+
+
+def order_form_from_items(items: pd.DataFrame) -> pd.DataFrame:
+    """The form for a saved order: its own quantities, not the current recommendation."""
+    return build_order_form_rows(items.rename(columns={"quantity": "recommended_order_qty"}))
+
+
+def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
+    """Order lines for the form as it stands, so the ordered goods count as in transit."""
+    quantities: dict[str, float] = {}
+    for record in order_rows.to_dict(orient="records"):
+        if record["section"] == SECTION_HPL:
+            lines = ((record["product"], record["edge_or_sheets"]),)
+        else:
+            lines = ((record["product"], record["quantity"]), (record["edge_product"], record["edge_or_sheets"]))
+        for product, quantity in lines:
+            if product and float(quantity) > 0:
+                quantities[product] = quantities.get(product, 0.0) + float(quantity)
+    return pd.DataFrame(
+        [
+            {"product": product, "quantity": quantity, "unit_cost": 0.0, "comment": ""}
+            for product, quantity in quantities.items()
+        ],
+        columns=["product", "quantity", "unit_cost", "comment"],
+    )
+
+
+def order_form_supplier(order_rows: pd.DataFrame, default: str = "WQ") -> str:
+    """The site's name for this supplier: the one most of the form's goods are assigned to."""
+    suppliers = order_rows["supplier"].fillna("").astype(str).str.strip()
+    suppliers = suppliers[suppliers.ne("") & suppliers.str.casefold().ne("не назначен")]
+    return str(suppliers.mode().iloc[0]) if not suppliers.empty else default
 
 
 def _store_total_value(content: bytes, total_cell: str, total_value: int) -> bytes:
@@ -293,7 +335,3 @@ def build_wq_order_workbook(order_rows: pd.DataFrame) -> bytes:
     buffer = BytesIO()
     workbook.save(buffer)
     return _store_total_value(buffer.getvalue(), total_cell, int(order_rows["quantity"].sum()))
-
-
-def build_wq_order_content(procurement_forecast: pd.DataFrame) -> bytes:
-    return build_wq_order_workbook(build_order_form_rows(procurement_forecast))

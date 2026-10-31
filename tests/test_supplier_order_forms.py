@@ -16,6 +16,9 @@ from supplier_order_forms import (  # noqa: E402
     WQ_ORDER_ROWS,
     build_order_form_rows,
     build_wq_order_workbook,
+    order_form_from_items,
+    order_form_supplier,
+    order_items_from_form,
 )
 
 
@@ -99,6 +102,45 @@ class OrderFormRowsTest(unittest.TestCase):
         result = build_order_form_rows(pd.DataFrame())
         self.assertEqual(len(result), len(WQ_ORDER_ROWS))
         self.assertEqual(result["quantity"].sum(), 0)
+
+
+class OrderFromFormTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.rows = build_order_form_rows(
+            forecast(
+                ("US77301/PGR4201 Маффин 18*1220*2800мм", 220),
+                ("PGR4201 Маффин 1*22мм", 1500),
+                ("HPL Compact WQS1837-3 FR Молочный Кварцит", 10),
+                ("US77306/PGR4206 Бисквит 18*1220*2800мм", 0),
+            )
+        )
+
+    def test_order_lines_keep_the_site_products_and_skip_empty_rows(self) -> None:
+        items = order_items_from_form(self.rows).set_index("product")["quantity"]
+        self.assertEqual(
+            items.to_dict(),
+            {
+                "US77301/PGR4201 Маффин 18*1220*2800мм": 220.0,
+                "PGR4201 Маффин 1*22мм": 1500.0,
+                "HPL Compact WQS1837-3 FR Молочный Кварцит": 10.0,
+            },
+        )
+
+    def test_quantities_changed_in_the_form_reach_the_order(self) -> None:
+        edited = self.rows.copy()
+        edited.loc[edited["name"] == "Маффин", "quantity"] = 240
+        items = order_items_from_form(edited).set_index("product")["quantity"]
+        self.assertEqual(items["US77301/PGR4201 Маффин 18*1220*2800мм"], 240.0)
+
+    def test_saved_order_rebuilds_the_same_form(self) -> None:
+        rebuilt = order_form_from_items(order_items_from_form(self.rows))
+        for column in ("code", "quantity", "edge_or_sheets"):
+            self.assertEqual(rebuilt[column].tolist(), self.rows[column].tolist())
+
+    def test_order_supplier_comes_from_the_site_or_falls_back(self) -> None:
+        self.assertEqual(order_form_supplier(self.rows), "WQ")
+        named = self.rows.assign(supplier="Кроношпан Китай")
+        self.assertEqual(order_form_supplier(named), "Кроношпан Китай")
 
 
 class OrderWorkbookTest(unittest.TestCase):

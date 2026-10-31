@@ -128,7 +128,14 @@ from sku_catalog_store import (
     upsert_sku_aliases,
     upsert_sku_attribute_overrides,
 )
-from supplier_order_forms import SECTION_HPL, build_order_form_rows, build_wq_order_content
+from supplier_order_forms import (
+    SECTION_HPL,
+    build_order_form_rows,
+    build_wq_order_workbook,
+    order_form_from_items,
+    order_form_supplier,
+    order_items_from_form,
+)
 from supplier_rules_store import (
     KEYWORD_RULE_COLUMNS,
     PRODUCT_ASSIGNMENT_COLUMNS,
@@ -7020,24 +7027,26 @@ def cached_build_order_form_rows(_procurement_forecast: pd.DataFrame, forecast_k
     return build_order_form_rows(_procurement_forecast)
 
 
-def render_wq_order_form(procurement_forecast: pd.DataFrame, forecast_key: str) -> None:
+def render_wq_order_form(
+    procurement_forecast: pd.DataFrame,
+    forecast_key: str,
+    current_user: dict[str, str],
+) -> None:
     order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key)
-    boards_total = int(order_rows["quantity"].sum())
     is_hpl = order_rows["section"].eq(SECTION_HPL)
-    edge_total = int(order_rows.loc[~is_hpl, "edge_or_sheets"].sum())
-    hpl_total = int(order_rows.loc[is_hpl, "edge_or_sheets"].sum())
     missing = order_rows.loc[~order_rows["found"], "name"].tolist()
 
     with st.container(border=True):
-        st.markdown("**Заказ поставщику WQ**")
-        st.caption(f"К заказу: плит {boards_total} шт · кромки {edge_total} м · HPL {hpl_total} листов")
+        render_panel_header(
+            "Заказ поставщику WQ",
+            "Сформирован автоматически по прогнозу и остаткам. Количество можно поправить в таблице, файл учтёт правки.",
+        )
         table = order_rows.assign(
             board_qty=order_rows["quantity"],
             edge_qty=order_rows["edge_or_sheets"].where(~is_hpl, 0),
             hpl_qty=order_rows["edge_or_sheets"].where(is_hpl, 0),
-        )
-        table = table.sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable")
-        st.dataframe(
+        ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable")
+        edited = st.data_editor(
             table[
                 [
                     "code",
@@ -7052,37 +7061,99 @@ def render_wq_order_form(procurement_forecast: pd.DataFrame, forecast_key: str) 
                     "available_stock_qty",
                     "forecast_qty",
                 ]
-            ].rename(
-                columns={
-                    "code": "Код",
-                    "name": "Название",
-                    "board_qty": "Плиты, шт",
-                    "edge_qty": "Кромка, м",
-                    "hpl_qty": "HPL, листов",
-                    "abc_class": "ABC",
-                    "xyz_class": "XYZ",
-                    "priority": "Приоритет",
-                    "stock_status": "Статус",
-                    "available_stock_qty": "Доступно, шт",
-                    "forecast_qty": "Прогноз, шт",
-                }
-            ),
+            ],
             hide_index=True,
             width="stretch",
             height=320,
+            key=f"wq_order_form_editor_{forecast_key}",
+            disabled=[
+                "code",
+                "name",
+                "abc_class",
+                "xyz_class",
+                "priority",
+                "stock_status",
+                "available_stock_qty",
+                "forecast_qty",
+            ],
+            column_config={
+                "code": st.column_config.TextColumn("Код"),
+                "name": st.column_config.TextColumn("Название"),
+                "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
+                "edge_qty": st.column_config.NumberColumn("Кромка, м", min_value=0, step=1),
+                "hpl_qty": st.column_config.NumberColumn("HPL, листов", min_value=0, step=1),
+                "abc_class": st.column_config.TextColumn("ABC"),
+                "xyz_class": st.column_config.TextColumn("XYZ"),
+                "priority": st.column_config.TextColumn("Приоритет"),
+                "stock_status": st.column_config.TextColumn("Статус"),
+                "available_stock_qty": st.column_config.NumberColumn("Доступно, шт"),
+                "forecast_qty": st.column_config.NumberColumn("Прогноз, шт"),
+            },
+        )
+        edited_by_code = edited.set_index("code")
+        final_rows = order_rows.copy()
+        final_rows["quantity"] = final_rows["code"].map(edited_by_code["board_qty"]).fillna(0).astype(int)
+        final_edge = final_rows["code"].map(edited_by_code["edge_qty"]).fillna(0)
+        final_hpl = final_rows["code"].map(edited_by_code["hpl_qty"]).fillna(0)
+        final_rows["edge_or_sheets"] = final_hpl.where(is_hpl, final_edge).astype(int)
+
+        hpl_total = int(final_rows.loc[is_hpl, "edge_or_sheets"].sum())
+        edge_total = int(final_rows.loc[~is_hpl, "edge_or_sheets"].sum())
+        st.caption(
+            f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL {hpl_total} листов"
         )
         if missing:
-            st.warning(
-                f"Не нашёл в продажах и остатках ({len(missing)}), в заказе пусто: " + ", ".join(missing)
+            st.warning(f"Не нашёл в продажах и остатках ({len(missing)}), в заказе пусто: " + ", ".join(missing))
+
+        download_col, order_col = st.columns(2, gap="small")
+        with download_col:
+            st.download_button(
+                "Скачать заказ WQ",
+                data=partial(build_wq_order_workbook, final_rows),
+                file_name=f"wq_zakaz_{date.today():%Y%m%d}.xlsx",
+                mime=EXCEL_MIME,
+                type="primary",
+                width="stretch",
+                key="dl_wq_order_form",
             )
-        st.download_button(
-            "Скачать заказ WQ",
-            data=partial(build_wq_order_content, procurement_forecast),
-            file_name=f"wq_zakaz_{date.today():%Y%m%d}.xlsx",
-            mime=EXCEL_MIME,
-            type="primary",
-            key="dl_wq_order_form",
-        )
+        if not can_manage_procurement(current_user):
+            return
+        order_items = order_items_from_form(final_rows)
+        with order_col:
+            if st.button(
+                "Оформить как заказ",
+                width="stretch",
+                key="wq_order_form_create",
+                disabled=order_items.empty,
+                help="Сохраняет заказ в списке ниже: заказанное считается товаром в пути и не рекомендуется повторно.",
+            ):
+                try:
+                    supplier = order_form_supplier(final_rows)
+                    created_order = create_procurement_order(
+                        supplier=supplier,
+                        items_frame=order_items,
+                        order_date=date.today(),
+                        comment="Форма заказа WQ",
+                        created_by=current_user["username"],
+                        status="ordered",
+                    )
+                    audit_event(
+                        action="procurement.order_create",
+                        user_id=current_user["username"],
+                        details={
+                            "order_id": created_order["order_id"],
+                            "supplier": supplier,
+                            "status": "ordered",
+                            "item_count": len(order_items),
+                        },
+                    )
+                    st.session_state["procurement_flash_message"] = (
+                        f"Заказ {created_order['order_id']} создан для поставщика {supplier}."
+                    )
+                    st.session_state["procurement_selected_order_id"] = created_order["order_id"]
+                except ValueError as error:
+                    st.session_state["procurement_error_message"] = str(error)
+                st.rerun()
 
 
 def render_access_tab(registered_salons: list[str]) -> None:
@@ -16012,8 +16083,6 @@ if active_screen == "Закупки":
                         key="dl_supplier_order_workbook",
                     )
 
-                render_wq_order_form(procurement_forecast, procurement_forecast_cache_key)
-
             top_procurement = procurement_forecast[
                 procurement_forecast["recommended_order_qty"].fillna(0) > 0
             ].head(12).copy()
@@ -16239,6 +16308,7 @@ if active_screen == "Закупки":
                     )
 
         with procurement_tabs["Заказы"]:
+            render_wq_order_form(procurement_forecast, procurement_forecast_cache_key, current_user)
             if can_manage_procurement(current_user):
                 with st.container(border=True):
                     render_panel_header(
@@ -16797,6 +16867,17 @@ if active_screen == "Закупки":
                                 icon=":material/download:",
                                 use_container_width=True,
                             )
+                            selected_order_form = order_form_from_items(selected_order_lines)
+                            if int(selected_order_form["quantity"].sum() + selected_order_form["edge_or_sheets"].sum()) > 0:
+                                st.download_button(
+                                    "Скачать в форме поставщика WQ",
+                                    data=partial(build_wq_order_workbook, selected_order_form),
+                                    file_name=f"wq_zakaz_{str(selected_order_id)[-12:]}.xlsx",
+                                    mime=EXCEL_MIME,
+                                    key=f"procurement_order_form_export_{selected_order_id}",
+                                    icon=":material/download:",
+                                    use_container_width=True,
+                                )
 
                             if can_manage_procurement(current_user):
                                 _next_status = {"draft": "ordered", "ordered": "in_transit"}.get(_selected_status)
