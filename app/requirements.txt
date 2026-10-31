@@ -6,4 +6,4 @@ plotly==6.6.0
 openpyxl==3.1.5
 xlrd==2.0.2
 pillow==12.2.0
-psycopg[binary]==3.3.3
+psycopg[binary,pool]==3.3.3

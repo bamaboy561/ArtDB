@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime
 import os
+import threading
 from typing import Any, Iterator
 
 try:
@@ -12,8 +13,15 @@ except ModuleNotFoundError:  # pragma: no cover - local fallback without postgre
     psycopg = None
     dict_row = None
 
+try:
+    from psycopg_pool import ConnectionPool
+except ModuleNotFoundError:  # pragma: no cover - works without pooling, only slower
+    ConnectionPool = None
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_CONNECTION_POOL: Any = None
+_CONNECTION_POOL_LOCK = threading.Lock()
 PGCRYPTO_KEY_ENV = "APP_PGCRYPTO_KEY"
 PGCRYPTO_OPTIONS = "cipher-algo=aes256,compress-algo=1"
 SUPPLIER_TO_BRAND_MIGRATION_SERVICE = "supplier_assignments_to_brands_v1"
@@ -285,12 +293,37 @@ def get_pgcrypto_key() -> str:
     return key
 
 
+def _get_connection_pool() -> Any:
+    global _CONNECTION_POOL
+    with _CONNECTION_POOL_LOCK:
+        if _CONNECTION_POOL is None:
+            _CONNECTION_POOL = ConnectionPool(
+                DATABASE_URL,
+                open=True,
+                min_size=1,
+                max_size=4,
+                max_idle=120,
+                timeout=20,
+                check=ConnectionPool.check_connection,
+                kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            )
+        return _CONNECTION_POOL
+
+
 @contextmanager
 def get_db_connection(*, autocommit: bool = False) -> Iterator[Any]:
     if not database_enabled():
         raise RuntimeError("DATABASE_URL не задан. PostgreSQL-режим не активирован.")
 
     _require_psycopg()
+    # A page view makes several short queries; a new TLS connection for each one
+    # costs more than the query. Autocommit sessions hold advisory locks tied to
+    # the connection (the Telegram bot), so they keep a connection of their own.
+    if ConnectionPool is not None and not autocommit:
+        with _get_connection_pool().connection() as connection:
+            yield connection
+        return
+
     connection = psycopg.connect(
         DATABASE_URL,
         autocommit=autocommit,

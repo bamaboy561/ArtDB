@@ -8,6 +8,7 @@ from typing import Iterable
 
 import pandas as pd
 
+import pandas_config  # noqa: F401
 from product_identity import apply_product_category_rules, map_unique
 
 

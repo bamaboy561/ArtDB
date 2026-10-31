@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import uuid
 
 import pandas as pd
+import pyarrow as pa
 
 from db import database_enabled, ensure_database_ready, get_db_connection, isoformat_seconds
 from sales_analytics import PreparedSalesData, load_input_file, prepare_sales_data
@@ -40,7 +41,9 @@ PARSED_CACHE_VERSION = 1
 # Prepared archive files are cached on disk; the key includes the source of the
 # preparation code, so any change there invalidates the cache automatically.
 _PREPARED_CACHE_CODE_HASH = hashlib.sha1(
-    b"".join((BASE_DIR / name).read_bytes() for name in ("sales_analytics.py", "product_identity.py"))
+    b"".join(
+        (BASE_DIR / name).read_bytes() for name in ("sales_analytics.py", "product_identity.py", "pandas_config.py")
+    )
 ).hexdigest()[:12]
 
 
@@ -68,6 +71,27 @@ class ArchiveLoadResult:
     file_report: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=FILE_REPORT_COLUMNS))
     exclusions: pd.DataFrame = field(default_factory=pd.DataFrame)
     overlaps: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+# Columns that SKU aliases and category rules may rewrite after enrichment.
+PRE_ALIAS_TRACKED_COLUMNS = ("product_key", "product", "item_code", "category", "brand", "supplier")
+
+
+@dataclass
+class EnrichedArchive:
+    """Lives in the process-wide cache, so it is defined outside the Streamlit script:
+    an instance of a script-defined class would keep that run's whole namespace alive."""
+
+    result: ArchiveLoadResult
+    data_key: str
+    pre_alias_rows: pd.DataFrame
+
+    def pre_alias_frame(self) -> pd.DataFrame:
+        """Archive rows as they were before SKU aliases were applied (for the alias editor)."""
+        frame = self.result.data.copy(deep=False)
+        if not self.pre_alias_rows.empty:
+            frame.loc[self.pre_alias_rows.index, list(self.pre_alias_rows.columns)] = self.pre_alias_rows
+        return frame
 
 
 def ensure_store() -> None:
@@ -142,7 +166,7 @@ def _read_parsed_cache(stored_path: Path) -> pd.DataFrame | None:
 
 def _prepared_cache_path(stored_path: Path, mapping_json: str, supplier_rules: object) -> Path:
     key = hashlib.sha1(
-        f"{_PREPARED_CACHE_CODE_HASH}|{mapping_json}|{supplier_rules!r}".encode("utf-8")
+        f"{_PREPARED_CACHE_CODE_HASH}|{pd.__version__}|{mapping_json}|{supplier_rules!r}".encode("utf-8")
     ).hexdigest()[:16]
     return stored_path.with_name(f"{stored_path.name}.prepared-{key}.pkl")
 
@@ -593,11 +617,10 @@ def _concat_archive_frames(frames: list[pd.DataFrame], sources: list[dict[str, A
     for frame in frames:
         columns.update(dict.fromkeys(frame.columns))
         columns.update(dict.fromkeys(_ARCHIVE_SOURCE_COLUMNS))
-    data = pd.concat(
-        [frame.drop(columns=[c for c in _ARCHIVE_SOURCE_COLUMNS if c in frame.columns]) for frame in frames],
-        ignore_index=True,
-    )
     lengths = [len(frame) for frame in frames]
+    data = pd.concat(frames, ignore_index=True)
+    frames.clear()
+    data = data.drop(columns=[column for column in _ARCHIVE_SOURCE_COLUMNS if column in data.columns])
 
     def repeated(field: str) -> list[str]:
         return [str(source[field]) for source in sources]
@@ -609,7 +632,30 @@ def _concat_archive_frames(frames: list[pd.DataFrame], sources: list[dict[str, A
     data["_archive_upload_id"] = pd.Series(repeated("upload_id")).repeat(lengths).to_numpy()
     data["_archive_uploaded_at"] = pd.Series(repeated("uploaded_at")).repeat(lengths).to_numpy()
     data["_archive_report_date"] = pd.Series(report_dates).repeat(lengths).to_numpy()
-    return data[list(columns)]
+    return _compact_string_columns(data[list(columns)])
+
+
+def _compact_string_columns(data: pd.DataFrame) -> pd.DataFrame:
+    """Merge the per-file Arrow chunks of string columns into one continuous block.
+
+    Thousands of small chunks waste memory and make every later filter visit each chunk.
+    """
+    compact = {}
+    for column in data.columns:
+        values = data[column].array
+        chunked = getattr(values, "_pa_array", None)
+        if chunked is None or getattr(chunked, "num_chunks", 1) <= 1:
+            continue
+        try:
+            compact[column] = pd.Series(type(values)(pa.chunked_array([chunked.combine_chunks()])), index=data.index)
+        except (pa.ArrowInvalid, TypeError):
+            continue  # Column too large for one block: keep its chunks.
+    if compact:
+        data = data.copy(deep=False)
+        for column, values in compact.items():
+            data[column] = values
+    pa.default_memory_pool().release_unused()
+    return data
 
 
 def load_archive_data(

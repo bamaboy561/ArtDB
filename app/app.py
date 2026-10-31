@@ -5,7 +5,6 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import partial
 from html import escape
@@ -16,10 +15,12 @@ import uuid
 from textwrap import dedent
 
 import pandas as pd
+import pandas_config  # noqa: F401
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from auth_store import (
     authenticate_user,
@@ -106,8 +107,10 @@ from sales_analytics import (
     load_input_file,
     prepare_sales_data,
 )
+from run_memory import release_previous_run
 from salon_data_store import (
-    ArchiveLoadResult,
+    PRE_ALIAS_TRACKED_COLUMNS,
+    EnrichedArchive,
     count_uploads_for_salon,
     delete_salon,
     load_archive_data,
@@ -478,7 +481,6 @@ DASHBOARD_CSS = f"""
     }}
 
     [data-testid="stPlotlyChart"] {{
-        animation: chartReveal 680ms cubic-bezier(0.22, 1, 0.36, 1);
         transform-origin: center top;
         will-change: opacity, transform, filter;
     }}
@@ -2927,6 +2929,10 @@ WORKSPACE_UI_CSS = f"""
 """
 
 
+_script_run_context = get_script_run_ctx()
+if _script_run_context is not None:
+    release_previous_run(_script_run_context.session_id, globals())
+
 st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS + WORKSPACE_UI_CSS, unsafe_allow_html=True)
 
 
@@ -3049,174 +3055,6 @@ def inject_pwa_shell() -> None:
 inject_pwa_shell()
 
 
-def inject_chart_motion() -> None:
-    components.html(
-        """
-        <script>
-        (() => {
-          const ua = navigator.userAgent || '';
-          const isSafari = /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(ua);
-          if (isSafari) {
-            return;
-          }
-
-          if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-            return;
-          }
-
-          const parentDoc = window.parent && window.parent.document;
-          if (!parentDoc) return;
-
-          let attempts = 0;
-          const maxAttempts = 20;
-          const intervalMs = 220;
-
-          const animateBars = (chart, baseDelay) => {
-            const bars = chart.querySelectorAll('.barlayer .trace .points path');
-            bars.forEach((bar, index) => {
-              bar.style.transformBox = 'fill-box';
-              bar.style.transformOrigin = 'center bottom';
-              bar.animate(
-                [
-                  { transform: 'scaleY(0.02)', opacity: 0.18 },
-                  { transform: 'scaleY(1.04)', opacity: 1, offset: 0.72 },
-                  { transform: 'scaleY(1)', opacity: 1 }
-                ],
-                {
-                  duration: 820,
-                  delay: baseDelay + index * 34,
-                  easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-                  fill: 'both'
-                }
-              );
-            });
-            return bars.length > 0;
-          };
-
-          const animateLines = (chart, baseDelay) => {
-            const lines = chart.querySelectorAll('.scatterlayer .trace path.js-line');
-            lines.forEach((line, index) => {
-              if (typeof line.getTotalLength !== 'function') return;
-              const length = line.getTotalLength();
-              if (!length || !Number.isFinite(length)) return;
-              line.style.strokeDasharray = `${length}`;
-              line.style.strokeDashoffset = `${length}`;
-              line.animate(
-                [
-                  { strokeDashoffset: length, opacity: 0.18 },
-                  { strokeDashoffset: 0, opacity: 1 }
-                ],
-                {
-                  duration: 980,
-                  delay: baseDelay + index * 70,
-                  easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-                  fill: 'forwards'
-                }
-              );
-            });
-            return lines.length > 0;
-          };
-
-          const animateMarkers = (chart, baseDelay) => {
-            const markers = chart.querySelectorAll('.scatterlayer .trace .points path, .scatterlayer .trace .points circle');
-            markers.forEach((marker, index) => {
-              marker.style.transformBox = 'fill-box';
-              marker.style.transformOrigin = 'center center';
-              marker.animate(
-                [
-                  { transform: 'scale(0.12)', opacity: 0 },
-                  { transform: 'scale(1.08)', opacity: 1, offset: 0.68 },
-                  { transform: 'scale(1)', opacity: 1 }
-                ],
-                {
-                  duration: 520,
-                  delay: baseDelay + 260 + index * 22,
-                  easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-                  fill: 'both'
-                }
-              );
-            });
-            return markers.length > 0;
-          };
-
-          const animateSlices = (chart, baseDelay) => {
-            const slices = chart.querySelectorAll('.pielayer path.surface, .treemaplayer path, .iciclelayer path, .sunburstlayer path');
-            slices.forEach((slice, index) => {
-              slice.style.transformBox = 'fill-box';
-              slice.style.transformOrigin = 'center center';
-              slice.animate(
-                [
-                  { transform: 'scale(0.88)', opacity: 0.08 },
-                  { transform: 'scale(1.03)', opacity: 1, offset: 0.72 },
-                  { transform: 'scale(1)', opacity: 1 }
-                ],
-                {
-                  duration: 760,
-                  delay: baseDelay + index * 48,
-                  easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-                  fill: 'both'
-                }
-              );
-            });
-            return slices.length > 0;
-          };
-
-          const animateCharts = () => {
-            const charts = parentDoc.querySelectorAll('[data-testid="stPlotlyChart"]');
-            charts.forEach((chart, index) => {
-              const marker = chart.dataset.codexChartMotionVersion;
-              const version = 'v3';
-              if (marker === version) return;
-              const svg = chart.querySelector('svg');
-              if (!svg) return;
-
-              chart.dataset.codexChartMotionVersion = version;
-              const baseDelay = index * 110;
-              chart.style.willChange = 'opacity, transform, filter';
-              chart.style.animation = 'none';
-              chart.offsetHeight;
-              chart.style.animation = `chartRevealStrong 860ms cubic-bezier(0.22, 1, 0.36, 1) ${baseDelay}ms both`;
-
-              const hasBars = animateBars(chart, baseDelay);
-              const hasLines = animateLines(chart, baseDelay);
-              const hasMarkers = animateMarkers(chart, baseDelay);
-              const hasSlices = animateSlices(chart, baseDelay);
-
-              if (!hasBars && !hasLines && !hasMarkers && !hasSlices) {
-                const plotRoot = chart.querySelector('.js-plotly-plot, .plotly, svg');
-                if (plotRoot && typeof plotRoot.animate === 'function') {
-                  plotRoot.animate(
-                    [
-                      { opacity: 0, transform: 'translateY(20px) scale(0.98)' },
-                      { opacity: 1, transform: 'translateY(0) scale(1)' }
-                    ],
-                    {
-                      duration: 720,
-                      delay: baseDelay,
-                      easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-                      fill: 'both'
-                    }
-                  );
-                }
-              }
-            });
-            attempts += 1;
-            if (attempts >= maxAttempts) clearInterval(timer);
-          };
-
-          const timer = setInterval(animateCharts, intervalMs);
-          animateCharts();
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-inject_chart_motion()
-
-
 COUNT_UP_JS = r"""
 (() => {
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -3243,7 +3081,7 @@ COUNT_UP_JS = r"""
     const target = parseFloat(numText.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
     if (!isFinite(target) || target === 0) return;
     const startedAt = performance.now();
-    const duration = 900;
+    const duration = 300;
     el.__countUpRunning = true;
     const step = (now) => {
       if (!el.isConnected) return;
@@ -3792,7 +3630,6 @@ def polish_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
         title_xanchor="left",
         margin=dict(l=24, r=20, t=52, b=30),
         legend_title_text="",
-        transition=dict(duration=520, easing="cubic-in-out"),
         colorway=CHART_COLORS,
         hovermode=unified_hover_mode if use_unified_hover else None,
         hoverlabel=dict(
@@ -5785,24 +5622,6 @@ def cached_load_inventory_input_file(
     )
 
 
-# Columns that SKU aliases and category rules may rewrite after enrichment.
-PRE_ALIAS_TRACKED_COLUMNS = ("product_key", "product", "item_code", "category", "brand", "supplier")
-
-
-@dataclass
-class EnrichedArchive:
-    result: ArchiveLoadResult
-    data_key: str
-    pre_alias_rows: pd.DataFrame
-
-    def pre_alias_frame(self) -> pd.DataFrame:
-        """Archive rows as they were before SKU aliases were applied (for the alias editor)."""
-        frame = self.result.data.copy()
-        if not self.pre_alias_rows.empty:
-            frame.loc[self.pre_alias_rows.index, list(self.pre_alias_rows.columns)] = self.pre_alias_rows
-        return frame
-
-
 def enrich_sales_frame(
     data: pd.DataFrame,
     procurement_items: pd.DataFrame,
@@ -5842,7 +5661,11 @@ def changed_tracked_rows(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFr
     return before.loc[changed, columns].copy()
 
 
-@st.cache_resource(show_spinner=False, max_entries=1, ttl=3600)
+@st.cache_resource(
+    show_spinner="Загружаю архив продаж. После обновления сайта это может занять пару минут, затем будет быстро.",
+    max_entries=1,
+    ttl=3600,
+)
 def cached_load_enriched_archive(
     selected_salons: tuple[str, ...],
     supplier_rule_items: tuple[tuple[str, str], ...],
@@ -5875,8 +5698,23 @@ def cached_load_enriched_archive(
     return EnrichedArchive(result=result, data_key=uuid.uuid4().hex, pre_alias_rows=pre_alias_rows)
 
 
+def keep_rows(frame: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
+    """Filter without copying the table when a filter keeps every row."""
+    return frame if mask.all() else frame[mask]
+
+
 def derived_cache_key(base_key: str, *parts: object) -> str:
     return hashlib.blake2b(repr((base_key, *parts)).encode("utf-8"), digest_size=16).hexdigest()
+
+
+@st.cache_data(show_spinner=False, max_entries=1, ttl=60)
+def cached_load_salons() -> list[str]:
+    return load_salons()
+
+
+@st.cache_data(show_spinner=False, max_entries=1, ttl=60)
+def cached_load_manifest() -> pd.DataFrame:
+    return load_manifest()
 
 
 def clear_application_caches() -> None:
@@ -9489,7 +9327,11 @@ def build_movement_chart(comparison: pd.DataFrame, left_month: str, right_month:
     return polish_figure(figure, height=460)
 
 
-promoted_admin = promote_first_manager_to_admin()
+# Only an install without an administrator needs this; once per session is enough.
+promoted_admin = None
+if "admin_promotion_checked" not in st.session_state:
+    st.session_state["admin_promotion_checked"] = True
+    promoted_admin = promote_first_manager_to_admin()
 if promoted_admin and st.session_state.get("auth_user", {}).get("username", "").casefold() == promoted_admin["username"].casefold():
     st.session_state["auth_user"] = promoted_admin
 
@@ -9502,8 +9344,8 @@ selected_mapping: dict[str, str | None] = {}
 prepared_result = None
 quality_report = None
 archive_result = None
-manifest_view = load_manifest()
-registered_salons = load_salons()
+manifest_view = cached_load_manifest()
+registered_salons = cached_load_salons()
 analysis_source = ""
 source_label = ""
 selected_salon_name = ""
@@ -9928,7 +9770,8 @@ if work_mode not in upload_modes:
     )
     archive_result = enriched_archive.result
     manifest_view = archive_result.manifest.copy()
-    data = archive_result.data
+    # Copy-on-write: this costs nothing and protects the shared cached frame.
+    data = archive_result.data.copy(deep=False)
 
     load_report = build_load_report(
         archive_result.file_report,
@@ -10713,41 +10556,41 @@ with main_col:
 filter_badges = []
 if len(selected_dates) == 2:
     date_from, date_to = selected_dates
-    data = data[(data["date"].dt.date >= date_from) & (data["date"].dt.date <= date_to)]
+    data = keep_rows(
+        data,
+        (data["date"] >= pd.Timestamp(date_from)) & (data["date"] < pd.Timestamp(date_to) + pd.Timedelta(days=1)),
+    )
     if date_from != min_date or date_to != max_date:
         filter_badges.append(f"Период: {date_from:%d.%m.%Y} - {date_to:%d.%m.%Y}")
-if enriched_archive is not None and data is enriched_archive.result.data:
-    # Never hand the shared cached frame to code below that may modify its input.
-    data = data.copy()
 
 if all_salons:
-    data = data[data["salon"].astype(str).isin(selected_salons_filter)]
+    data = keep_rows(data, data["salon"].astype(str).isin(selected_salons_filter))
     if len(selected_salons_filter) != len(all_salons):
         filter_badges.append(f"Салоны: {len(selected_salons_filter)} из {len(all_salons)}")
 
 plan_fact_source_data = data
 
 if all_categories:
-    data = data[data["category"].astype(str).isin(selected_categories)]
+    data = keep_rows(data, data["category"].astype(str).isin(selected_categories))
     if len(selected_categories) != len(all_categories):
         filter_badges.append(f"Категории: {len(selected_categories)} из {len(all_categories)}")
 
 if all_suppliers:
-    data = data[data["supplier"].astype(str).isin(selected_suppliers)]
+    data = keep_rows(data, data["supplier"].astype(str).isin(selected_suppliers))
     if len(selected_suppliers) != len(all_suppliers):
         filter_badges.append(f"Поставщики: {len(selected_suppliers)} из {len(all_suppliers)}")
 
 procurement_source_data = data
 
 if all_brands:
-    data = data[data["brand"].astype(str).isin(selected_brands)]
+    data = keep_rows(data, data["brand"].astype(str).isin(selected_brands))
     if len(selected_brands) != len(all_brands):
         filter_badges.append(f"Бренды: {len(selected_brands)} из {len(all_brands)}")
 
 procurement_uses_manager_unfiltered_scope = False
 
 if all_managers:
-    manager_filtered_data = data[data["manager"].astype(str).isin(selected_managers)]
+    manager_filtered_data = keep_rows(data, data["manager"].astype(str).isin(selected_managers))
     procurement_uses_manager_unfiltered_scope = len(manager_filtered_data) != len(data)
     data = manager_filtered_data
     if len(selected_managers) != len(all_managers):
