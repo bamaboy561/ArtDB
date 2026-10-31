@@ -129,12 +129,13 @@ from sku_catalog_store import (
     upsert_sku_attribute_overrides,
 )
 from supplier_order_forms import (
-    SECTION_HPL,
+    SECTION_BOARDS,
     build_order_form_rows,
     apply_order_file,
     build_wq_order_workbook,
     order_file_comment,
     order_form_from_items,
+    is_wq_supplier,
     order_form_supplier,
     order_items_from_form,
     parse_order_form_file,
@@ -7038,19 +7039,23 @@ def render_wq_order_form(
     lead_time_days: int,
 ) -> None:
     order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key)
-    is_hpl = order_rows["section"].eq(SECTION_HPL)
-    missing = order_rows.loc[~order_rows["found"], "name"].tolist()
+    if order_rows.empty:
+        with st.container(border=True):
+            render_panel_header("Заказ поставщику WQ", "Форма заполняется товарами этого поставщика.")
+            st.info("Сейчас в выборке нет товаров поставщика WQ. Проверьте фильтры и назначение поставщика у товаров.")
+        return
+    is_hpl = order_rows["section"].ne(SECTION_BOARDS)
 
     with st.container(border=True):
         render_panel_header(
             "Заказ поставщику WQ",
-            "Сформирован автоматически по прогнозу и остаткам. Количество можно поправить в таблице, файл учтёт правки.",
+            "Все товары поставщика на сайте. В файл попадут только позиции с количеством, его можно поправить в таблице.",
         )
         table = order_rows.assign(
             board_qty=order_rows["quantity"],
             edge_qty=order_rows["edge_or_sheets"].where(~is_hpl, 0),
             hpl_qty=order_rows["edge_or_sheets"].where(is_hpl, 0),
-        ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable")
+        ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable").set_index("row_id")
         edited = st.data_editor(
             table[
                 [
@@ -7086,7 +7091,7 @@ def render_wq_order_form(
                 "name": st.column_config.TextColumn("Название"),
                 "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
                 "edge_qty": st.column_config.NumberColumn("Кромка, м", min_value=0, step=1),
-                "hpl_qty": st.column_config.NumberColumn("HPL, листов", min_value=0, step=1),
+                "hpl_qty": st.column_config.NumberColumn("HPL / другое", min_value=0, step=1),
                 "abc_class": st.column_config.TextColumn("ABC"),
                 "xyz_class": st.column_config.TextColumn("XYZ"),
                 "priority": st.column_config.TextColumn("Приоритет"),
@@ -7095,17 +7100,16 @@ def render_wq_order_form(
                 "forecast_qty": st.column_config.NumberColumn("Прогноз, шт"),
             },
         )
-        edited_by_code = edited.set_index("code")
         final_rows = order_rows.copy()
-        final_rows["quantity"] = final_rows["code"].map(edited_by_code["board_qty"]).fillna(0).astype(int)
-        final_edge = final_rows["code"].map(edited_by_code["edge_qty"]).fillna(0)
-        final_hpl = final_rows["code"].map(edited_by_code["hpl_qty"]).fillna(0)
+        final_rows["quantity"] = final_rows["row_id"].map(edited["board_qty"]).fillna(0).astype(int)
+        final_edge = final_rows["row_id"].map(edited["edge_qty"]).fillna(0)
+        final_hpl = final_rows["row_id"].map(edited["hpl_qty"]).fillna(0)
         final_rows["edge_or_sheets"] = final_hpl.where(is_hpl, final_edge).astype(int)
 
         hpl_total = int(final_rows.loc[is_hpl, "edge_or_sheets"].sum())
         edge_total = int(final_rows.loc[~is_hpl, "edge_or_sheets"].sum())
         st.caption(
-            f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL {hpl_total} листов"
+            f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL и другое {hpl_total}"
         )
         low_priority = order_rows.loc[order_rows["low_priority_skipped"], "name"].tolist()
         if low_priority:
@@ -7114,9 +7118,6 @@ def render_wq_order_form(
                 + ", ".join(low_priority)
                 + ". При необходимости впишите количество вручную."
             )
-        if missing:
-            st.warning(f"Не нашёл в продажах и остатках ({len(missing)}), в заказе пусто: " + ", ".join(missing))
-
         download_col, order_col = st.columns(2, gap="small")
         with download_col:
             st.download_button(
@@ -7127,6 +7128,7 @@ def render_wq_order_form(
                 type="primary",
                 width="stretch",
                 key="dl_wq_order_form",
+                disabled=not (final_rows["quantity"].gt(0) | final_rows["edge_or_sheets"].gt(0)).any(),
             )
         if not can_manage_procurement(current_user):
             return
@@ -7201,7 +7203,7 @@ def render_wq_order_file_upload(
     if uploaded_order is None:
         return
 
-    parsed = parse_order_form_file(uploaded_order.getvalue())
+    parsed = parse_order_form_file(uploaded_order.getvalue(), order_rows)
     for message in parsed.errors:
         st.error(message)
     if parsed.errors:
@@ -7209,9 +7211,9 @@ def render_wq_order_file_upload(
         return
     if parsed.unknown_codes:
         st.warning(
-            "Этих кодов нет в форме, они не войдут в заказ: "
+            "Этих кодов нет среди товаров поставщика на сайте, они не войдут в заказ: "
             + ", ".join(parsed.unknown_codes)
-            + ". Если поставщик заменил товар, напишите мне код и название, и я добавлю его в форму."
+            + ". Если поставщик заменил товар, назначьте его этому поставщику на сайте и загрузите файл снова."
         )
 
     file_rows = apply_order_file(order_rows, parsed)
@@ -7220,7 +7222,7 @@ def render_wq_order_file_upload(
             "Код": file_rows["code"],
             "Название": file_rows["name"],
             "Плиты, шт": file_rows["quantity"],
-            "Кромка, м / HPL, листов": file_rows["edge_or_sheets"],
+            "Кромка, м / HPL и другое": file_rows["edge_or_sheets"],
         }
     )
     comparison["Предложено"] = [
@@ -7230,11 +7232,11 @@ def render_wq_order_file_upload(
         file_rows["quantity"].ne(proposed_rows["quantity"]) | file_rows["edge_or_sheets"].ne(proposed_rows["edge_or_sheets"])
     )
     ordered = file_rows["quantity"].gt(0) | file_rows["edge_or_sheets"].gt(0)
-    is_hpl = file_rows["section"].eq(SECTION_HPL)
+    is_hpl = file_rows["section"].ne(SECTION_BOARDS)
     st.caption(
         f"В файле: плит {int(file_rows['quantity'].sum())} шт · "
         f"кромки {int(file_rows.loc[~is_hpl, 'edge_or_sheets'].sum())} м · "
-        f"HPL {int(file_rows.loc[is_hpl, 'edge_or_sheets'].sum())} листов · "
+        f"HPL и другое {int(file_rows.loc[is_hpl, 'edge_or_sheets'].sum())} · "
         f"отличается от предложения: {int(changed.sum())}"
     )
     st.dataframe(comparison[ordered | changed], hide_index=True, width="stretch", height=260)
@@ -16982,8 +16984,8 @@ if active_screen == "Закупки":
                                 icon=":material/download:",
                                 use_container_width=True,
                             )
-                            selected_order_form = order_form_from_items(selected_order_lines)
-                            if int(selected_order_form["quantity"].sum() + selected_order_form["edge_or_sheets"].sum()) > 0:
+                            if is_wq_supplier(selected_order_row["supplier"]):
+                                selected_order_form = order_form_from_items(selected_order_lines)
                                 st.download_button(
                                     "Скачать в форме поставщика WQ",
                                     data=partial(build_wq_order_workbook, selected_order_form),

@@ -11,12 +11,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
-from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 
 SECTION_BOARDS = "boards"
 SECTION_HPL = "hpl"
+SECTION_OTHER = "other"
 # The user's rule: low priority goods are not proposed. They can still be typed in by hand.
 EXCLUDED_ORDER_PRIORITY = "низкий"
 
@@ -31,7 +31,10 @@ class OrderFormRow:
     match_by_name: bool = True
 
 
+WQ_SUPPLIER_TERM = "wq"
 WQ_BOARD_FORMAT = "2800*1220*18мм"
+# Not the list of what to order, which comes from the site: this only tells which
+# supplier code and short name belong to a site product.
 WQ_ORDER_ROWS: tuple[OrderFormRow, ...] = (
     OrderFormRow("WQ63815M", "Ванильный крем", "US77102/PGR4102"),
     OrderFormRow("WQ63814M", "Молочный пломбир", "US77103/PGR4103"),
@@ -71,6 +74,7 @@ WQ_ORDER_ROWS: tuple[OrderFormRow, ...] = (
 )
 
 ORDER_FORM_COLUMNS = [
+    "row_id",
     "code",
     "quantity",
     "old_code",
@@ -83,7 +87,6 @@ ORDER_FORM_COLUMNS = [
     "stock_status",
     "available_stock_qty",
     "forecast_qty",
-    "found",
     "product",
     "edge_product",
     "supplier",
@@ -93,6 +96,8 @@ ORDER_FORM_COLUMNS = [
 _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
 _BOARD_SIZE_PARTS = ("18", "1220", "2800")
 _NUMBER = re.compile(r"[0-9]+")
+_ARTICLE = re.compile(r"^([0-9A-Za-z][0-9A-Za-z/._()-]*[0-9][0-9A-Za-z/._()-]*)\s+(.+)$")
+_SIZE_TAIL = re.compile(r"\s*\d+(?:[.,]\d+)?\s*[*xх×]\s*\d.*$")
 
 
 def _normalize(value: object) -> str:
@@ -117,16 +122,6 @@ def _old_code_terms(old_code: str) -> list[str]:
     return [part for part in old_code.split("/") if part and part != "NEW"]
 
 
-def _row_mask(row: OrderFormRow, texts: pd.Series, kinds: pd.Series, kind: str) -> pd.Series:
-    """Rows of the forecast that are this form row: by article first, by name otherwise."""
-    candidates = texts[kinds.eq(kind)]
-    terms = [row.code, *_old_code_terms(row.old_code)]
-    by_code = candidates[candidates.map(lambda text: any(_contains_term(text, term) for term in terms)).astype(bool)]
-    if by_code.empty and row.match_by_name:
-        by_code = candidates[candidates.map(lambda text: _contains_term(text, row.name)).astype(bool)]
-    return texts.index.isin(by_code.index)
-
-
 def _product_kind(text: str) -> str:
     if _is_edge(text):
         return "edge"
@@ -142,81 +137,117 @@ def _whole_quantity(values: pd.Series) -> int:
     return math.ceil(total - 1e-9) if total > 0 else 0
 
 
-def _proposed_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame.empty or "priority" not in frame.columns:
-        return frame
-    return frame[frame["priority"].fillna("").astype(str).str.strip().str.casefold().ne(EXCLUDED_ORDER_PRIORITY)]
+def is_wq_supplier(value: object) -> bool:
+    return _contains_term(_normalize(value), WQ_SUPPLIER_TERM)
+
+
+def _catalog_row(text: str, kind: str, catalog: tuple[OrderFormRow, ...]) -> OrderFormRow | None:
+    """The known supplier code of a site product: by article first, by name otherwise."""
+    wanted = SECTION_HPL if kind == "hpl" else SECTION_BOARDS
+    candidates = [row for row in catalog if row.section == wanted]
+    for row in candidates:
+        if any(_contains_term(text, term) for term in (row.code, *_old_code_terms(row.old_code))):
+            return row
+    for row in candidates:
+        if row.match_by_name and _contains_term(text, row.name):
+            return row
+    return None
+
+
+def _split_product(product: str, kind: str) -> tuple[str, str]:
+    """Article and short name from a site name such as "US77301/PGR4201 Маффин 18*1220*2800мм"."""
+    match = _ARTICLE.match(product.strip())
+    article, name = (match.group(1), match.group(2)) if match else ("", product.strip())
+    if kind in ("board", "edge"):
+        name = _SIZE_TAIL.sub("", name).strip() or name
+    return article, name
 
 
 def build_order_form_rows(
     procurement_forecast: pd.DataFrame,
-    rows: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS,
+    *,
+    only_wq_supplier: bool = True,
+    catalog: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS,
 ) -> pd.DataFrame:
-    """One line per form row: boards, edge metres or HPL sheets, as the forecast recommends."""
+    """One line per position of the supplier: boards with their edge metres, HPL sheets, other goods."""
     if procurement_forecast.empty or "product" not in procurement_forecast.columns:
-        forecast = pd.DataFrame(columns=["product", "recommended_order_qty"])
-    else:
-        forecast = procurement_forecast.reset_index(drop=True)
-    texts = forecast["product"].map(_normalize)
-    kinds = texts.map(_product_kind)
+        return pd.DataFrame(columns=ORDER_FORM_COLUMNS)
+    forecast = procurement_forecast
+    if only_wq_supplier:
+        if "supplier" not in forecast.columns:
+            return pd.DataFrame(columns=ORDER_FORM_COLUMNS)
+        forecast = forecast[forecast["supplier"].map(is_wq_supplier)]
 
-    def first_value(frame: pd.DataFrame, column: str, default: object) -> object:
-        if column not in frame.columns or frame.empty:
-            return default
-        return frame[column].iloc[0]
-
-    def total(frame: pd.DataFrame, column: str) -> float:
-        if column not in frame.columns:
-            return 0.0
-        return float(pd.to_numeric(frame[column], errors="coerce").fillna(0).sum())
-
-    def first_product(frame: pd.DataFrame) -> str:
-        return str(frame["product"].iloc[0]) if not frame.empty else ""
-
-    records = []
-    for row in rows:
-        main_kind = "hpl" if row.section == SECTION_HPL else "board"
-        main = forecast[_row_mask(row, texts, kinds, main_kind)]
-        main_quantity = _whole_quantity(_proposed_rows(main)["recommended_order_qty"]) if not main.empty else 0
-        skipped = _whole_quantity(main["recommended_order_qty"]) > main_quantity if not main.empty else False
-        edge_found = False
-        edge = forecast.iloc[0:0]
-        if row.section == SECTION_HPL:
-            quantity, edge_or_sheets = 0, main_quantity
-        else:
-            edge = forecast[_row_mask(row, texts, kinds, "edge")]
-            edge_found = not edge.empty
-            quantity = main_quantity
-            edge_or_sheets = _whole_quantity(_proposed_rows(edge)["recommended_order_qty"]) if edge_found else 0
-            if edge_found and _whole_quantity(edge["recommended_order_qty"]) > edge_or_sheets:
-                skipped = True
-        records.append(
+    grouped: dict[str, dict[str, object]] = {}
+    for record in forecast.to_dict(orient="records"):
+        product = str(record["product"])
+        text = _normalize(product)
+        kind = _product_kind(text)
+        article, name = _split_product(product, kind)
+        known = _catalog_row(text, kind, catalog) if kind else None
+        code = known.code if known else article
+        section = SECTION_HPL if kind == "hpl" else SECTION_BOARDS if kind in ("board", "edge") else SECTION_OTHER
+        # A board and its edge band of one decor share a line; "US77301/PGR4201" and "PGR4201" are one article.
+        decor = _normalize(code.split("/")[-1] if code else name)
+        row_id = f"{section}:{decor}"
+        row = grouped.setdefault(
+            row_id,
             {
-                "code": row.code,
-                "quantity": quantity,
-                "old_code": row.old_code,
-                "edge_or_sheets": edge_or_sheets,
-                "name": row.name,
-                "section": row.section,
-                "abc_class": first_value(main, "abc_class", ""),
-                "xyz_class": first_value(main, "xyz_class", ""),
-                "priority": first_value(main, "priority", ""),
-                "stock_status": first_value(main, "stock_status", ""),
-                "available_stock_qty": total(main, "available_stock_qty"),
-                "forecast_qty": total(main, "forecast_qty"),
-                "found": (not main.empty) or edge_found,
-                "product": first_product(main),
-                "edge_product": first_product(edge),
-                "supplier": first_value(main, "supplier", ""),
-                "low_priority_skipped": bool(skipped),
-            }
+                "row_id": row_id,
+                "code": code,
+                "quantity": 0,
+                "old_code": (known.old_code if known and known.old_code else article) if article or known else "",
+                "edge_or_sheets": 0,
+                "name": known.name if known else name,
+                "section": section,
+                "abc_class": "",
+                "xyz_class": "",
+                "priority": "",
+                "stock_status": "",
+                "available_stock_qty": 0.0,
+                "forecast_qty": 0.0,
+                "product": "",
+                "edge_product": "",
+                "supplier": record.get("supplier", ""),
+                "low_priority_skipped": False,
+            },
         )
-    return pd.DataFrame(records, columns=ORDER_FORM_COLUMNS)
+        recommended = pd.to_numeric(pd.Series([record.get("recommended_order_qty")]), errors="coerce").fillna(0).iloc[0]
+        needed = max(float(recommended), 0.0)
+        priority = _normalize(record.get("priority", ""))
+        if priority == EXCLUDED_ORDER_PRIORITY:
+            row["low_priority_skipped"] = bool(row["low_priority_skipped"]) or needed > 0
+            needed = 0.0
+        needed_whole = math.ceil(needed - 1e-9) if needed > 0 else 0
+        if kind == "edge":
+            row["edge_or_sheets"] += needed_whole
+            row["edge_product"] = row["edge_product"] or product
+        elif section == SECTION_BOARDS:
+            row["quantity"] += needed_whole
+            row["product"] = row["product"] or product
+        else:
+            row["edge_or_sheets"] += needed_whole
+            row["product"] = row["product"] or product
+        if kind != "edge" or not row["priority"]:
+            for column in ("abc_class", "xyz_class", "priority", "stock_status"):
+                row[column] = record.get(column, "") or row[column]
+        for column in ("available_stock_qty", "forecast_qty"):
+            value = pd.to_numeric(pd.Series([record.get(column)]), errors="coerce").fillna(0).iloc[0]
+            if kind != "edge":
+                row[column] += float(value)
+    rows = pd.DataFrame(list(grouped.values()), columns=ORDER_FORM_COLUMNS)
+    section_order = {SECTION_BOARDS: 0, SECTION_HPL: 1, SECTION_OTHER: 2}
+    return (
+        rows.assign(_section=rows["section"].map(section_order))
+        .sort_values(["_section", "name"], kind="stable")
+        .drop(columns="_section")
+        .reset_index(drop=True)
+    )
 
 
 def order_form_from_items(items: pd.DataFrame) -> pd.DataFrame:
     """The form for a saved order: its own quantities, not the current recommendation."""
-    return build_order_form_rows(items.rename(columns={"quantity": "recommended_order_qty"}))
+    return build_order_form_rows(items.rename(columns={"quantity": "recommended_order_qty"}), only_wq_supplier=False)
 
 
 def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
@@ -225,9 +256,10 @@ def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
     for record in order_rows.to_dict(orient="records"):
         # A position without sales has no site product yet: name it so that it
         # is not lost and a saved order can rebuild the same form.
-        label = f"{record['code']} {record['name']}"
-        if record["section"] == SECTION_HPL:
-            lines = ((record["product"] or f"HPL {label}", record["edge_or_sheets"]),)
+        label = f"{record['code']} {record['name']}".strip()
+        if record["section"] != SECTION_BOARDS:
+            prefix = "HPL " if record["section"] == SECTION_HPL else ""
+            lines = ((record["product"] or f"{prefix}{label}", record["edge_or_sheets"]),)
         else:
             lines = (
                 (record["product"] or f"{label} 18*1220*2800мм", record["quantity"]),
@@ -286,7 +318,8 @@ _EDGE_TITLES = ("кромка, м", "кромка")
 _SHEET_TITLES = ("hpl, листов",)
 
 
-def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS) -> ParsedOrderFile:
+def parse_order_form_file(content: bytes, order_rows: pd.DataFrame) -> ParsedOrderFile:
+    """Quantities from the file for the supplier's positions; `order_rows` lists all of them."""
     parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
     try:
         sheet = load_workbook(BytesIO(content), data_only=True, read_only=True).worksheets[0]
@@ -295,11 +328,14 @@ def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_OR
         parsed.errors.append("Не удалось прочитать файл. Нужен Excel-файл заказа в формате .xlsx.")
         return parsed
 
-    by_code: dict[str, OrderFormRow] = {}
-    for form_row in rows:
-        by_code[_normalize_code(form_row.code)] = form_row
-        for term in [form_row.old_code] if form_row.old_code not in ("", "NEW") else []:
-            by_code.setdefault(_normalize_code(term), form_row)
+    by_key: dict[str, dict[str, object]] = {}
+    for record in order_rows.to_dict(orient="records"):
+        if record["code"]:
+            by_key[_normalize_code(record["code"])] = record
+        else:
+            by_key[_normalize_code(record["name"])] = record
+        if record["old_code"] not in ("", "NEW"):
+            by_key.setdefault(_normalize_code(record["old_code"]), record)
 
     # Each table of the form has its own header row, and files saved from the
     # earlier form layout are still accepted.
@@ -320,24 +356,28 @@ def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_OR
         if not columns:
             continue
         raw_code = cell(row, ("код",))
+        raw_name = cell(row, ("название",))
         board = _file_quantity(cell(row, _BOARD_TITLES))
         edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES)))
-        code = _normalize_code(raw_code)
-        if not code:
-            continue  # The totals row and blank lines have no code.
-        form_row = by_code.get(code)
-        if form_row is None:
+        key = _normalize_code(raw_code) or _normalize_code(raw_name)
+        label = str(raw_code if _normalize_code(raw_code) else raw_name or "").strip()
+        if not key:
+            continue  # The totals row and blank lines have no code or name.
+        record = by_key.get(key)
+        if record is None:
             # Section titles such as the HPL band are not goods and carry no numbers.
             if board or edge:
-                parsed.unknown_codes.append(str(raw_code).strip())
+                parsed.unknown_codes.append(label)
             continue
         if board is None or edge is None:
-            parsed.errors.append(f"Строка {number}, код {str(raw_code).strip()}: количество должно быть числом не меньше нуля.")
+            parsed.errors.append(f"Строка {number}, код {label}: количество должно быть числом не меньше нуля.")
             continue
-        if form_row.section == SECTION_HPL:
-            board, edge = 0, board + edge  # Sheets, in whichever column they were typed.
-        previous = parsed.quantities.get(form_row.code, (0, 0))
-        parsed.quantities[form_row.code] = (previous[0] + board, previous[1] + edge)
+        if record["section"] != SECTION_BOARDS:
+            board, edge = 0, board + edge  # Sheets or pieces, in whichever column they were typed.
+        elif "hpl, листов" in columns:
+            board, edge = board + edge, 0  # A board typed under the HPL table has only this quantity column.
+        previous = parsed.quantities.get(record["row_id"], (0, 0))
+        parsed.quantities[record["row_id"]] = (previous[0] + board, previous[1] + edge)
     if not columns:
         parsed.errors.append("Это не форма заказа: не нашёл колонки с кодом и количеством.")
     return parsed
@@ -346,8 +386,8 @@ def parse_order_form_file(content: bytes, rows: tuple[OrderFormRow, ...] = WQ_OR
 def apply_order_file(order_rows: pd.DataFrame, parsed: ParsedOrderFile) -> pd.DataFrame:
     """The form with the file's quantities: a position left blank in the file is not ordered."""
     result = order_rows.copy()
-    result["quantity"] = [parsed.quantities.get(code, (0, 0))[0] for code in result["code"]]
-    result["edge_or_sheets"] = [parsed.quantities.get(code, (0, 0))[1] for code in result["code"]]
+    result["quantity"] = [parsed.quantities.get(row_id, (0, 0))[0] for row_id in result["row_id"]]
+    result["edge_or_sheets"] = [parsed.quantities.get(row_id, (0, 0))[1] for row_id in result["row_id"]]
     return result
 
 
@@ -372,7 +412,7 @@ def _store_total_value(content: bytes, total_cell: str, total_value: int) -> byt
 
 
 def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None = None) -> bytes:
-    """The WQ order: a heading, the boards table with its total, then the HPL table."""
+    """The WQ order: only positions with a quantity, in separate tables for boards, HPL and other goods."""
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Заказ WQ"
@@ -420,9 +460,14 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
         cell.alignment = alignment
         cell.border = frame
 
-    records = order_rows.to_dict(orient="records")
+    records = [
+        record
+        for record in order_rows.to_dict(orient="records")
+        if int(record["quantity"]) > 0 or int(record["edge_or_sheets"]) > 0
+    ]
     board_records = [record for record in records if record["section"] == SECTION_BOARDS]
     hpl_records = [record for record in records if record["section"] == SECTION_HPL]
+    other_records = [record for record in records if record["section"] == SECTION_OTHER]
 
     heading(1, "Заказ поставщику WQ", Font(name="Calibri", size=16, bold=True, color=navy), 26)
     heading(
@@ -432,57 +477,53 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
         18,
     )
 
-    section(4, f"Плиты {WQ_BOARD_FORMAT}")
-    board_header = 5
-    table_header(
-        board_header,
-        {1: "№", 2: "Код", 3: "Название", 4: "Старый код", 5: "Плиты, шт", 6: "Кромка, м"},
-    )
-    row = board_header + 1
-    first_board = row
-    for position, record in enumerate(board_records, start=1):
-        body_cell(row, 1, position, center)
-        body_cell(row, 2, record["code"], left, bold=True)
-        body_cell(row, 3, record["name"], left)
-        body_cell(row, 4, record["old_code"] or None, center)
-        body_cell(row, 5, int(record["quantity"]) or None, center)
-        body_cell(row, 6, int(record["edge_or_sheets"]) or None, center)
+    row = 4
+    last_row = 2
+    total_cell = ""
+    if board_records:
+        section(row, f"Плиты {WQ_BOARD_FORMAT}")
         row += 1
-    last_board = row - 1
+        table_header(row, {1: "№", 2: "Код", 3: "Название", 4: "Старый код", 5: "Плиты, шт", 6: "Кромка, м"})
+        sheet.freeze_panes = f"A{row + 1}"
+        row += 1
+        first_board = row
+        for position, record in enumerate(board_records, start=1):
+            body_cell(row, 1, position, center)
+            body_cell(row, 2, record["code"] or None, left, bold=True)
+            body_cell(row, 3, record["name"], left)
+            body_cell(row, 4, record["old_code"] or None, center)
+            body_cell(row, 5, int(record["quantity"]) or None, center)
+            body_cell(row, 6, int(record["edge_or_sheets"]) or None, center)
+            row += 1
+        last_board = row - 1
 
-    merged(row, 1, 4)
-    for column in range(1, last_column + 1):
-        cell = sheet.cell(row=row, column=column)
-        cell.fill = band
-        cell.border = frame
-    total_label = sheet.cell(row=row, column=1, value="Итого плит, шт")
-    total_label.font = Font(name="Calibri", size=12, bold=True, color=navy)
-    total_label.alignment = Alignment(horizontal="right", vertical="center", indent=1)
-    total_cell = f"E{row}"
-    sheet[total_cell] = f"=SUM(E{first_board}:E{last_board})"
-    sheet[total_cell].font = Font(name="Calibri", size=13, bold=True, color=navy)
-    sheet[total_cell].alignment = center
-    sheet.row_dimensions[row].height = 22
-    last_row = row
-
-    ordered_style = {"fill": PatternFill(bgColor="E2EFDA"), "font": Font(bold=True)}
-    sheet.conditional_formatting.add(
-        f"A{first_board}:F{last_board}",
-        FormulaRule(formula=[f"OR(N($E{first_board})>0,N($F{first_board})>0)"], **ordered_style),
-    )
-
-    if hpl_records:
+        merged(row, 1, 4)
+        for column in range(1, last_column + 1):
+            cell = sheet.cell(row=row, column=column)
+            cell.fill = band
+            cell.border = frame
+        total_label = sheet.cell(row=row, column=1, value="Итого плит, шт")
+        total_label.font = Font(name="Calibri", size=12, bold=True, color=navy)
+        total_label.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        total_cell = f"E{row}"
+        sheet[total_cell] = f"=SUM(E{first_board}:E{last_board})"
+        sheet[total_cell].font = Font(name="Calibri", size=13, bold=True, color=navy)
+        sheet[total_cell].alignment = center
+        sheet.row_dimensions[row].height = 22
+        last_row = row
         row += 2
-        section(row, "HPL")
+
+    def short_table(title: str, quantity_title: str, table_records: list[dict[str, object]]) -> None:
+        nonlocal row, last_row
+        section(row, title)
         row += 1
-        table_header(row, {1: "№", 2: "Код", 3: "Название", 5: "HPL, листов"})
+        table_header(row, {1: "№", 2: "Код", 3: "Название", 5: quantity_title})
         merged(row, 3, 4)
         merged(row, 5, 6)
         row += 1
-        first_hpl = row
-        for position, record in enumerate(hpl_records, start=1):
+        for position, record in enumerate(table_records, start=1):
             body_cell(row, 1, position, center)
-            body_cell(row, 2, record["code"], left, bold=True)
+            body_cell(row, 2, record["code"] or None, left, bold=True)
             body_cell(row, 3, record["name"], left)
             sheet.cell(row=row, column=4).border = frame
             merged(row, 3, 4)
@@ -491,13 +532,14 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
             merged(row, 5, 6)
             row += 1
         last_row = row - 1
-        sheet.conditional_formatting.add(
-            f"A{first_hpl}:F{last_row}",
-            FormulaRule(formula=[f"N($E{first_hpl})>0"], **ordered_style),
-        )
+        row += 1
 
-    sheet.freeze_panes = f"A{first_board}"
-    sheet.print_area = f"A1:F{last_row}"
+    if hpl_records:
+        short_table("HPL", "HPL, листов", hpl_records)
+    if other_records:
+        short_table("Другие позиции", "Кол-во", other_records)
+
+    sheet.print_area = f"A1:F{max(last_row, 2)}"
     sheet.page_setup.orientation = "portrait"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
     sheet.page_setup.fitToWidth = 1
@@ -507,4 +549,5 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
 
     buffer = BytesIO()
     workbook.save(buffer)
-    return _store_total_value(buffer.getvalue(), total_cell, int(order_rows["quantity"].sum()))
+    content = buffer.getvalue()
+    return _store_total_value(content, total_cell, int(order_rows["quantity"].sum())) if total_cell else content
