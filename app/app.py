@@ -7107,6 +7107,13 @@ def render_wq_order_form(
         st.caption(
             f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL {hpl_total} листов"
         )
+        low_priority = order_rows.loc[order_rows["low_priority_skipped"], "name"].tolist()
+        if low_priority:
+            st.caption(
+                f"Не предложено из-за низкого приоритета ({len(low_priority)}): "
+                + ", ".join(low_priority)
+                + ". При необходимости впишите количество вручную."
+            )
         if missing:
             st.warning(f"Не нашёл в продажах и остатках ({len(missing)}), в заказе пусто: " + ", ".join(missing))
 

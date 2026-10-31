@@ -15,6 +15,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 SECTION_BOARDS = "boards"
 SECTION_HPL = "hpl"
+# The user's rule: low priority goods are not proposed. They can still be typed in by hand.
+EXCLUDED_ORDER_PRIORITY = "низкий"
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ ORDER_FORM_COLUMNS = [
     "product",
     "edge_product",
     "supplier",
+    "low_priority_skipped",
 ]
 
 _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
@@ -137,6 +140,12 @@ def _whole_quantity(values: pd.Series) -> int:
     return math.ceil(total - 1e-9) if total > 0 else 0
 
 
+def _proposed_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty or "priority" not in frame.columns:
+        return frame
+    return frame[frame["priority"].fillna("").astype(str).str.strip().str.casefold().ne(EXCLUDED_ORDER_PRIORITY)]
+
+
 def build_order_form_rows(
     procurement_forecast: pd.DataFrame,
     rows: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS,
@@ -166,7 +175,8 @@ def build_order_form_rows(
     for row in rows:
         main_kind = "hpl" if row.section == SECTION_HPL else "board"
         main = forecast[_row_mask(row, texts, kinds, main_kind)]
-        main_quantity = _whole_quantity(main["recommended_order_qty"]) if not main.empty else 0
+        main_quantity = _whole_quantity(_proposed_rows(main)["recommended_order_qty"]) if not main.empty else 0
+        skipped = _whole_quantity(main["recommended_order_qty"]) > main_quantity if not main.empty else False
         edge_found = False
         edge = forecast.iloc[0:0]
         if row.section == SECTION_HPL:
@@ -175,7 +185,9 @@ def build_order_form_rows(
             edge = forecast[_row_mask(row, texts, kinds, "edge")]
             edge_found = not edge.empty
             quantity = main_quantity
-            edge_or_sheets = _whole_quantity(edge["recommended_order_qty"]) if edge_found else 0
+            edge_or_sheets = _whole_quantity(_proposed_rows(edge)["recommended_order_qty"]) if edge_found else 0
+            if edge_found and _whole_quantity(edge["recommended_order_qty"]) > edge_or_sheets:
+                skipped = True
         records.append(
             {
                 "code": row.code,
@@ -194,6 +206,7 @@ def build_order_form_rows(
                 "product": first_product(main),
                 "edge_product": first_product(edge),
                 "supplier": first_value(main, "supplier", ""),
+                "low_priority_skipped": bool(skipped),
             }
         )
     return pd.DataFrame(records, columns=ORDER_FORM_COLUMNS)

@@ -106,6 +106,50 @@ class OrderFormRowsTest(unittest.TestCase):
         self.assertEqual(result["quantity"].sum(), 0)
 
 
+class LowPriorityTest(unittest.TestCase):
+    def rows(self, **priorities: str) -> pd.DataFrame:
+        frame = forecast(
+            ("US77301/PGR4201 Маффин 18*1220*2800мм", 40),
+            ("PGR4201 Маффин 1*22мм", 300),
+            ("US77306/PGR4206 Бисквит 18*1220*2800мм", 14),
+            ("HPL Compact WQS1837-3 FR Молочный Кварцит", 6),
+        )
+        frame["priority"] = [
+            priorities.get("muffin", "Высокий"),
+            priorities.get("muffin_edge", "Высокий"),
+            priorities.get("biscuit", "Высокий"),
+            priorities.get("hpl", "Высокий"),
+        ]
+        return build_order_form_rows(frame).set_index("name")
+
+    def test_low_priority_board_is_not_proposed_but_stays_on_the_form(self) -> None:
+        rows = self.rows(muffin="Низкий")
+        self.assertEqual(rows.loc["Маффин", "quantity"], 0)
+        self.assertTrue(rows.loc["Маффин", "found"])
+        self.assertTrue(rows.loc["Маффин", "low_priority_skipped"])
+        self.assertEqual(rows.loc["Маффин", "product"], "US77301/PGR4201 Маффин 18*1220*2800мм")
+        self.assertEqual(rows.loc["Маффин", "edge_or_sheets"], 300)
+
+    def test_low_priority_edge_and_hpl_are_not_proposed(self) -> None:
+        rows = self.rows(muffin_edge="Низкий", hpl="низкий ")
+        self.assertEqual(rows.loc["Маффин", "quantity"], 40)
+        self.assertEqual(rows.loc["Маффин", "edge_or_sheets"], 0)
+        self.assertEqual(rows.loc["Молочный Кварцит", "edge_or_sheets"], 0)
+
+    def test_other_priorities_are_proposed_without_rounding(self) -> None:
+        for priority in ("Критичный", "Высокий", "Средний", "Новый"):
+            with self.subTest(priority=priority):
+                rows = self.rows(biscuit=priority)
+                self.assertEqual(rows.loc["Бисквит", "quantity"], 14)
+                self.assertFalse(rows.loc["Бисквит", "low_priority_skipped"])
+
+    def test_position_with_nothing_to_order_is_not_reported_as_skipped(self) -> None:
+        frame = forecast(("US77306/PGR4206 Бисквит 18*1220*2800мм", 0))
+        frame["priority"] = "Низкий"
+        rows = build_order_form_rows(frame).set_index("name")
+        self.assertFalse(rows.loc["Бисквит", "low_priority_skipped"])
+
+
 class OrderFromFormTest(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = build_order_form_rows(
