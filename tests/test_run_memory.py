@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -15,8 +16,13 @@ import run_memory  # noqa: E402
 
 class ReleasePreviousRunTest(unittest.TestCase):
     def setUp(self) -> None:
-        run_memory._previous_namespaces.clear()
-        self.addCleanup(run_memory._previous_namespaces.clear)
+        self.clear_state()
+        self.addCleanup(self.clear_state)
+
+    @staticmethod
+    def clear_state() -> None:
+        run_memory._previous_runs.clear()
+        run_memory._still_running.clear()
 
     def test_next_run_clears_tables_of_the_previous_run_only(self) -> None:
         first = {"data": pd.DataFrame({"x": [1]}), "series": pd.Series([1]), "label": "keep"}
@@ -43,6 +49,30 @@ class ReleasePreviousRunTest(unittest.TestCase):
         for index in range(run_memory.MAX_TRACKED_SESSIONS):
             run_memory.release_previous_run(f"session-{index}", {})
         self.assertIsNone(abandoned["data"])
+
+    def test_a_run_still_executing_keeps_its_tables_until_it_ends(self) -> None:
+        running = {"data": pd.DataFrame({"x": [1]})}
+        registered = threading.Event()
+        finish = threading.Event()
+
+        def old_run() -> None:
+            run_memory.release_previous_run("session", running)
+            registered.set()
+            finish.wait(10)
+
+        thread = threading.Thread(target=old_run)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(finish.set)
+        registered.wait(10)
+
+        run_memory.release_previous_run("session", {"data": pd.DataFrame({"x": [2]})})
+        self.assertIsInstance(running["data"], pd.DataFrame)
+
+        finish.set()
+        thread.join(10)
+        run_memory.release_previous_run("session", {"data": pd.DataFrame({"x": [3]})})
+        self.assertIsNone(running["data"])
 
 
 if __name__ == "__main__":
