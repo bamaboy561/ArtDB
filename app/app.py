@@ -135,12 +135,13 @@ from sku_catalog_store import (
 )
 from supplier_order_forms import (
     SECTION_BOARDS,
+    SUPPLIER_FORMS,
+    SupplierForm,
     build_order_form_rows,
     apply_order_file,
-    build_wq_order_workbook,
+    build_supplier_order_workbook,
     order_file_comment,
     order_form_from_items,
-    is_wq_supplier,
     order_form_supplier,
     order_items_from_form,
     parse_order_form_file,
@@ -7047,9 +7048,13 @@ def to_excel_report_bytes(
     return buffer.getvalue()
 
 
-@st.cache_data(show_spinner=False, max_entries=4, ttl=900)
-def cached_build_order_form_rows(_procurement_forecast: pd.DataFrame, forecast_key: str) -> pd.DataFrame:
-    return build_order_form_rows(_procurement_forecast)
+@st.cache_data(show_spinner=False, max_entries=8, ttl=900)
+def cached_build_order_form_rows(
+    _procurement_forecast: pd.DataFrame,
+    forecast_key: str,
+    form: SupplierForm,
+) -> pd.DataFrame:
+    return build_order_form_rows(_procurement_forecast, form=form)
 
 
 def render_missing_supplier_panel(procurement_forecast: pd.DataFrame, current_user: dict[str, str]) -> None:
@@ -7138,21 +7143,26 @@ def render_missing_supplier_panel(procurement_forecast: pd.DataFrame, current_us
             st.rerun()
 
 
-def render_wq_order_form(
+def render_supplier_order_form(
+    form: SupplierForm,
     procurement_forecast: pd.DataFrame,
     forecast_key: str,
     current_user: dict[str, str],
     *,
     lead_time_days: int,
 ) -> None:
-    order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key)
+    order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key, form)
     site_products = tuple(procurement_forecast["product"].astype(str)) if "product" in procurement_forecast.columns else ()
     if order_rows.empty:
         with st.container(border=True):
-            render_panel_header("Заказ поставщику WQ", "Форма заполняется товарами этого поставщика.")
-            st.info("Сейчас в выборке нет товаров поставщика WQ. Проверьте фильтры и назначение поставщика у товаров.")
+            render_panel_header(f"Заказ поставщику {form.title}", "Форма заполняется товарами этого поставщика.")
+            st.info(
+                f"Сейчас в выборке нет товаров поставщика {form.title}. "
+                "Проверьте фильтры и назначение поставщика у товаров."
+            )
             if can_manage_procurement(current_user):
-                render_wq_order_file_upload(
+                render_order_file_upload(
+                    form,
                     order_rows,
                     order_rows,
                     current_user,
@@ -7164,7 +7174,7 @@ def render_wq_order_form(
 
     with st.container(border=True):
         render_panel_header(
-            "Заказ поставщику WQ",
+            f"Заказ поставщику {form.title}",
             "Все товары поставщика на сайте. В файл попадут только позиции с количеством, его можно поправить в таблице.",
         )
         table = order_rows.assign(
@@ -7191,7 +7201,7 @@ def render_wq_order_form(
             hide_index=True,
             width="stretch",
             height=320,
-            key=f"wq_order_form_editor_{forecast_key}",
+            key=f"{form.key}_order_form_editor_{forecast_key}",
             disabled=[
                 "code",
                 "name",
@@ -7237,13 +7247,13 @@ def render_wq_order_form(
         download_col, order_col = st.columns(2, gap="small")
         with download_col:
             st.download_button(
-                "Скачать заказ WQ",
-                data=partial(build_wq_order_workbook, final_rows),
-                file_name=f"wq_zakaz_{date.today():%Y%m%d}.xlsx",
+                f"Скачать заказ {form.title}",
+                data=partial(build_supplier_order_workbook, final_rows, form=form),
+                file_name=f"{form.key}_zakaz_{date.today():%Y%m%d}.xlsx",
                 mime=EXCEL_MIME,
                 type="primary",
                 width="stretch",
-                key="dl_wq_order_form",
+                key=f"dl_{form.key}_order_form",
                 disabled=not (final_rows["quantity"].gt(0) | final_rows["edge_or_sheets"].gt(0)).any(),
             )
         if not can_manage_procurement(current_user):
@@ -7253,13 +7263,16 @@ def render_wq_order_form(
             if st.button(
                 "В пути: файл не менялся",
                 width="stretch",
-                key="wq_order_form_create",
+                key=f"{form.key}_order_form_create",
                 disabled=order_items.empty,
                 help="Если поставщик подтвердил заказ без изменений. Иначе загрузите исправленный файл ниже.",
             ):
-                create_wq_order(final_rows, current_user, lead_time_days, comment="Форма заказа WQ")
+                create_supplier_form_order(
+                    form, final_rows, current_user, lead_time_days, comment=f"Форма заказа {form.title}"
+                )
 
-        render_wq_order_file_upload(
+        render_order_file_upload(
+            form,
             order_rows,
             final_rows,
             current_user,
@@ -7268,7 +7281,8 @@ def render_wq_order_form(
         )
 
 
-def create_wq_order(
+def create_supplier_form_order(
+    form: SupplierForm,
     order_rows: pd.DataFrame,
     current_user: dict[str, str],
     lead_time_days: int,
@@ -7276,12 +7290,12 @@ def create_wq_order(
     comment: str,
 ) -> None:
     create_form_order(
-        order_form_supplier(order_rows),
+        order_form_supplier(order_rows, default=form.title),
         order_items_from_form(order_rows),
         current_user,
         lead_time_days,
         comment=comment,
-        upload_round_key="wq_order_upload_round",
+        upload_round_key=f"{form.key}_order_upload_round",
     )
 
 
@@ -7597,7 +7611,8 @@ def render_stock_arrival_review(arrival_lines: pd.DataFrame, editor_key: str) ->
     return edited.assign(arrived_qty=arrived.clip(upper=edited["remaining_qty"]))
 
 
-def render_wq_order_file_upload(
+def render_order_file_upload(
+    form: SupplierForm,
     order_rows: pd.DataFrame,
     proposed_rows: pd.DataFrame,
     current_user: dict[str, str],
@@ -7608,13 +7623,13 @@ def render_wq_order_file_upload(
     uploaded_order = st.file_uploader(
         "Загрузить исправленный файл заказа",
         type=["xlsx"],
-        key=f"wq_order_file_{st.session_state.get('wq_order_upload_round', 0)}",
+        key=f"{form.key}_order_file_{st.session_state.get(f'{form.key}_order_upload_round', 0)}",
         help="Количества из файла становятся финальными. Позиция, у которой количество пустое или 0, в заказ не попадёт.",
     )
     if uploaded_order is None:
         return
 
-    parsed = parse_order_form_file(uploaded_order.getvalue(), order_rows, site_products)
+    parsed = parse_order_form_file(uploaded_order.getvalue(), order_rows, site_products, form=form)
     for message in parsed.errors:
         st.error(message)
     if parsed.errors:
@@ -7651,7 +7666,7 @@ def render_wq_order_file_upload(
     )
     st.dataframe(comparison[ordered | changed], hide_index=True, width="stretch", height=260)
 
-    file_comment = order_file_comment(uploaded_order.name, parsed)
+    file_comment = order_file_comment(uploaded_order.name, parsed, form=form)
     existing_orders = load_procurement_orders()
     already_saved = (
         not existing_orders.empty
@@ -7667,10 +7682,10 @@ def render_wq_order_file_upload(
     if st.button(
         "Подтвердить: заказ в пути",
         type="primary",
-        key="wq_order_file_confirm",
+        key=f"{form.key}_order_file_confirm",
         disabled=already_saved or not ordered.any(),
     ):
-        create_wq_order(file_rows, current_user, lead_time_days, comment=file_comment)
+        create_supplier_form_order(form, file_rows, current_user, lead_time_days, comment=file_comment)
 
 
 def render_access_tab(registered_salons: list[str]) -> None:
@@ -16940,12 +16955,14 @@ if active_screen == "Закупки":
                 current_user,
                 lead_time_days=procurement_lead_time_days,
             )
-            render_wq_order_form(
-                procurement_forecast,
-                procurement_forecast_cache_key,
-                current_user,
-                lead_time_days=procurement_lead_time_days,
-            )
+            for supplier_form in SUPPLIER_FORMS:
+                render_supplier_order_form(
+                    supplier_form,
+                    procurement_forecast,
+                    procurement_forecast_cache_key,
+                    current_user,
+                    lead_time_days=procurement_lead_time_days,
+                )
             if can_manage_procurement(current_user):
                 with st.container(border=True):
                     render_panel_header(
@@ -17525,12 +17542,16 @@ if active_screen == "Закупки":
                                     key=f"procurement_order_krono_export_{selected_order_id}",
                                     use_container_width=True,
                                 )
-                            if is_wq_supplier(selected_order_row["supplier"]):
-                                selected_order_form = order_form_from_items(selected_order_lines)
+                            supplier_form = next(
+                                (form for form in SUPPLIER_FORMS if form.matches(selected_order_row["supplier"])),
+                                None,
+                            )
+                            if supplier_form is not None:
+                                selected_order_form = order_form_from_items(selected_order_lines, form=supplier_form)
                                 st.download_button(
-                                    "Скачать в форме поставщика WQ",
-                                    data=partial(build_wq_order_workbook, selected_order_form),
-                                    file_name=f"wq_zakaz_{str(selected_order_id)[-12:]}.xlsx",
+                                    f"Скачать в форме поставщика {supplier_form.title}",
+                                    data=partial(build_supplier_order_workbook, selected_order_form, form=supplier_form),
+                                    file_name=f"{supplier_form.key}_zakaz_{str(selected_order_id)[-12:]}.xlsx",
                                     mime=EXCEL_MIME,
                                     key=f"procurement_order_form_export_{selected_order_id}",
                                     icon=":material/download:",

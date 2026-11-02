@@ -31,8 +31,7 @@ class OrderFormRow:
     match_by_name: bool = True
 
 
-WQ_SUPPLIER_TERM = "wq"
-WQ_BOARD_FORMAT = "2800*1220*18мм"
+BOARD_FORMAT = "2800*1220*18мм"
 # Not the list of what to order, which comes from the site: this only tells which
 # supplier code and short name belong to a site product.
 WQ_ORDER_ROWS: tuple[OrderFormRow, ...] = (
@@ -73,6 +72,36 @@ WQ_ORDER_ROWS: tuple[OrderFormRow, ...] = (
     OrderFormRow("WQW47183-2 ELM", "Дерево Песчаное", section=SECTION_HPL),
 )
 
+
+@dataclass(frozen=True)
+class SupplierForm:
+    key: str
+    title: str
+    supplier_terms: tuple[str, ...]
+    catalog: tuple[OrderFormRow, ...] = ()
+    # When several decors share the end of the code, as "V6911-1/LM146" and "V6616-3/LM146"
+    # do, only the name tells them apart.
+    group_by_name: bool = False
+    note_title: str = "Старый код"
+    fills_old_code: bool = True
+
+    def matches(self, supplier: object) -> bool:
+        text = _normalize(supplier)
+        return any(_contains_term(text, term) for term in self.supplier_terms)
+
+
+WQ_FORM = SupplierForm("wq", "WQ", ("wq",), catalog=WQ_ORDER_ROWS)
+# The site's names already hold Liamax's codes, so this form needs no catalog.
+LIAMAX_FORM = SupplierForm(
+    "liamax",
+    "Liamax",
+    ("liamax", "лиамакс"),
+    group_by_name=True,
+    note_title="备注",
+    fills_old_code=False,
+)
+SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM)
+
 ORDER_FORM_COLUMNS = [
     "row_id",
     "code",
@@ -97,6 +126,7 @@ _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
 _BOARD_SIZE_PARTS = ("18", "1220", "2800")
 _NUMBER = re.compile(r"[0-9]+")
 _ARTICLE = re.compile(r"^([0-9A-Za-z][0-9A-Za-z/._()-]*[0-9][0-9A-Za-z/._()-]*)\s+(.+)$")
+_EDGE_ARTICLE = re.compile(r"^(LM[0-9]+)\s+(.+)$", re.IGNORECASE)
 _SIZE_TAIL = re.compile(r"\s*\d+(?:[.,]\d+)?\s*[*xх×]\s*\d.*$")
 
 
@@ -137,10 +167,6 @@ def _whole_quantity(values: pd.Series) -> int:
     return math.ceil(total - 1e-9) if total > 0 else 0
 
 
-def is_wq_supplier(value: object) -> bool:
-    return _contains_term(_normalize(value), WQ_SUPPLIER_TERM)
-
-
 def _catalog_row(text: str, kind: str, catalog: tuple[OrderFormRow, ...]) -> OrderFormRow | None:
     """The known supplier code of a site product: by article first, by name otherwise."""
     wanted = SECTION_HPL if kind == "hpl" else SECTION_BOARDS
@@ -158,6 +184,10 @@ def _split_product(product: str, kind: str) -> tuple[str, str]:
     """Article and short name from a site name such as "US77301/PGR4201 Маффин 18*1220*2800мм"."""
     match = _ARTICLE.match(product.strip())
     article, name = (match.group(1), match.group(2)) if match else ("", product.strip())
+    # "ES8206 LM557 Вайоминг Грей": the same code, written with a space instead of a slash.
+    paired = _EDGE_ARTICLE.match(name) if article else None
+    if paired:
+        article, name = f"{article} {paired.group(1)}", paired.group(2)
     if kind in ("board", "edge"):
         name = _SIZE_TAIL.sub("", name).strip() or name
     return article, name
@@ -166,17 +196,17 @@ def _split_product(product: str, kind: str) -> tuple[str, str]:
 def build_order_form_rows(
     procurement_forecast: pd.DataFrame,
     *,
-    only_wq_supplier: bool = True,
-    catalog: tuple[OrderFormRow, ...] = WQ_ORDER_ROWS,
+    form: SupplierForm = WQ_FORM,
+    only_supplier: bool = True,
 ) -> pd.DataFrame:
     """One line per position of the supplier: boards with their edge metres, HPL sheets, other goods."""
     if procurement_forecast.empty or "product" not in procurement_forecast.columns:
         return pd.DataFrame(columns=ORDER_FORM_COLUMNS)
     forecast = procurement_forecast
-    if only_wq_supplier:
+    if only_supplier:
         if "supplier" not in forecast.columns:
             return pd.DataFrame(columns=ORDER_FORM_COLUMNS)
-        forecast = forecast[forecast["supplier"].map(is_wq_supplier)]
+        forecast = forecast[forecast["supplier"].map(form.matches)]
 
     grouped: dict[str, dict[str, object]] = {}
     for record in forecast.to_dict(orient="records"):
@@ -184,11 +214,11 @@ def build_order_form_rows(
         text = _normalize(product)
         kind = _product_kind(text)
         article, name = _split_product(product, kind)
-        known = _catalog_row(text, kind, catalog) if kind else None
+        known = _catalog_row(text, kind, form.catalog) if kind else None
         code = known.code if known else article
         section = SECTION_HPL if kind == "hpl" else SECTION_BOARDS if kind in ("board", "edge") else SECTION_OTHER
         # A board and its edge band of one decor share a line; "US77301/PGR4201" and "PGR4201" are one article.
-        decor = _normalize(code.split("/")[-1] if code else name)
+        decor = _normalize(name if form.group_by_name or not code else code.split("/")[-1])
         row_id = f"{section}:{decor}"
         row = grouped.setdefault(
             row_id,
@@ -212,6 +242,9 @@ def build_order_form_rows(
                 "low_priority_skipped": False,
             },
         )
+        # The edge band can carry only its own part of the code: the board has the full one.
+        if form.group_by_name and kind == "board" and code:
+            row["code"] = code
         recommended = pd.to_numeric(pd.Series([record.get("recommended_order_qty")]), errors="coerce").fillna(0).iloc[0]
         needed = max(float(recommended), 0.0)
         priority = _normalize(record.get("priority", ""))
@@ -245,9 +278,13 @@ def build_order_form_rows(
     )
 
 
-def order_form_from_items(items: pd.DataFrame) -> pd.DataFrame:
+def order_form_from_items(items: pd.DataFrame, *, form: SupplierForm = WQ_FORM) -> pd.DataFrame:
     """The form for a saved order: its own quantities, not the current recommendation."""
-    return build_order_form_rows(items.rename(columns={"quantity": "recommended_order_qty"}), only_wq_supplier=False)
+    return build_order_form_rows(
+        items.rename(columns={"quantity": "recommended_order_qty"}),
+        form=form,
+        only_supplier=False,
+    )
 
 
 def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
@@ -346,9 +383,10 @@ def _extra_row(
     name: str,
     section: str,
     site_products: list[tuple[str, str, str]],
+    catalog: tuple[OrderFormRow, ...],
 ) -> dict[str, object]:
     """An order line for goods outside the supplier's list: the file is final, so none are lost."""
-    known = next((row for row in WQ_ORDER_ROWS if _normalize_code(row.code) == _normalize_code(code)), None)
+    known = next((row for row in catalog if _normalize_code(row.code) == _normalize_code(code)), None)
     match_by_name = known.match_by_name if known else True
     if section == SECTION_BOARDS:
         product = _find_site_product(code, old_code, name, "board", site_products, match_by_name=match_by_name)
@@ -385,6 +423,8 @@ def parse_order_form_file(
     content: bytes,
     order_rows: pd.DataFrame,
     site_products: tuple[str, ...] | list[str] = (),
+    *,
+    form: SupplierForm = WQ_FORM,
 ) -> ParsedOrderFile:
     """Quantities from the file: `order_rows` lists the supplier's goods, `site_products` all goods of the site."""
     parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
@@ -447,7 +487,7 @@ def parse_order_form_file(
                 continue
             if board is not None and edge is not None:
                 code = str(raw_code if _normalize_code(raw_code) else "").strip()
-                catalog_row = next((row for row in WQ_ORDER_ROWS if _normalize_code(row.code) == _normalize_code(code)), None)
+                catalog_row = next((row for row in form.catalog if _normalize_code(row.code) == _normalize_code(code)), None)
                 if catalog_row is not None:
                     section = catalog_row.section
                 elif "hpl, листов" in columns:
@@ -457,7 +497,7 @@ def parse_order_form_file(
                 else:
                     section = SECTION_OTHER
                 old_code = str(cell(row, _OLD_CODE_TITLES) or "").strip()
-                record = _extra_row(code, old_code, str(raw_name or "").strip(), section, searchable)
+                record = _extra_row(code, old_code, str(raw_name or "").strip(), section, searchable, form.catalog)
                 record = extras.setdefault(str(record["row_id"]), record)
         if board is None or edge is None:
             parsed.errors.append(f"Строка {number}, код {label}: количество должно быть числом не меньше нуля.")
@@ -485,8 +525,8 @@ def apply_order_file(order_rows: pd.DataFrame, parsed: ParsedOrderFile) -> pd.Da
     return result
 
 
-def order_file_comment(filename: str, parsed: ParsedOrderFile) -> str:
-    return f"Форма заказа WQ · файл {filename} · {parsed.fingerprint}"
+def order_file_comment(filename: str, parsed: ParsedOrderFile, *, form: SupplierForm = WQ_FORM) -> str:
+    return f"Форма заказа {form.title} · файл {filename} · {parsed.fingerprint}"
 
 
 def _store_total_value(content: bytes, total_cell: str, total_value: int) -> bytes:
@@ -505,11 +545,16 @@ def _store_total_value(content: bytes, total_cell: str, total_value: int) -> byt
     return target.getvalue()
 
 
-def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None = None) -> bytes:
-    """The WQ order: only positions with a quantity, in separate tables for boards, HPL and other goods."""
+def build_supplier_order_workbook(
+    order_rows: pd.DataFrame,
+    *,
+    form: SupplierForm = WQ_FORM,
+    order_date: date | None = None,
+) -> bytes:
+    """The order: only positions with a quantity, in separate tables for boards, HPL and other goods."""
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Заказ WQ"
+    sheet.title = f"Заказ {form.title}"
     sheet.sheet_view.showGridLines = False
 
     navy = "003461"
@@ -563,7 +608,7 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
     hpl_records = [record for record in records if record["section"] == SECTION_HPL]
     other_records = [record for record in records if record["section"] == SECTION_OTHER]
 
-    heading(1, "Заказ поставщику WQ", Font(name="Calibri", size=16, bold=True, color=navy), 26)
+    heading(1, f"Заказ поставщику {form.title}", Font(name="Calibri", size=16, bold=True, color=navy), 26)
     heading(
         2,
         f"Дата заказа: {(order_date or date.today()):%d.%m.%Y}",
@@ -575,9 +620,9 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
     last_row = 2
     total_cell = ""
     if board_records:
-        section(row, f"Плиты {WQ_BOARD_FORMAT}")
+        section(row, f"Плиты {BOARD_FORMAT}")
         row += 1
-        table_header(row, {1: "№", 2: "Код", 3: "Название", 4: "Старый код", 5: "Плиты, шт", 6: "Кромка, м"})
+        table_header(row, {1: "№", 2: "Код", 3: "Название", 4: form.note_title, 5: "Плиты, шт", 6: "Кромка, м"})
         sheet.freeze_panes = f"A{row + 1}"
         row += 1
         first_board = row
@@ -585,7 +630,7 @@ def build_wq_order_workbook(order_rows: pd.DataFrame, *, order_date: date | None
             body_cell(row, 1, position, center)
             body_cell(row, 2, record["code"] or None, left, bold=True)
             body_cell(row, 3, record["name"], left)
-            body_cell(row, 4, record["old_code"] or None, center)
+            body_cell(row, 4, (record["old_code"] or None) if form.fills_old_code else None, center)
             body_cell(row, 5, int(record["quantity"]) or None, center)
             body_cell(row, 6, int(record["edge_or_sheets"]) or None, center)
             row += 1

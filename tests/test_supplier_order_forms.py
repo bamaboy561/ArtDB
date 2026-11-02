@@ -14,12 +14,14 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from supplier_order_forms import (  # noqa: E402
+    LIAMAX_FORM,
     SECTION_HPL,
     SECTION_OTHER,
+    WQ_FORM,
     apply_order_file,
     build_order_form_rows,
-    build_wq_order_workbook,
-    is_wq_supplier,
+    build_supplier_order_workbook,
+    order_file_comment,
     order_form_from_items,
     order_form_supplier,
     order_items_from_form,
@@ -75,9 +77,9 @@ from supplier_order_forms import NOTE_NEW_POSITION, NOTE_OTHER_SUPPLIER  # noqa:
 class SupplierSelectionTest(unittest.TestCase):
     def test_supplier_name_is_recognised(self) -> None:
         for name in ("WQ", "wq", "ООО WQ", "WQ Китай"):
-            self.assertTrue(is_wq_supplier(name), name)
+            self.assertTrue(WQ_FORM.matches(name), name)
         for name in ("", "Не назначен", "AWQA", "Кроношпан"):
-            self.assertFalse(is_wq_supplier(name), name)
+            self.assertFalse(WQ_FORM.matches(name), name)
 
     def test_only_goods_of_this_supplier_are_taken(self) -> None:
         rows = build_order_form_rows(forecast((MUFFIN, 20), (BISCUIT, 30, "Высокий", "Другой поставщик")))
@@ -186,7 +188,7 @@ class UploadedOrderFileTest(unittest.TestCase):
         self.rows = build_order_form_rows(
             forecast((MUFFIN, 220), (MUFFIN_EDGE, 1500), (CHEESECAKE, 80), (QUARTZITE, 10), (BISCUIT, 0))
         )
-        self.workbook = load_workbook(BytesIO(build_wq_order_workbook(self.rows)))
+        self.workbook = load_workbook(BytesIO(build_supplier_order_workbook(self.rows)))
         self.sheet = self.workbook.active
 
     def content(self) -> bytes:
@@ -291,7 +293,7 @@ class UploadedOrderFileTest(unittest.TestCase):
 
     def test_position_without_an_article_is_matched_by_name(self) -> None:
         rows = build_order_form_rows(forecast(("Петля накладная", 12)))
-        content = build_wq_order_workbook(rows)
+        content = build_supplier_order_workbook(rows)
         applied = apply_order_file(rows, parse_order_form_file(content, rows))
         self.assertEqual(row_named(applied, "Петля накладная")["edge_or_sheets"], 12)
 
@@ -345,7 +347,7 @@ class OrderWorkbookTest(unittest.TestCase):
                 ("Петля накладная", 12),
             )
         )
-        content = build_wq_order_workbook(rows, order_date=date(2026, 10, 31))
+        content = build_supplier_order_workbook(rows, order_date=date(2026, 10, 31))
         self.sheet = load_workbook(BytesIO(content)).active
         self.values = load_workbook(BytesIO(content), data_only=True).active
 
@@ -398,10 +400,119 @@ class OrderWorkbookTest(unittest.TestCase):
 
     def test_file_without_boards_has_no_boards_table(self) -> None:
         rows = build_order_form_rows(forecast((QUARTZITE, 10)))
-        sheet = load_workbook(BytesIO(build_wq_order_workbook(rows))).active
+        sheet = load_workbook(BytesIO(build_supplier_order_workbook(rows))).active
         values = [sheet.cell(row, 1).value for row in range(1, sheet.max_row + 1)]
         self.assertNotIn("Итого плит, шт", values)
         self.assertIn("HPL", values)
+
+
+class LiamaxFormTest(unittest.TestCase):
+    KANSAS = "WS723-2/LM142 Дуб Канзас 18*1220*2800мм"
+    KANSAS_EDGE = "WS723-2/LM142 Дуб Канзас 1*22мм"
+    ONYX_GOLD = "V6911-1/LM146 Оникс Голд 18*1220*2800мм"
+    ONYX_GREY = "V6911-3/LM146 Оникс Грей 18*1220*2800мм"
+    WYOMING = "ES8206 LM557 Вайоминг Грей 18*1220*2800мм"
+
+    def rows(self, *lines: tuple) -> pd.DataFrame:
+        return build_order_form_rows(forecast(*lines, supplier="Liamax"), form=LIAMAX_FORM)
+
+    def test_supplier_name_is_recognised(self) -> None:
+        for name in ("Liamax", "LIAMAX", "Лиамакс", "ООО Лиамакс"):
+            self.assertTrue(LIAMAX_FORM.matches(name), name)
+        for name in ("", "WQ", "Не назначен", "Swiss Krono"):
+            self.assertFalse(LIAMAX_FORM.matches(name), name)
+
+    def test_only_goods_of_this_supplier(self) -> None:
+        data = forecast((self.KANSAS, 5), (MUFFIN, 7, "Высокий", "WQ"), supplier="Liamax")
+        self.assertEqual(build_order_form_rows(data, form=LIAMAX_FORM)["code"].tolist(), ["WS723-2/LM142"])
+        self.assertEqual(build_order_form_rows(data)["name"].tolist(), ["Маффин"])
+
+    def test_board_and_its_edge_share_a_line(self) -> None:
+        rows = self.rows((self.KANSAS_EDGE, 120), (self.KANSAS, 5))
+        self.assertEqual(len(rows), 1)
+        line = rows.iloc[0]
+        self.assertEqual((line["code"], line["name"]), ("WS723-2/LM142", "Дуб Канзас"))
+        self.assertEqual((line["quantity"], line["edge_or_sheets"]), (5, 120))
+
+    def test_decors_with_one_edge_code_stay_apart(self) -> None:
+        rows = self.rows((self.ONYX_GOLD, 3), (self.ONYX_GREY, 4))
+        self.assertEqual(row_named(rows, "Оникс Голд")["quantity"], 3)
+        self.assertEqual(row_named(rows, "Оникс Грей")["quantity"], 4)
+
+    def test_edge_named_by_its_own_code_finds_the_board(self) -> None:
+        rows = self.rows(("LM142 Дуб Канзас 1*22мм", 50), (self.KANSAS, 5))
+        self.assertEqual(rows["code"].tolist(), ["WS723-2/LM142"])
+        self.assertEqual(rows["edge_or_sheets"].tolist(), [50])
+
+    def test_code_with_a_space_is_kept_whole(self) -> None:
+        line = self.rows((self.WYOMING, 2)).iloc[0]
+        self.assertEqual((line["code"], line["name"]), ("ES8206 LM557", "Вайоминг Грей"))
+
+    def test_workbook_is_titled_for_the_supplier(self) -> None:
+        rows = self.rows((self.KANSAS, 5), (self.KANSAS_EDGE, 120), (self.ONYX_GOLD, 0))
+        sheet = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=LIAMAX_FORM))).active
+        self.assertEqual(sheet.title, "Заказ Liamax")
+        self.assertEqual(sheet["A1"].value, "Заказ поставщику Liamax")
+        self.assertEqual(sheet.cell(5, 4).value, "备注")
+        self.assertIsNone(sheet.cell(find_row(sheet, "Дуб Канзас"), 4).value)
+        names = [sheet.cell(row, NAME_COLUMN).value for row in range(1, sheet.max_row + 1)]
+        self.assertNotIn("Оникс Голд", names)
+
+    def test_generated_file_comes_back_with_the_same_quantities(self) -> None:
+        rows = self.rows((self.KANSAS, 5), (self.KANSAS_EDGE, 120), (self.ONYX_GOLD, 3))
+        content = build_supplier_order_workbook(rows, form=LIAMAX_FORM)
+        applied = apply_order_file(rows, parse_order_form_file(content, rows, form=LIAMAX_FORM))
+        self.assertEqual(row_named(applied, "Дуб Канзас")["quantity"], 5)
+        self.assertEqual(row_named(applied, "Дуб Канзас")["edge_or_sheets"], 120)
+        self.assertEqual(row_named(applied, "Оникс Голд")["quantity"], 3)
+
+    def sample_layout_file(self, *lines: tuple) -> bytes:
+        """A file in the layout employees fill by hand, with the column order of the supplier's sample."""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet["C3"] = "2800*1220*18мм"
+        sheet.append([None, "Код", "Кол-во", "备注", "КРОМКА ", "Название"])
+        for line in lines:
+            sheet.append([None, *line])
+        sheet.append([None, None, "=SUM(C5:C38)", None, "=SUM(E5:E38)"])
+        buffer = BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+
+    def test_file_in_the_sample_layout_is_read(self) -> None:
+        rows = self.rows((self.KANSAS, 5), (self.ONYX_GOLD, 3), (self.WYOMING, 1))
+        content = self.sample_layout_file(
+            ("WS723-2/LM142 ", 8, None, 40, "Дуб Канзас"),
+            # The sample writes this code without its slash: the name still finds the goods.
+            ("V6911-1LM146", 2, None, None, "Оникс Голд "),
+            ("ES8206 LM557 ", 6, None, None, "Вайоминг Грей"),
+        )
+        parsed = parse_order_form_file(content, rows, form=LIAMAX_FORM)
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.extra_rows, [])
+        applied = apply_order_file(rows, parsed)
+        self.assertEqual(row_named(applied, "Дуб Канзас")["quantity"], 8)
+        self.assertEqual(row_named(applied, "Дуб Канзас")["edge_or_sheets"], 40)
+        self.assertEqual(row_named(applied, "Оникс Голд")["quantity"], 2)
+        self.assertEqual(row_named(applied, "Вайоминг Грей")["quantity"], 6)
+
+    def test_new_decor_in_the_file_enters_the_order(self) -> None:
+        rows = self.rows((self.KANSAS, 5))
+        content = self.sample_layout_file(("WS984-3/LM529", 4, None, None, "Дуб Теннесси"))
+        applied = apply_order_file(rows, parse_order_form_file(content, rows, form=LIAMAX_FORM))
+        line = row_named(applied, "Дуб Теннесси")
+        self.assertEqual((line["code"], line["quantity"], line["file_note"]), ("WS984-3/LM529", 4, NOTE_NEW_POSITION))
+        items = order_items_from_form(applied)
+        self.assertIn("WS984-3/LM529 Дуб Теннесси 18*1220*2800мм", items["product"].tolist())
+
+    def test_saved_order_rebuilds_the_same_form(self) -> None:
+        rows = self.rows((self.KANSAS, 5), (self.KANSAS_EDGE, 120), (self.ONYX_GOLD, 3), (self.ONYX_GREY, 4))
+        rebuilt = order_form_from_items(order_items_from_form(rows), form=LIAMAX_FORM)
+        self.assertEqual(sorted(rebuilt["name"]), ["Дуб Канзас", "Оникс Голд", "Оникс Грей"])
+        self.assertEqual(row_named(rebuilt, "Дуб Канзас")["edge_or_sheets"], 120)
+
+    def test_comment_names_the_supplier(self) -> None:
+        self.assertIn("Liamax", order_file_comment("a.xlsx", parse_order_form_file(b"x", self.rows()), form=LIAMAX_FORM))
 
 
 if __name__ == "__main__":
