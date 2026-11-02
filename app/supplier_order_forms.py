@@ -1,6 +1,7 @@
 """Order forms in the layout a supplier expects, filled from the procurement forecast."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 import hashlib
@@ -84,6 +85,8 @@ class SupplierForm:
     group_by_name: bool = False
     note_title: str = "Старый код"
     fills_old_code: bool = True
+    # Fittings and other goods: one table in pieces, a line for each site product.
+    goods_only: bool = False
 
     def matches(self, supplier: object) -> bool:
         text = _normalize(supplier)
@@ -100,7 +103,9 @@ LIAMAX_FORM = SupplierForm(
     note_title="备注",
     fills_old_code=False,
 )
-SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM)
+# The user left the layout to us: Nuomi has no form of its own.
+NUOMI_FORM = SupplierForm("nuomi", "Nuomi", ("nuomi", "нуоми"), fills_old_code=False, goods_only=True)
+SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM)
 
 ORDER_FORM_COLUMNS = [
     "row_id",
@@ -212,14 +217,14 @@ def build_order_form_rows(
     for record in forecast.to_dict(orient="records"):
         product = str(record["product"])
         text = _normalize(product)
-        kind = _product_kind(text)
+        kind = "" if form.goods_only else _product_kind(text)
         article, name = _split_product(product, kind)
         known = _catalog_row(text, kind, form.catalog) if kind else None
         code = known.code if known else article
         section = SECTION_HPL if kind == "hpl" else SECTION_BOARDS if kind in ("board", "edge") else SECTION_OTHER
         # A board and its edge band of one decor share a line; "US77301/PGR4201" and "PGR4201" are one article.
         decor = _normalize(name if form.group_by_name or not code else code.split("/")[-1])
-        row_id = f"{section}:{decor}"
+        row_id = f"{section}:{text if form.goods_only else decor}"
         row = grouped.setdefault(
             row_id,
             {
@@ -417,6 +422,9 @@ _BOARD_TITLES = ("плиты, шт", "кол-во")
 _EDGE_TITLES = ("кромка, м", "кромка")
 _OLD_CODE_TITLES = ("старый код", "код старый")
 _SHEET_TITLES = ("hpl, листов",)
+_PIECE_TITLES = ("кол-во, шт",)
+# Characters of Calibri 11 that fit on one line of the goods' merged name cell.
+NAME_CHARS_PER_LINE = 58
 
 
 def parse_order_form_file(
@@ -436,12 +444,19 @@ def parse_order_form_file(
         return parsed
 
     by_key: dict[str, dict[str, object]] = {}
+    # Fittings of one model in several colours share the code: only the name tells them apart.
+    code_counts = Counter(
+        key
+        for record in order_rows.to_dict(orient="records")
+        for key in {_normalize_code(record["code"]), _normalize_code(record["old_code"])} - {"", "new"}
+    )
     for record in order_rows.to_dict(orient="records"):
         if record["code"]:
-            by_key[_normalize_code(record["code"])] = record
+            if code_counts[_normalize_code(record["code"])] == 1:
+                by_key[_normalize_code(record["code"])] = record
         else:
             by_key[_normalize_code(record["name"])] = record
-        if record["old_code"] not in ("", "NEW"):
+        if record["old_code"] not in ("", "NEW") and code_counts[_normalize_code(record["old_code"])] == 1:
             by_key.setdefault(_normalize_code(record["old_code"]), record)
     # A code can be missing or replaced by a "?" in a file typed by hand: the name then decides.
     for record in order_rows.to_dict(orient="records"):
@@ -465,7 +480,7 @@ def parse_order_form_file(
 
     for number, row in enumerate(table, start=1):
         titles = {" ".join(str(value or "").casefold().split()): position for position, value in enumerate(row)}
-        if "код" in titles and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES}:
+        if "код" in titles and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES}:
             columns = titles
             continue
         if not columns:
@@ -475,7 +490,7 @@ def parse_order_form_file(
             raw_code = None
         raw_name = cell(row, ("название",))
         board = _file_quantity(cell(row, _BOARD_TITLES))
-        edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES)))
+        edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES)))
         key = _normalize_code(raw_code) or _normalize_code(raw_name)
         label = str(raw_code if _normalize_code(raw_code) else raw_name or "").strip()
         if not key:
@@ -564,9 +579,14 @@ def build_supplier_order_workbook(
     header_fill = PatternFill("solid", fgColor=navy)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left = Alignment(horizontal="left", vertical="center", indent=1)
+    wrapped = Alignment(horizontal="left", vertical="center", indent=1, wrap_text=True)
     last_column = 6
 
-    for column, width in {"A": 5, "B": 23, "C": 24, "D": 19, "E": 12, "F": 12}.items():
+    widths = {"A": 5, "B": 23, "C": 24, "D": 19, "E": 12, "F": 12}
+    if form.goods_only:
+        # The site's names of fittings are long and seldom hold a code.
+        widths.update({"B": 14, "C": 38, "D": 24})
+    for column, width in widths.items():
         sheet.column_dimensions[column].width = width
 
     def merged(row: int, start: int, end: int) -> None:
@@ -598,6 +618,23 @@ def build_supplier_order_workbook(
         cell.font = Font(name="Calibri", size=11, bold=bold)
         cell.alignment = alignment
         cell.border = frame
+
+    def total_row(row: int, label: str, first: int, last: int, *, wide: bool) -> str:
+        merged(row, 1, 4)
+        if wide:
+            merged(row, 5, 6)
+        for column in range(1, last_column + 1):
+            cell = sheet.cell(row=row, column=column)
+            cell.fill = band
+            cell.border = frame
+        total_label = sheet.cell(row=row, column=1, value=label)
+        total_label.font = Font(name="Calibri", size=12, bold=True, color=navy)
+        total_label.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        sheet[f"E{row}"] = f"=SUM(E{first}:E{last})"
+        sheet[f"E{row}"].font = Font(name="Calibri", size=13, bold=True, color=navy)
+        sheet[f"E{row}"].alignment = center
+        sheet.row_dimensions[row].height = 22
+        return f"E{row}"
 
     records = [
         record
@@ -634,59 +671,61 @@ def build_supplier_order_workbook(
             body_cell(row, 5, int(record["quantity"]) or None, center)
             body_cell(row, 6, int(record["edge_or_sheets"]) or None, center)
             row += 1
-        last_board = row - 1
-
-        merged(row, 1, 4)
-        for column in range(1, last_column + 1):
-            cell = sheet.cell(row=row, column=column)
-            cell.fill = band
-            cell.border = frame
-        total_label = sheet.cell(row=row, column=1, value="Итого плит, шт")
-        total_label.font = Font(name="Calibri", size=12, bold=True, color=navy)
-        total_label.alignment = Alignment(horizontal="right", vertical="center", indent=1)
-        total_cell = f"E{row}"
-        sheet[total_cell] = f"=SUM(E{first_board}:E{last_board})"
-        sheet[total_cell].font = Font(name="Calibri", size=13, bold=True, color=navy)
-        sheet[total_cell].alignment = center
-        sheet.row_dimensions[row].height = 22
+        total_cell = total_row(row, "Итого плит, шт", first_board, row - 1, wide=False)
         last_row = row
         row += 2
 
-    def short_table(title: str, quantity_title: str, table_records: list[dict[str, object]]) -> None:
-        nonlocal row, last_row
+    def short_table(title: str, quantity_title: str, table_records: list[dict[str, object]], total_label: str = "") -> None:
+        nonlocal row, last_row, total_cell
         section(row, title)
         row += 1
         table_header(row, {1: "№", 2: "Код", 3: "Название", 5: quantity_title})
         merged(row, 3, 4)
         merged(row, 5, 6)
+        if total_label:
+            sheet.freeze_panes = f"A{row + 1}"
         row += 1
+        first = row
         for position, record in enumerate(table_records, start=1):
             body_cell(row, 1, position, center)
             body_cell(row, 2, record["code"] or None, left, bold=True)
-            body_cell(row, 3, record["name"], left)
+            body_cell(row, 3, record["name"], wrapped if form.goods_only else left)
+            if form.goods_only:
+                # Excel does not fit the height of merged cells, so long names get their lines here.
+                lines = max(1, math.ceil(len(str(record["name"])) / NAME_CHARS_PER_LINE))
+                sheet.row_dimensions[row].height = 15 * lines + 3
             sheet.cell(row=row, column=4).border = frame
             merged(row, 3, 4)
             body_cell(row, 5, int(record["edge_or_sheets"]) or None, center)
             sheet.cell(row=row, column=6).border = frame
             merged(row, 5, 6)
             row += 1
+        if total_label:
+            total_cell = total_row(row, total_label, first, row - 1, wide=True)
+            row += 1
         last_row = row - 1
         row += 1
 
-    if hpl_records:
-        short_table("HPL", "HPL, листов", hpl_records)
-    if other_records:
-        short_table("Другие позиции", "Кол-во", other_records)
+    if form.goods_only:
+        if other_records:
+            short_table("Товары", "Кол-во, шт", other_records, total_label="Итого, шт")
+    else:
+        if hpl_records:
+            short_table("HPL", "HPL, листов", hpl_records)
+        if other_records:
+            short_table("Другие позиции", "Кол-во", other_records)
 
     sheet.print_area = f"A1:F{max(last_row, 2)}"
     sheet.page_setup.orientation = "portrait"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
     sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 1
+    # A long list of goods would shrink to an unreadable single page.
+    sheet.page_setup.fitToHeight = 0 if form.goods_only else 1
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.print_options.horizontalCentered = True
 
     buffer = BytesIO()
     workbook.save(buffer)
     content = buffer.getvalue()
-    return _store_total_value(content, total_cell, int(order_rows["quantity"].sum())) if total_cell else content
+    total_value = int(order_rows["edge_or_sheets" if form.goods_only else "quantity"].sum())
+    return _store_total_value(content, total_cell, total_value) if total_cell else content

@@ -7240,14 +7240,21 @@ def render_supplier_order_form(
                 order_rows["available_stock_qty"],
             ),
         ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable").set_index("row_id")
+        if form.goods_only:
+            # Long names would push the quantity out of view, and the site's names often hold no code.
+            quantity_columns = {"hpl_qty": st.column_config.NumberColumn("Кол-во, шт", min_value=0, step=1)}
+            leading_columns = [*quantity_columns, "name", *(["code"] if order_rows["code"].ne("").any() else [])]
+        else:
+            quantity_columns = {
+                "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
+                "edge_qty": st.column_config.NumberColumn("Кромка, м", min_value=0, step=1),
+                "hpl_qty": st.column_config.NumberColumn("HPL / другое", min_value=0, step=1),
+            }
+            leading_columns = ["code", "name", *quantity_columns]
         edited = st.data_editor(
             table[
                 [
-                    "code",
-                    "name",
-                    "board_qty",
-                    "edge_qty",
-                    "hpl_qty",
+                    *leading_columns,
                     "abc_class",
                     "xyz_class",
                     "priority",
@@ -7275,9 +7282,7 @@ def render_supplier_order_form(
             column_config={
                 "code": st.column_config.TextColumn("Код"),
                 "name": st.column_config.TextColumn("Название"),
-                "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
-                "edge_qty": st.column_config.NumberColumn("Кромка, м", min_value=0, step=1),
-                "hpl_qty": st.column_config.NumberColumn("HPL / другое", min_value=0, step=1),
+                **quantity_columns,
                 "abc_class": st.column_config.TextColumn("ABC"),
                 "xyz_class": st.column_config.TextColumn("XYZ"),
                 "priority": st.column_config.TextColumn("Приоритет"),
@@ -7290,16 +7295,22 @@ def render_supplier_order_form(
             },
         )
         final_rows = order_rows.copy()
-        final_rows["quantity"] = final_rows["row_id"].map(edited["board_qty"]).fillna(0).astype(int)
-        final_edge = final_rows["row_id"].map(edited["edge_qty"]).fillna(0)
-        final_hpl = final_rows["row_id"].map(edited["hpl_qty"]).fillna(0)
-        final_rows["edge_or_sheets"] = final_hpl.where(is_hpl, final_edge).astype(int)
+
+        def edited_quantity(column: str) -> pd.Series:
+            values = edited[column] if column in edited.columns else pd.Series(dtype=float)
+            return final_rows["row_id"].map(values).fillna(0)
+
+        final_rows["quantity"] = edited_quantity("board_qty").astype(int)
+        final_rows["edge_or_sheets"] = edited_quantity("hpl_qty").where(is_hpl, edited_quantity("edge_qty")).astype(int)
 
         hpl_total = int(final_rows.loc[is_hpl, "edge_or_sheets"].sum())
         edge_total = int(final_rows.loc[~is_hpl, "edge_or_sheets"].sum())
-        st.caption(
-            f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL и другое {hpl_total}"
-        )
+        if form.goods_only:
+            st.caption(f"К заказу: позиций {int(final_rows['edge_or_sheets'].gt(0).sum())} · всего {hpl_total} шт")
+        else:
+            st.caption(
+                f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL и другое {hpl_total}"
+            )
         low_priority = order_rows.loc[order_rows["low_priority_skipped"], "name"].tolist()
         if low_priority:
             st.caption(
@@ -7706,28 +7717,40 @@ def render_order_file_upload(
             "Если товара ещё нет на сайте, он записан под кодом и названием из файла: "
             "при приёмке укажите приход по такой строке вручную."
         )
-    comparison = pd.DataFrame(
-        {
-            "Код": file_rows["code"],
-            "Название": file_rows["name"],
-            "Плиты, шт": file_rows["quantity"],
-            "Кромка, м / HPL и другое": file_rows["edge_or_sheets"],
-        }
-    )
+    if form.goods_only:
+        comparison = pd.DataFrame(
+            {"Код": file_rows["code"], "Название": file_rows["name"], "Кол-во, шт": file_rows["edge_or_sheets"]}
+        )
+    else:
+        comparison = pd.DataFrame(
+            {
+                "Код": file_rows["code"],
+                "Название": file_rows["name"],
+                "Плиты, шт": file_rows["quantity"],
+                "Кромка, м / HPL и другое": file_rows["edge_or_sheets"],
+            }
+        )
     proposed = proposed_rows.set_index("row_id")
     proposed_board = file_rows["row_id"].map(proposed["quantity"]).fillna(0).astype(int)
     proposed_edge = file_rows["row_id"].map(proposed["edge_or_sheets"]).fillna(0).astype(int)
-    comparison["Предложено"] = [f"{board} шт · {edge}" for board, edge in zip(proposed_board, proposed_edge)]
+    comparison["Предложено"] = (
+        [f"{edge} шт" for edge in proposed_edge]
+        if form.goods_only
+        else [f"{board} шт · {edge}" for board, edge in zip(proposed_board, proposed_edge)]
+    )
     comparison["Примечание"] = file_rows["file_note"]
     changed = file_rows["quantity"].ne(proposed_board) | file_rows["edge_or_sheets"].ne(proposed_edge)
     ordered = file_rows["quantity"].gt(0) | file_rows["edge_or_sheets"].gt(0)
     is_hpl = file_rows["section"].ne(SECTION_BOARDS)
-    st.caption(
-        f"В файле: плит {int(file_rows['quantity'].sum())} шт · "
-        f"кромки {int(file_rows.loc[~is_hpl, 'edge_or_sheets'].sum())} м · "
-        f"HPL и другое {int(file_rows.loc[is_hpl, 'edge_or_sheets'].sum())} · "
-        f"отличается от предложения: {int(changed.sum())}"
-    )
+    if form.goods_only:
+        file_summary = f"В файле: {int(file_rows['edge_or_sheets'].sum())} шт"
+    else:
+        file_summary = (
+            f"В файле: плит {int(file_rows['quantity'].sum())} шт · "
+            f"кромки {int(file_rows.loc[~is_hpl, 'edge_or_sheets'].sum())} м · "
+            f"HPL и другое {int(file_rows.loc[is_hpl, 'edge_or_sheets'].sum())}"
+        )
+    st.caption(f"{file_summary} · отличается от предложения: {int(changed.sum())}")
     st.dataframe(comparison[ordered | changed], hide_index=True, width="stretch", height=260)
 
     file_comment = order_file_comment(uploaded_order.name, parsed, form=form)

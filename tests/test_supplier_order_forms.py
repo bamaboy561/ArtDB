@@ -15,8 +15,10 @@ if str(APP_DIR) not in sys.path:
 
 from supplier_order_forms import (  # noqa: E402
     LIAMAX_FORM,
+    NUOMI_FORM,
     SECTION_HPL,
     SECTION_OTHER,
+    SUPPLIER_FORMS,
     WQ_FORM,
     apply_order_file,
     build_order_form_rows,
@@ -513,6 +515,67 @@ class LiamaxFormTest(unittest.TestCase):
 
     def test_comment_names_the_supplier(self) -> None:
         self.assertIn("Liamax", order_file_comment("a.xlsx", parse_order_form_file(b"x", self.rows()), form=LIAMAX_FORM))
+
+
+class NuomiFormTest(unittest.TestCase):
+    BLACK = "HB-128 Ручка-скоба 128мм черная"
+    CHROME = "HB-128 Ручка-скоба 128мм хром"
+    KNOB = "Ручка-кнопка золото"
+
+    def rows(self, *lines: tuple) -> pd.DataFrame:
+        return build_order_form_rows(forecast(*lines, supplier="Nuomi"), form=NUOMI_FORM)
+
+    def test_supplier_name_is_recognised(self) -> None:
+        for name in ("Nuomi", "NUOMI", "Нуоми"):
+            self.assertTrue(NUOMI_FORM.matches(name), name)
+        self.assertFalse(NUOMI_FORM.matches("WQ"))
+        self.assertIn(NUOMI_FORM, SUPPLIER_FORMS)
+
+    def test_each_site_product_is_its_own_line_in_pieces(self) -> None:
+        rows = self.rows((self.BLACK, 40), (self.CHROME, 25.2), (self.KNOB, 0), (MUFFIN, 3))
+        self.assertEqual(set(rows["section"]), {SECTION_OTHER})
+        self.assertEqual(len(rows), 4)
+        black = row_named(rows, "Ручка-скоба 128мм черная")
+        self.assertEqual((black["code"], black["quantity"], black["edge_or_sheets"]), ("HB-128", 0, 40))
+        self.assertEqual(row_named(rows, "Ручка-скоба 128мм хром")["edge_or_sheets"], 26)
+        # A board of this supplier is a piece too: the form has no board table.
+        self.assertEqual(row_named(rows, "Маффин 18*1220*2800мм")["edge_or_sheets"], 3)
+
+    def test_workbook_has_one_table_with_a_total(self) -> None:
+        rows = self.rows((self.BLACK, 40), (self.CHROME, 25), (self.KNOB, 0))
+        sheet = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=NUOMI_FORM))).active
+        self.assertEqual(sheet.title, "Заказ Nuomi")
+        values = [sheet.cell(row, column).value for row in range(1, sheet.max_row + 1) for column in range(1, 7)]
+        self.assertIn("Товары", values)
+        self.assertIn("Кол-во, шт", values)
+        self.assertNotIn("Плиты, шт", values)
+        self.assertNotIn("Ручка-кнопка золото", values)
+        self.assertEqual(sheet.cell(find_row(sheet, "Ручка-скоба 128мм черная"), BOARD_COLUMN).value, 40)
+        total = next(row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 1).value == "Итого, шт")
+        self.assertTrue(str(sheet.cell(total, BOARD_COLUMN).value).startswith("=SUM("))
+        cached = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=NUOMI_FORM)), data_only=True).active
+        self.assertEqual(cached.cell(total, BOARD_COLUMN).value, 65)
+
+    def test_file_comes_back_and_colours_of_one_model_stay_apart(self) -> None:
+        rows = self.rows((self.BLACK, 40), (self.CHROME, 25), (self.KNOB, 0))
+        workbook = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=NUOMI_FORM)))
+        sheet = workbook.active
+        sheet.cell(find_row(sheet, "Ручка-скоба 128мм хром"), BOARD_COLUMN).value = 30
+        buffer = BytesIO()
+        workbook.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue(), rows, form=NUOMI_FORM)
+        self.assertEqual((parsed.errors, parsed.extra_rows), ([], []))
+        applied = apply_order_file(rows, parsed)
+        self.assertEqual(row_named(applied, "Ручка-скоба 128мм черная")["edge_or_sheets"], 40)
+        self.assertEqual(row_named(applied, "Ручка-скоба 128мм хром")["edge_or_sheets"], 30)
+        self.assertEqual(row_named(applied, "Ручка-кнопка золото")["edge_or_sheets"], 0)
+
+    def test_order_lines_keep_the_site_product(self) -> None:
+        rows = self.rows((self.BLACK, 40), (self.KNOB, 2))
+        items = order_items_from_form(rows).set_index("product")["quantity"].to_dict()
+        self.assertEqual(items, {self.BLACK: 40.0, self.KNOB: 2.0})
+        rebuilt = order_form_from_items(order_items_from_form(rows), form=NUOMI_FORM)
+        self.assertEqual(row_named(rebuilt, "Ручка-скоба 128мм черная")["edge_or_sheets"], 40)
 
 
 if __name__ == "__main__":
