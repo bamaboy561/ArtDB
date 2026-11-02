@@ -105,6 +105,7 @@ from sales_analytics import (
     extract_return_rows,
     guess_column_mapping,
     apply_brand_supplier,
+    fit_period,
     has_assigned_brand,
     infer_supplier_series,
     list_excel_sheets,
@@ -11105,12 +11106,13 @@ for state_key, available_values in (
         ]
 
 saved_date_range = st.session_state.get("main_selected_dates")
-if not saved_date_range:
-    st.session_state["main_selected_dates"] = (min_date, max_date)
-else:
-    saved_dates = list(saved_date_range) if isinstance(saved_date_range, (list, tuple)) else [saved_date_range]
-    if len(saved_dates) != 2 or saved_dates[0] < min_date or saved_dates[1] > max_date:
-        st.session_state["main_selected_dates"] = (min_date, max_date)
+# One date means the second is still to be picked: resetting here would throw the choice away.
+if not (isinstance(saved_date_range, (list, tuple)) and len(saved_date_range) == 1):
+    st.session_state["main_selected_dates"] = (
+        fit_period(saved_date_range, min_date, max_date)
+        or fit_period(st.session_state.get("main_applied_dates"), min_date, max_date)
+        or (min_date, max_date)
+    )
 
 with main_col:
     filter_shell = st.container(border=True)
@@ -11129,6 +11131,7 @@ with main_col:
             if st.button("Сбросить", key="reset_global_filters", use_container_width=True):
                 for filter_key in (
                     "main_selected_dates",
+                    "main_applied_dates",
                     "main_selected_salons_filter",
                     "main_selected_categories",
                     "main_selected_suppliers",
@@ -11161,8 +11164,19 @@ with main_col:
                     "Период продаж",
                     min_value=min_date,
                     max_value=max_date,
+                    format="DD.MM.YYYY",
                     key="main_selected_dates",
                 )
+                if len(selected_dates) == 2:
+                    st.session_state["main_applied_dates"] = tuple(selected_dates)
+                else:
+                    selected_dates = fit_period(
+                        st.session_state.get("main_applied_dates"), min_date, max_date
+                    ) or (min_date, max_date)
+                    st.caption(
+                        f"Выберите вторую дату. Пока показан период "
+                        f"{selected_dates[0]:%d.%m.%Y} – {selected_dates[1]:%d.%m.%Y}."
+                    )
             with salon_col:
                 if all_salons:
                     selected_salons_filter = st.multiselect(
@@ -11214,14 +11228,13 @@ with main_col:
 # The stock file covers the whole warehouse, whatever the screen filters show.
 stock_arrival_sales = data
 filter_badges = []
-if len(selected_dates) == 2:
-    date_from, date_to = selected_dates
-    data = keep_rows(
-        data,
-        (data["date"] >= pd.Timestamp(date_from)) & (data["date"] < pd.Timestamp(date_to) + pd.Timedelta(days=1)),
-    )
-    if date_from != min_date or date_to != max_date:
-        filter_badges.append(f"Период: {date_from:%d.%m.%Y} - {date_to:%d.%m.%Y}")
+date_from, date_to = selected_dates
+data = keep_rows(
+    data,
+    (data["date"] >= pd.Timestamp(date_from)) & (data["date"] < pd.Timestamp(date_to) + pd.Timedelta(days=1)),
+)
+if date_from != min_date or date_to != max_date:
+    filter_badges.append(f"Период: {date_from:%d.%m.%Y} - {date_to:%d.%m.%Y}")
 
 if all_salons:
     data = keep_rows(data, data["salon"].astype(str).isin(selected_salons_filter))

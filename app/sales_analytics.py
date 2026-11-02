@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from functools import lru_cache
 from io import BytesIO
 import re
@@ -335,6 +336,14 @@ def infer_supplier_series(
         needles = _build_supplier_needles(supplier_rules)
         return map_unique(values, lambda value: _match_supplier(value, needles))
     return map_unique(values, lambda value: infer_supplier_from_text(value, rules_key))
+
+
+def fit_period(saved: object, min_date: date, max_date: date) -> tuple[date, date] | None:
+    """The saved range inside the dates the data has; None when it is unfinished or outside them."""
+    if not isinstance(saved, (list, tuple)) or len(saved) != 2:
+        return None
+    start, end = max(saved[0], min_date), min(saved[1], max_date)
+    return (start, end) if start <= end else None
 
 
 def has_assigned_brand(values: pd.Series) -> pd.Series:
