@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date, timedelta
 import math
+from typing import Callable
 
 import pandas as pd
 
@@ -809,3 +812,49 @@ def build_procurement_supplier_summary(procurement_frame: pd.DataFrame) -> pd.Da
     )
 
     return summary[columns]
+
+
+# Longer than this the date only says "far away", and pandas dates end in 2262.
+_MAX_DATE_DAYS = 3650
+
+
+@dataclass(frozen=True)
+class OrderTimeline:
+    order_date: date
+    arrival: date
+    covered_until: date
+    reserve_until: date
+
+
+def order_timeline(order_date: date, *, lead_time_days: int, coverage_days: int, safety_days: int) -> OrderTimeline:
+    """An order placed on order_date arrives after the lead time and lasts the coverage period; the safety stock is what is left then."""
+    arrival = order_date + timedelta(days=max(int(lead_time_days), 0))
+    covered_until = arrival + timedelta(days=max(int(coverage_days), 0))
+    return OrderTimeline(order_date, arrival, covered_until, covered_until + timedelta(days=max(int(safety_days), 0)))
+
+
+def add_order_dates(procurement_frame: pd.DataFrame, order_date: date) -> pd.DataFrame:
+    """Per product: when an order placed on order_date arrives, when the stock runs out, and how many days it is missing in between."""
+    dated = procurement_frame.copy()
+    start = pd.Timestamp(order_date)
+    lead_days = pd.to_numeric(dated["lead_time_days"], errors="coerce").fillna(0).clip(lower=0)
+    coverage = pd.to_numeric(dated["stock_coverage_days"], errors="coerce").replace(
+        [float("inf"), -float("inf")], float("nan")
+    )
+    stock_days = coverage.clip(lower=0, upper=_MAX_DATE_DAYS) // 1
+    dated["arrival_date"] = start + pd.to_timedelta(lead_days, unit="D")
+    # Without stock there is no date to wait for: the status already says it is out.
+    dated["stock_out_date"] = (start + pd.to_timedelta(stock_days, unit="D")).where(coverage > 0)
+    dated["shortage_days"] = (lead_days - stock_days).clip(lower=0).where(stock_days.notna(), 0).astype(int)
+    return dated
+
+
+def supplier_lead_time(procurement_frame: pd.DataFrame, matches: Callable[[object], bool], default: int) -> int:
+    """The supplier's order arrives with its slowest line: the longest lead time among its goods."""
+    if procurement_frame.empty or "supplier" not in procurement_frame.columns:
+        return int(default)
+    lead_days = pd.to_numeric(
+        procurement_frame.loc[procurement_frame["supplier"].map(matches), "lead_time_days"],
+        errors="coerce",
+    ).dropna()
+    return int(lead_days.max()) if not lead_days.empty else int(default)

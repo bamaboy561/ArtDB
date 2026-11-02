@@ -58,10 +58,13 @@ from inventory_analytics import (
     prepare_inventory_data,
 )
 from procurement_analytics import (
+    add_order_dates,
     build_procurement_forecast,
     build_procurement_overview,
     build_procurement_stock_risk_frames,
     build_procurement_supplier_summary,
+    order_timeline,
+    supplier_lead_time,
 )
 from procurement_order_store import (
     PROCUREMENT_ORDER_STATUSES,
@@ -2488,6 +2491,10 @@ WORKSPACE_UI_CSS = f"""
     section[data-testid="stSidebar"] .sidebar-section-label {{
         color: #9fb3d1 !important;
     }}
+    /* Streamlit dims captions, which on the dark sidebar made the hints hard to read. */
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{
+        opacity: 1;
+    }}
     section[data-testid="stSidebar"] hr {{
         border-color: rgba(255, 255, 255, 0.14) !important;
         opacity: 1 !important;
@@ -2567,6 +2574,10 @@ WORKSPACE_UI_CSS = f"""
     section[data-testid="stSidebar"] :is([data-testid="stAlert"], [data-testid="stAlertContainer"]) {{
         background: rgba(255, 255, 255, 0.07) !important;
         border-color: rgba(255, 255, 255, 0.16) !important;
+    }}
+    /* An open expander gets Streamlit's light header, on which the sidebar's light text vanished. */
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+        background: transparent !important;
     }}
     section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {{
         background: rgba(255, 255, 255, 0.10) !important;
@@ -6654,7 +6665,7 @@ def _is_count_label(label: str) -> bool:
 
 def _is_date_label(label: str) -> bool:
     normalized = _normalized_label(label)
-    return normalized in {"дата", "дата отчёта", "создан", "загружен"}
+    return normalized in {"дата", "дата отчёта", "создан", "загружен", "остаток закончится", "придёт при заказе сегодня"}
 
 
 def _is_month_label(label: str) -> bool:
@@ -7143,6 +7154,46 @@ def render_missing_supplier_panel(procurement_forecast: pd.DataFrame, current_us
             st.rerun()
 
 
+def render_procurement_settings_summary(*, lead_time_days: int, coverage_days: int, safety_days: int) -> None:
+    """The settings told as dates and one worked example, so that it is clear what each of them changes."""
+    timeline = order_timeline(
+        date.today(), lead_time_days=lead_time_days, coverage_days=coverage_days, safety_days=safety_days
+    )
+    total_days = lead_time_days + coverage_days + safety_days
+    example_qty = 2 * total_days - 30 - 10
+    example_result = f"**{example_qty} шт**" if example_qty > 0 else "0 шт, остатка хватает"
+    reserve_line = (
+        f"- и ещё останется запас на {safety_days} дн., до {timeline.reserve_until:%d.%m.%Y}.\n"
+        if safety_days
+        else ""
+    )
+    with st.container(border=True):
+        st.markdown(
+            f"**Если заказать сегодня, {timeline.order_date:%d.%m.%Y}:**\n"
+            f"- груз придёт **{timeline.arrival:%d.%m.%Y}**, через {lead_time_days} дн.;\n"
+            f"- товара хватит до **{timeline.covered_until:%d.%m.%Y}**, на {coverage_days} дн. после прихода;\n"
+            f"{reserve_line}\n"
+            f"**Сколько заказать:** продажи в день × {total_days} дн. − остаток − в пути.\n\n"
+            f"Пример: продаётся 2 шт в день, на складе 30, в пути 10. "
+            f"2 × {total_days} − 30 − 10 = {example_result}."
+        )
+
+
+def stock_out_labels(stock_out_dates: pd.Series, available_stock: pd.Series) -> pd.Series:
+    """The stock-out date as text: a table shows a missing date as "None"."""
+    dates = pd.to_datetime(stock_out_dates, errors="coerce")
+    empty = pd.to_numeric(available_stock, errors="coerce").fillna(0).le(0)
+    return dates.dt.strftime("%d.%m.%Y").where(dates.notna(), empty.map({True: "уже нет", False: "—"}))
+
+
+def render_order_arrival(lead_time_days: int) -> None:
+    arrival = date.today() + timedelta(days=max(int(lead_time_days), 0))
+    st.caption(
+        f"Если отправить заказ сегодня, груз придёт **{arrival:%d.%m.%Y}**, через {lead_time_days} дн. "
+        "Эта дата запишется в заказ как ожидаемая. Срок берётся у товара, а если не указан, из «Параметров закупки»."
+    )
+
+
 def render_supplier_order_form(
     form: SupplierForm,
     procurement_forecast: pd.DataFrame,
@@ -7171,16 +7222,23 @@ def render_supplier_order_form(
                 )
         return
     is_hpl = order_rows["section"].ne(SECTION_BOARDS)
+    stock_out = add_order_dates(procurement_forecast, date.today()).set_index("product")["stock_out_date"]
+    stock_out = stock_out[~stock_out.index.duplicated()]
 
     with st.container(border=True):
         render_panel_header(
             f"Заказ поставщику {form.title}",
             "Все товары поставщика на сайте. В файл попадут только позиции с количеством, его можно поправить в таблице.",
         )
+        render_order_arrival(lead_time_days)
         table = order_rows.assign(
             board_qty=order_rows["quantity"],
             edge_qty=order_rows["edge_or_sheets"].where(~is_hpl, 0),
             hpl_qty=order_rows["edge_or_sheets"].where(is_hpl, 0),
+            stock_out_date=stock_out_labels(
+                order_rows["product"].where(order_rows["product"].ne(""), order_rows["edge_product"]).map(stock_out),
+                order_rows["available_stock_qty"],
+            ),
         ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable").set_index("row_id")
         edited = st.data_editor(
             table[
@@ -7195,6 +7253,7 @@ def render_supplier_order_form(
                     "priority",
                     "stock_status",
                     "available_stock_qty",
+                    "stock_out_date",
                     "forecast_qty",
                 ]
             ],
@@ -7210,6 +7269,7 @@ def render_supplier_order_form(
                 "priority",
                 "stock_status",
                 "available_stock_qty",
+                "stock_out_date",
                 "forecast_qty",
             ],
             column_config={
@@ -7223,6 +7283,9 @@ def render_supplier_order_form(
                 "priority": st.column_config.TextColumn("Приоритет"),
                 "stock_status": st.column_config.TextColumn("Статус"),
                 "available_stock_qty": st.column_config.NumberColumn("Доступно, шт"),
+                "stock_out_date": st.column_config.TextColumn(
+                    "Закончится", help="Когда кончится остаток вместе с товаром в пути"
+                ),
                 "forecast_qty": st.column_config.NumberColumn("Прогноз, шт"),
             },
         )
@@ -7374,6 +7437,7 @@ def render_swiss_krono_order_form(
             "Заказ Swiss Krono",
             "Бланк завода, заказ в паллетах. Потребность округлена до ближайшей паллеты, количество можно поправить в таблице.",
         )
+        render_order_arrival(lead_time_days)
         edited = st.data_editor(
             order_rows.set_index("row_id")[
                 [
@@ -10613,6 +10677,36 @@ with sidebar_nav_slot:
     if active_screen == "Закупки":
         procurement_month_cap = max(3, min(12, int(data["date"].dt.to_period("M").nunique()) if not data.empty else 6))
         with st.expander("Параметры закупки", expanded=False):
+            procurement_lead_time_days = st.slider(
+                "Срок поставки, дней",
+                min_value=0,
+                max_value=60,
+                value=procurement_lead_time_days,
+                step=1,
+                key="procurement_lead_time_days",
+            )
+            st.caption(
+                "Сколько дней груз едет от заказа до склада. "
+                "Если у товара указан свой срок в «Остатки и параметры», берётся он."
+            )
+            procurement_coverage_days = st.slider(
+                "Период покрытия, дней",
+                min_value=7,
+                max_value=90,
+                value=procurement_coverage_days,
+                step=1,
+                key="procurement_coverage_days",
+            )
+            st.caption("На сколько дней после прихода груза должно хватить товара. Обычно это время до следующего заказа.")
+            procurement_safety_days = st.slider(
+                "Страховой запас, дней",
+                min_value=0,
+                max_value=45,
+                value=procurement_safety_days,
+                step=1,
+                key="procurement_safety_days",
+            )
+            st.caption("Запас сверху на случай, если груз задержится или продажи вырастут.")
             if procurement_month_cap <= 3:
                 procurement_history_months = 3
                 st.caption("История для прогноза: 3 мес. Чтобы менять период, нужны данные за 4+ месяца.")
@@ -10624,30 +10718,7 @@ with sidebar_nav_slot:
                     value=min(procurement_history_months, procurement_month_cap),
                     key="procurement_history_months",
                 )
-            procurement_coverage_days = st.slider(
-                "Период покрытия, дней",
-                min_value=7,
-                max_value=90,
-                value=procurement_coverage_days,
-                step=1,
-                key="procurement_coverage_days",
-            )
-            procurement_lead_time_days = st.slider(
-                "Срок поставки, дней",
-                min_value=0,
-                max_value=60,
-                value=procurement_lead_time_days,
-                step=1,
-                key="procurement_lead_time_days",
-            )
-            procurement_safety_days = st.slider(
-                "Страховой запас, дней",
-                min_value=0,
-                max_value=45,
-                value=procurement_safety_days,
-                step=1,
-                key="procurement_safety_days",
-            )
+                st.caption("Сколько последних месяцев продаж брать, чтобы узнать расход в день. Последние 3 месяца весят больше.")
             procurement_min_active_months = st.slider(
                 "Мин. активных месяцев",
                 min_value=1,
@@ -10655,6 +10726,12 @@ with sidebar_nav_slot:
                 value=min(procurement_min_active_months, min(6, procurement_month_cap)),
                 step=1,
                 key="procurement_min_active_months",
+            )
+            st.caption("Товар, который продавался меньше месяцев, считается новым: прогноз по нему неточный.")
+            render_procurement_settings_summary(
+                lead_time_days=procurement_lead_time_days,
+                coverage_days=procurement_coverage_days,
+                safety_days=procurement_safety_days,
             )
 
 with sidebar_tools_slot:
@@ -15498,11 +15575,19 @@ if active_screen == "Закупки":
         + procurement_lead_time_days
         + procurement_safety_days
     )
+    procurement_timeline = order_timeline(
+        date.today(),
+        lead_time_days=procurement_lead_time_days,
+        coverage_days=procurement_coverage_days,
+        safety_days=procurement_safety_days,
+    )
     st.caption(
-        f"Окно расчёта: {procurement_history_months} мес. истории, "
-        f"{procurement_coverage_days} дн. покрытия, "
-        f"{procurement_lead_time_days} дн. поставки и "
-        f"{procurement_safety_days} дн. страхового запаса."
+        f"Заказ сегодня придёт {procurement_timeline.arrival:%d.%m.%Y} "
+        f"и его должно хватить до {procurement_timeline.covered_until:%d.%m.%Y}, "
+        f"плюс запас на {procurement_safety_days} дн. "
+        f"К заказу: продажи в день × {procurement_total_window_days} дн. − остаток − в пути. "
+        f"Расход в день взят из продаж за {procurement_history_months} мес. "
+        "Настройки в боковой панели, «Параметры закупки»."
     )
 
     if procurement_uses_manager_unfiltered_scope:
@@ -16953,7 +17038,9 @@ if active_screen == "Закупки":
                 procurement_forecast,
                 procurement_forecast_cache_key,
                 current_user,
-                lead_time_days=procurement_lead_time_days,
+                lead_time_days=supplier_lead_time(
+                    procurement_forecast, is_swiss_krono_supplier, procurement_lead_time_days
+                ),
             )
             for supplier_form in SUPPLIER_FORMS:
                 render_supplier_order_form(
@@ -16961,7 +17048,9 @@ if active_screen == "Закупки":
                     procurement_forecast,
                     procurement_forecast_cache_key,
                     current_user,
-                    lead_time_days=procurement_lead_time_days,
+                    lead_time_days=supplier_lead_time(
+                        procurement_forecast, supplier_form.matches, procurement_lead_time_days
+                    ),
                 )
             if can_manage_procurement(current_user):
                 with st.container(border=True):
@@ -17084,13 +17173,18 @@ if active_screen == "Закупки":
                                 value=date.today(),
                                 key="procurement_order_date",
                             )
-                            order_expected_default = (
-                                pd.Timestamp(date.today()) + pd.Timedelta(days=max(procurement_lead_time_days, 1))
-                            ).date()
+                            selected_lead_days = pd.to_numeric(
+                                selected_order_source["lead_time_days"], errors="coerce"
+                            ).max()
+                            if pd.isna(selected_lead_days):
+                                selected_lead_days = procurement_lead_time_days
+                            order_expected_default = order_date_value + timedelta(days=max(int(selected_lead_days), 1))
                             order_expected_date_value = st.date_input(
                                 "Ожидаемая дата",
                                 value=order_expected_default,
-                                key="procurement_order_expected_date",
+                                format="DD.MM.YYYY",
+                                key=f"procurement_order_expected_date_{selected_order_supplier}_{order_date_value}",
+                                help="Дата заказа + самый долгий срок поставки среди товаров заказа. Можно поменять.",
                             )
                             order_comment = st.text_area(
                                 "Комментарий к заказу",
@@ -17704,7 +17798,10 @@ if active_screen == "Закупки":
                 "available_stock_qty",
                 "open_order_count",
                 "stock_coverage_days",
+                "stock_out_date",
                 "lead_time_days",
+                "arrival_date",
+                "shortage_days",
                 "lead_time_requirement_qty",
                 "coverage_requirement_qty",
                 "safety_stock_qty",
@@ -17744,7 +17841,10 @@ if active_screen == "Закупки":
                 "available_stock_qty": "Доступно сейчас",
                 "open_order_count": "Активных заказов",
                 "stock_coverage_days": "Покрытие остатком, дней",
+                "stock_out_date": "Остаток закончится",
                 "lead_time_days": "Срок поставки, дн.",
+                "arrival_date": "Придёт при заказе сегодня",
+                "shortage_days": "Дней без товара до прихода",
                 "lead_time_requirement_qty": "Потребность до поставки, шт",
                 "coverage_requirement_qty": "Покрытие окна, шт",
                 "safety_stock_qty": "Страховой запас, шт",
@@ -17763,7 +17863,7 @@ if active_screen == "Закупки":
                 procurement_rename_map["avg_margin_per_unit"] = "Маржа на единицу"
                 procurement_rename_map["forecast_margin"] = "Прогноз маржи"
 
-            procurement_table = procurement_forecast[procurement_table_columns].copy()
+            procurement_table = add_order_dates(procurement_forecast, date.today())[procurement_table_columns]
 
             with st.container(border=True):
                 render_panel_header(
