@@ -12,7 +12,7 @@ if str(APP_DIR) not in sys.path:
 
 from data_center import build_sku_change_preview  # noqa: E402
 from procurement_analytics import build_procurement_forecast  # noqa: E402
-from sales_analytics import apply_brand_supplier  # noqa: E402
+from sales_analytics import apply_brand_supplier, fill_supplier_from_text  # noqa: E402
 from supplier_order_forms import build_order_form_rows  # noqa: E402
 
 
@@ -123,6 +123,38 @@ class ForecastSupplierTest(unittest.TestCase):
         rows = build_order_form_rows(self.forecast(items).reset_index())
         self.assertEqual(rows["name"].tolist(), ["Маффин"])
         self.assertEqual(rows["code"].tolist(), ["WQ63893M"])
+
+
+class SupplierFromGroupTest(unittest.TestCase):
+    def test_1c_group_names_the_supplier_the_name_does_not(self) -> None:
+        data = pd.DataFrame(
+            {
+                "product": [
+                    "Штекерный провод без сварки 1,5 м",
+                    "Блок питания Nuomi AC-230/DC-12V, 60w",
+                    "Петля Blum",
+                    "Ручка 128мм",
+                    "Профиль",
+                ],
+                "category": ["Фурнитура"] * 5,
+                "Путь категории": [
+                    "Фурнитура > Nuomi > 1282/1283 DIYLIGHTING",
+                    "Фурнитура > Nuomi > LIGHTING ACCESSORIES",
+                    "Фурнитура > Hettich",
+                    "Фурнитура > Ручки",
+                    "Фурнитура > Nuomi",
+                ],
+                "supplier": ["", "", "", "", "Ручной"],
+            }
+        )
+        fill_supplier_from_text(data)
+        # The name comes first: a Blum hinge kept under another brand's group stays Blum.
+        self.assertEqual(data["supplier"].tolist(), ["Nuomi", "Nuomi", "Blum", "", "Ручной"])
+
+    def test_without_a_group_column_only_the_name_counts(self) -> None:
+        data = pd.DataFrame({"product": ["Провод", "Ручка Nuomi"], "supplier": ["Не назначен", ""]})
+        fill_supplier_from_text(data)
+        self.assertEqual(data["supplier"].tolist(), ["Не назначен", "Nuomi"])
 
 
 class CleanupPreviewTest(unittest.TestCase):

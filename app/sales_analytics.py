@@ -338,6 +338,34 @@ def infer_supplier_series(
     return map_unique(values, lambda value: infer_supplier_from_text(value, rules_key))
 
 
+# Columns of a 1C report that hold the goods' group, as "Фурнитура > Nuomi > LIGHTING ACCESSORIES".
+SUPPLIER_GROUP_COLUMNS = ("путь категории", "группа", "category path", "group")
+
+
+def fill_supplier_from_text(
+    data: pd.DataFrame,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
+) -> None:
+    """Fill missing suppliers from the name and codes first, then from the 1C group the goods are in."""
+    group_columns = [column for column in data.columns if str(column).strip().casefold() in SUPPLIER_GROUP_COLUMNS]
+    for columns in (
+        [column for column in ("product", "product_key", "item_code", "category") if column in data.columns],
+        group_columns,
+    ):
+        supplier_text = data["supplier"].fillna("").astype(str).str.strip()
+        missing = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
+        if not columns or not missing.any():
+            continue
+        text = data.loc[missing, columns].fillna("").astype(str)
+        combined = text.iloc[:, 0]
+        for column in columns[1:]:
+            combined = combined.str.cat(text[column], sep=" ")
+        inferred = infer_supplier_series(combined, supplier_rules).fillna("").astype(str).str.strip()
+        found = inferred.ne("")
+        if found.any():
+            data.loc[inferred.index[found], "supplier"] = inferred.loc[found]
+
+
 def fit_period(saved: object, min_date: date, max_date: date) -> tuple[date, date] | None:
     """The saved range inside the dates the data has; None when it is unfinished or outside them."""
     if not isinstance(saved, (list, tuple)) or len(saved) != 2:

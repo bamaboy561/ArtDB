@@ -21,7 +21,7 @@ from db import (
 from procurement_store import load_procurement_items
 from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
 from salon_data_store import load_archive_data, load_salons
-from sales_analytics import apply_brand_supplier, infer_supplier_series
+from sales_analytics import apply_brand_supplier, fill_supplier_from_text
 from sku_catalog_store import (
     apply_sku_aliases,
     apply_sku_attribute_overrides,
@@ -218,19 +218,8 @@ def _enrich_sales_catalog(
             fill_mask = missing & mapped.fillna("").astype(str).str.strip().ne("")
             enriched.loc[fill_mask, column] = mapped.loc[fill_mask].astype(str).str.strip()
 
-    supplier_text = enriched["supplier"].fillna("").astype(str).str.strip()
-    missing_supplier = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
-    searchable_columns = [
-        column for column in ("product", "product_key", "item_code", "category") if column in enriched.columns
-    ]
-    if supplier_rules and searchable_columns and missing_supplier.any():
-        missing_text = enriched.loc[missing_supplier, searchable_columns].fillna("").astype(str)
-        combined_text = missing_text.iloc[:, 0]
-        for column in searchable_columns[1:]:
-            combined_text = combined_text.str.cat(missing_text[column], sep=" ")
-        inferred = infer_supplier_series(combined_text, supplier_rules)
-        inferred_mask = inferred.fillna("").astype(str).str.strip().ne("")
-        enriched.loc[inferred.index[inferred_mask], "supplier"] = inferred.loc[inferred_mask].astype(str).str.strip()
+    if supplier_rules:
+        fill_supplier_from_text(enriched, supplier_rules)
 
     if (
         not supplier_product_assignments.empty
