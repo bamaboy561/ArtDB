@@ -12,7 +12,7 @@ if str(APP_DIR) not in sys.path:
 
 from data_center import build_sku_change_preview  # noqa: E402
 from procurement_analytics import build_procurement_forecast  # noqa: E402
-from sales_analytics import apply_brand_supplier, fill_supplier_from_text  # noqa: E402
+from sales_analytics import apply_brand_supplier, fill_supplier_from_text, supplier_by_group  # noqa: E402
 from supplier_order_forms import build_order_form_rows  # noqa: E402
 
 
@@ -150,6 +150,39 @@ class SupplierFromGroupTest(unittest.TestCase):
         fill_supplier_from_text(data)
         # The name comes first: a Blum hinge kept under another brand's group stays Blum.
         self.assertEqual(data["supplier"].tolist(), ["Nuomi", "Nuomi", "Blum", "", "Ручной"])
+
+    def test_groups_the_user_named_get_their_suppliers(self) -> None:
+        data = pd.DataFrame(
+            {
+                "product": [
+                    "D/4230 SE/Джексон Гикори светлый 2.75*1.83",
+                    "WS723-2/LM142 Дуб Канзас 18*1220*2800мм",
+                    "US77301/PGR4201 Маффин 18*1220*2800мм",
+                    "LM142 Дуб Канзас 1*22мм",
+                    "ES8206 LM557 Вайоминг Грей 1*22мм",
+                    "PGR4201 Маффин 1*22мм",
+                    "WS916-2/LM268 Дуб Калифорния 18*1220*2800мм",
+                ],
+                "Путь категории": [
+                    "ЛДСП > ЛДСП 2,75*1,83",
+                    "ЛДСП > МДФ Китай",
+                    "ЛДСП > МДФ Китай",
+                    "Кромка > Кромка Китай",
+                    "Кромка > Кромка Китай",
+                    "Кромка > Кромка Китай",
+                    "ЛДСП > МДФ Китай",
+                ],
+                "Группа": ["ЛДСП 2,75*1,83", "МДФ Китай", "МДФ Китай", "Кромка Китай", "Кромка Китай", "Кромка Китай", "МДФ Китай"],
+                # Assigned by hand, stays.
+                "supplier": ["", "", "", "", "", "", "WQ"],
+            }
+        )
+        fill_supplier_from_text(data)
+        self.assertEqual(
+            data["supplier"].tolist(),
+            ["Swiss Krono", "Liamax", "WQ", "Liamax", "Liamax", "WQ", "WQ"],
+        )
+        self.assertEqual(supplier_by_group("Плита", "ЛДСП > Польский ЛДСП"), "")
 
     def test_without_a_group_column_only_the_name_counts(self) -> None:
         data = pd.DataFrame({"product": ["Провод", "Ручка Nuomi"], "supplier": ["Не назначен", ""]})

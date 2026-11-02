@@ -340,6 +340,25 @@ def infer_supplier_series(
 
 # Columns of a 1C report that hold the goods' group, as "Фурнитура > Nuomi > LIGHTING ACCESSORIES".
 SUPPLIER_GROUP_COLUMNS = ("путь категории", "группа", "category path", "group")
+# Groups that do not name their supplier; the user told who supplies them on 2026-11-02.
+SWISS_KRONO_GROUPS = {"лдсп2,75*1,83"}
+# Liamax and WQ share these groups: Liamax's codes end in LM, as "WS723-2/LM142".
+CHINA_GROUPS = {"мдфкитай", "кромкакитай"}
+_LIAMAX_CODE = re.compile(r"(?<![0-9a-z])lm\d{2,}", re.IGNORECASE)
+
+
+def _group_key(value: str) -> str:
+    return re.sub(r"\s+", "", value.casefold()).replace(".", ",")
+
+
+def supplier_by_group(product: str, group: str) -> str:
+    """The supplier of a 1C group that does not name one, or "" for any other group."""
+    segments = {_group_key(part) for part in group.split(">")}
+    if segments & SWISS_KRONO_GROUPS:
+        return "Swiss Krono"
+    if segments & CHINA_GROUPS:
+        return "Liamax" if _LIAMAX_CODE.search(product) else "WQ"
+    return ""
 
 
 def fill_supplier_from_text(
@@ -361,6 +380,15 @@ def fill_supplier_from_text(
         for column in columns[1:]:
             combined = combined.str.cat(text[column], sep=" ")
         inferred = infer_supplier_series(combined, supplier_rules).fillna("").astype(str).str.strip()
+        if columns is group_columns:
+            groups = text.iloc[:, 0]
+            for column in columns[1:]:
+                groups = groups.str.cat(text[column], sep=" > ")
+            products = data.loc[missing, "product"].fillna("").astype(str) if "product" in data.columns else groups
+            pairs = list(zip(products, groups))
+            lookup = {pair: supplier_by_group(*pair) for pair in set(pairs)}
+            told = pd.Series([lookup[pair] for pair in pairs], index=products.index, dtype=object)
+            inferred = told.where(told.ne(""), inferred)
         found = inferred.ne("")
         if found.any():
             data.loc[inferred.index[found], "supplier"] = inferred.loc[found]
