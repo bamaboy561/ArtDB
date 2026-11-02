@@ -6,7 +6,7 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python scripts/init_db.py
-    startCommand: python -X faulthandler -m streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false --server.enableXsrfProtection=false --server.enableStaticServing=true --server.fileWatcherType=none --server.maxUploadSize=75
+    startCommand: python -X faulthandler run_server.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false --server.enableCORS=false --server.enableXsrfProtection=false --server.enableStaticServing=true --server.fileWatcherType=none --server.maxUploadSize=75
     healthCheckPath: /_stcore/health
     domains:
       - artisandb.shop.kg
