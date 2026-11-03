@@ -14,6 +14,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from supplier_order_forms import (  # noqa: E402
+    HETTICH_FORM,
     LIAMAX_FORM,
     NUOMI_FORM,
     SECTION_HPL,
@@ -517,8 +518,11 @@ class LiamaxFormTest(unittest.TestCase):
         self.assertIn("Liamax", order_file_comment("a.xlsx", parse_order_form_file(b"x", self.rows()), form=LIAMAX_FORM))
 
 
+BLACK_HANDLE = "HB-128 Ручка-скоба 128мм черная"
+
+
 class NuomiFormTest(unittest.TestCase):
-    BLACK = "HB-128 Ручка-скоба 128мм черная"
+    BLACK = BLACK_HANDLE
     CHROME = "HB-128 Ручка-скоба 128мм хром"
     KNOB = "Ручка-кнопка золото"
 
@@ -576,6 +580,62 @@ class NuomiFormTest(unittest.TestCase):
         self.assertEqual(items, {self.BLACK: 40.0, self.KNOB: 2.0})
         rebuilt = order_form_from_items(order_items_from_form(rows), form=NUOMI_FORM)
         self.assertEqual(row_named(rebuilt, "Ручка-скоба 128мм черная")["edge_or_sheets"], 40)
+
+
+class HettichFormTest(unittest.TestCase):
+    QUADRO = "Quadro V6 YOU M (30 кг) с демпфер Silent System, 250 мм, левый"
+    TOPLINE = "Комплект фурнитуры TopLine L для 2 дверей, передняя справа, толщина двери 18-30 мм, 50 кг"
+
+    def test_supplier_name_is_recognised(self) -> None:
+        for name in ("Hettich", "HETTICH", "Хеттих"):
+            self.assertTrue(HETTICH_FORM.matches(name), name)
+        self.assertFalse(HETTICH_FORM.matches("Nuomi"))
+        self.assertIn(HETTICH_FORM, SUPPLIER_FORMS)
+
+    def rows(self) -> pd.DataFrame:
+        data = forecast(
+            (self.QUADRO, 20),
+            (self.TOPLINE, 3),
+            ("Фиксаторы, левый", 0),
+            (BLACK_HANDLE, 9, "Высокий", "Nuomi"),
+            supplier="Hettich",
+        )
+        data["order_multiple"] = [10, 0, 50, 0]
+        return build_order_form_rows(data, form=HETTICH_FORM)
+
+    def test_only_this_supplier_in_pieces_with_the_box_size(self) -> None:
+        rows = self.rows()
+        self.assertEqual(sorted(rows["name"]), sorted([self.QUADRO, self.TOPLINE, "Фиксаторы, левый"]))
+        quadro = row_named(rows, self.QUADRO)
+        self.assertEqual((quadro["edge_or_sheets"], quadro["pack"]), (20, 10))
+
+    def test_workbook_follows_the_sample(self) -> None:
+        sheet = load_workbook(BytesIO(build_supplier_order_workbook(self.rows(), form=HETTICH_FORM))).active
+        self.assertEqual(
+            [sheet.cell(2, column).value for column in range(2, 7)],
+            ["Артикул", "Наименование", "Количество в упаковке", "Короб", "Количество в заказе"],
+        )
+        lines = {sheet.cell(row, 3).value: [sheet.cell(row, column).value for column in (4, 5, 6)] for row in range(3, sheet.max_row + 1)}
+        # 20 pieces in boxes of 10 are 2 boxes; without a box size only the pieces are known.
+        self.assertEqual(lines, {self.QUADRO: [10, 2, 20], self.TOPLINE: [None, None, 3]})
+        self.assertIsNone(sheet["A1"].value)
+
+    def test_file_comes_back_with_its_quantities(self) -> None:
+        rows = self.rows()
+        workbook = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=HETTICH_FORM)))
+        sheet = workbook.active
+        for row in range(3, sheet.max_row + 1):
+            if sheet.cell(row, 3).value == self.TOPLINE:
+                # An employee adds Hettich's article and changes the quantity.
+                sheet.cell(row, 2).value = "9123456"
+                sheet.cell(row, 6).value = 5
+        buffer = BytesIO()
+        workbook.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue(), rows, form=HETTICH_FORM)
+        self.assertEqual((parsed.errors, parsed.extra_rows), ([], []))
+        applied = apply_order_file(rows, parsed)
+        self.assertEqual(row_named(applied, self.QUADRO)["edge_or_sheets"], 20)
+        self.assertEqual(row_named(applied, self.TOPLINE)["edge_or_sheets"], 5)
 
 
 if __name__ == "__main__":

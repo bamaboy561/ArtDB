@@ -87,6 +87,9 @@ class SupplierForm:
     fills_old_code: bool = True
     # Fittings and other goods: one table in pieces, a line for each site product.
     goods_only: bool = False
+    # The layout of the user's Hettich form: article, name, pieces in a box, boxes, pieces.
+    # The pieces in a box are the order multiple set on the site.
+    box_layout: bool = False
 
     def matches(self, supplier: object) -> bool:
         text = _normalize(supplier)
@@ -105,7 +108,15 @@ LIAMAX_FORM = SupplierForm(
 )
 # The user left the layout to us: Nuomi has no form of its own.
 NUOMI_FORM = SupplierForm("nuomi", "Nuomi", ("nuomi", "нуоми"), fills_old_code=False, goods_only=True)
-SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM)
+HETTICH_FORM = SupplierForm(
+    "hettich",
+    "Hettich",
+    ("hettich", "хеттих", "хетич"),
+    fills_old_code=False,
+    goods_only=True,
+    box_layout=True,
+)
+SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM, HETTICH_FORM)
 
 ORDER_FORM_COLUMNS = [
     "row_id",
@@ -125,6 +136,7 @@ ORDER_FORM_COLUMNS = [
     "edge_product",
     "supplier",
     "low_priority_skipped",
+    "pack",
 ]
 
 _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
@@ -245,8 +257,11 @@ def build_order_form_rows(
                 "edge_product": "",
                 "supplier": record.get("supplier", ""),
                 "low_priority_skipped": False,
+                "pack": 0.0,
             },
         )
+        multiple = pd.to_numeric(pd.Series([record.get("order_multiple")]), errors="coerce").fillna(0).iloc[0]
+        row["pack"] = max(float(row["pack"]), float(multiple))
         # The edge band can carry only its own part of the code: the board has the full one.
         if form.group_by_name and kind == "board" and code:
             row["code"] = code
@@ -414,6 +429,7 @@ def _extra_row(
         "product": product,
         "edge_product": edge_product,
         "low_priority_skipped": False,
+        "pack": 0.0,
         "file_note": NOTE_OTHER_SUPPLIER if product or edge_product else NOTE_NEW_POSITION,
     }
 
@@ -422,7 +438,10 @@ _BOARD_TITLES = ("плиты, шт", "кол-во")
 _EDGE_TITLES = ("кромка, м", "кромка")
 _OLD_CODE_TITLES = ("старый код", "код старый")
 _SHEET_TITLES = ("hpl, листов",)
-_PIECE_TITLES = ("кол-во, шт",)
+_PIECE_TITLES = ("кол-во, шт", "количество в заказе")
+# Hettich's form says "Артикул" and "Наименование" for the code and the name.
+_CODE_TITLES = ("код", "артикул")
+_NAME_TITLES = ("название", "наименование")
 # Characters of Calibri 11 that fit on one line of the goods' merged name cell.
 NAME_CHARS_PER_LINE = 58
 
@@ -480,15 +499,15 @@ def parse_order_form_file(
 
     for number, row in enumerate(table, start=1):
         titles = {" ".join(str(value or "").casefold().split()): position for position, value in enumerate(row)}
-        if "код" in titles and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES}:
+        if set(titles) & set(_CODE_TITLES) and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES}:
             columns = titles
             continue
         if not columns:
             continue
-        raw_code = cell(row, ("код",))
+        raw_code = cell(row, _CODE_TITLES)
         if str(raw_code or "").strip() in ("?", "-"):
             raw_code = None
-        raw_name = cell(row, ("название",))
+        raw_name = cell(row, _NAME_TITLES)
         board = _file_quantity(cell(row, _BOARD_TITLES))
         edge = _file_quantity(cell(row, (*_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES)))
         key = _normalize_code(raw_code) or _normalize_code(raw_name)
@@ -560,6 +579,58 @@ def _store_total_value(content: bytes, total_cell: str, total_value: int) -> byt
     return target.getvalue()
 
 
+def _boxes(quantity: int, pack: float) -> float | int | None:
+    if pack <= 0 or quantity <= 0:
+        return None
+    boxes = quantity / pack
+    return int(boxes) if float(boxes).is_integer() else round(boxes, 2)
+
+
+def _build_box_workbook(order_rows: pd.DataFrame, title: str) -> bytes:
+    """The user's Hettich form: a table from B2 with the widths of the sample, no title and no total."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = f"Заказ {title}"
+    for column, width in {"A": 2.14, "B": 12, "C": 107.14, "D": 13.14, "E": 6.57, "F": 11.29}.items():
+        sheet.column_dimensions[column].width = width
+    thin = Side(style="thin")
+    frame = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    titles = ("Артикул", "Наименование", "Количество в упаковке", "Короб", "Количество в заказе")
+    for column, value in enumerate(titles, start=2):
+        cell = sheet.cell(row=2, column=column, value=value)
+        cell.font = Font(name="Calibri", size=11, bold=True)
+        cell.alignment = center
+        cell.border = frame
+    sheet.row_dimensions[2].height = 29.25
+    records = [record for record in order_rows.to_dict(orient="records") if int(record["edge_or_sheets"]) > 0]
+    for row, record in enumerate(records, start=3):
+        quantity = int(record["edge_or_sheets"])
+        pack = float(pd.to_numeric(pd.Series([record.get("pack")]), errors="coerce").fillna(0).iloc[0])
+        values = (
+            record["code"] or None,
+            record["name"],
+            (int(pack) if pack.is_integer() else pack) if pack > 0 else None,
+            _boxes(quantity, pack),
+            quantity,
+        )
+        for column, value in enumerate(values, start=2):
+            cell = sheet.cell(row=row, column=column, value=value)
+            cell.font = Font(name="Calibri", size=11, bold=column == 5)
+            cell.alignment = Alignment(vertical="center") if column == 3 else Alignment(horizontal="center", vertical="center")
+            cell.border = frame
+    sheet.freeze_panes = "A3"
+    sheet.print_area = f"B2:F{max(len(records) + 2, 2)}"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
 def build_supplier_order_workbook(
     order_rows: pd.DataFrame,
     *,
@@ -567,6 +638,8 @@ def build_supplier_order_workbook(
     order_date: date | None = None,
 ) -> bytes:
     """The order: only positions with a quantity, in separate tables for boards, HPL and other goods."""
+    if form.box_layout:
+        return _build_box_workbook(order_rows, form.title)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = f"Заказ {form.title}"

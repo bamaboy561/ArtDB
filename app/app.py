@@ -7220,6 +7220,10 @@ def render_supplier_order_form(
             board_qty=order_rows["quantity"],
             edge_qty=order_rows["edge_or_sheets"].where(~is_hpl, 0),
             hpl_qty=order_rows["edge_or_sheets"].where(is_hpl, 0),
+            # As text: the editor shows a missing number as "None".
+            pack=pd.to_numeric(order_rows["pack"], errors="coerce")
+            .fillna(0)
+            .map(lambda pack: f"{pack:g}" if pack > 0 else ""),
             stock_out_date=stock_out_labels(
                 order_rows["product"].where(order_rows["product"].ne(""), order_rows["edge_product"]).map(stock_out),
                 order_rows["available_stock_qty"],
@@ -7228,7 +7232,17 @@ def render_supplier_order_form(
         if form.goods_only:
             # Long names would push the quantity out of view, and the site's names often hold no code.
             quantity_columns = {"hpl_qty": st.column_config.NumberColumn("Кол-во, шт", min_value=0, step=1)}
-            leading_columns = [*quantity_columns, "name", *(["code"] if order_rows["code"].ne("").any() else [])]
+            leading_columns = [
+                *quantity_columns,
+                *(["pack"] if form.box_layout else []),
+                "name",
+                *(["code"] if order_rows["code"].ne("").any() else []),
+            ]
+            if form.box_layout:
+                st.caption(
+                    "«В упаковке» — кратность товара из «Остатки и параметры». По ней в файле считаются короба: "
+                    "количество ÷ в упаковке. Если кратность не указана, эти колонки в файле останутся пустыми."
+                )
         else:
             quantity_columns = {
                 "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
@@ -7256,6 +7270,7 @@ def render_supplier_order_form(
             disabled=[
                 "code",
                 "name",
+                "pack",
                 "abc_class",
                 "xyz_class",
                 "priority",
@@ -7268,6 +7283,7 @@ def render_supplier_order_form(
                 "code": st.column_config.TextColumn("Код"),
                 "name": st.column_config.TextColumn("Название"),
                 **quantity_columns,
+                "pack": st.column_config.TextColumn("В упаковке, шт"),
                 "abc_class": st.column_config.TextColumn("ABC"),
                 "xyz_class": st.column_config.TextColumn("XYZ"),
                 "priority": st.column_config.TextColumn("Приоритет"),
@@ -17649,7 +17665,17 @@ if active_screen == "Закупки":
                                 None,
                             )
                             if supplier_form is not None:
-                                selected_order_form = order_form_from_items(selected_order_lines, form=supplier_form)
+                                selected_order_form = order_form_from_items(
+                                    # A saved line keeps no box size: it is today's order multiple.
+                                    selected_order_lines.merge(
+                                        procurement_forecast[["product", "order_multiple"]].drop_duplicates("product"),
+                                        on="product",
+                                        how="left",
+                                    )
+                                    if {"product", "order_multiple"}.issubset(procurement_forecast.columns)
+                                    else selected_order_lines,
+                                    form=supplier_form,
+                                )
                                 st.download_button(
                                     f"Скачать в форме поставщика {supplier_form.title}",
                                     data=partial(build_supplier_order_workbook, selected_order_form, form=supplier_form),
