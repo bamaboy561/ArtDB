@@ -24,11 +24,13 @@ from supplier_order_forms import (  # noqa: E402
     apply_order_file,
     build_order_form_rows,
     build_supplier_order_workbook,
+    generic_supplier_form,
     order_file_comment,
     order_form_from_items,
     order_form_supplier,
     order_items_from_form,
     parse_order_form_file,
+    supplier_form_for,
 )
 
 NAME_COLUMN = 3
@@ -580,6 +582,42 @@ class NuomiFormTest(unittest.TestCase):
         self.assertEqual(items, {self.BLACK: 40.0, self.KNOB: 2.0})
         rebuilt = order_form_from_items(order_items_from_form(rows), form=NUOMI_FORM)
         self.assertEqual(row_named(rebuilt, "Ручка-скоба 128мм черная")["edge_or_sheets"], 40)
+
+
+class GenericSupplierFormTest(unittest.TestCase):
+    BOARD = "ЛДСП D.333.S01 Яблоня Кубанская снежная E1 2800X2070X16 STD"
+    EDGE = "Кромка ABS M.604.S01 Зеленый еловый 19*0,8"
+
+    def test_supplier_without_a_form_gets_the_common_one(self) -> None:
+        form = supplier_form_for("Экстраверт")
+        self.assertEqual((form.title, form.key, form.goods_only), ("Экстраверт", "экстраверт", True))
+        self.assertIs(supplier_form_for("WQ"), WQ_FORM)
+        self.assertEqual(generic_supplier_form("ИП Иванов / Петров").key, "ип_иванов_петров")
+
+    def test_only_the_exact_supplier_name_counts(self) -> None:
+        form = generic_supplier_form("AGT")
+        self.assertTrue(form.matches(" agt "))
+        self.assertFalse(form.matches("AGT Плюс"))
+
+    def test_extravert_order_comes_back_from_its_file(self) -> None:
+        form = generic_supplier_form("Экстраверт")
+        data = forecast((self.BOARD, 12), (self.EDGE, 150.5), (MUFFIN, 7, "Высокий", "WQ"), supplier="Экстраверт")
+        rows = build_order_form_rows(data, form=form)
+        self.assertEqual(sorted(rows["product"]), sorted([self.BOARD, self.EDGE]))
+        workbook = load_workbook(BytesIO(build_supplier_order_workbook(rows, form=form)))
+        sheet = workbook.active
+        self.assertEqual(sheet["A1"].value, "Заказ поставщику Экстраверт")
+        values = [sheet.cell(row, column).value for row in range(1, sheet.max_row + 1) for column in range(1, 7)]
+        # Sheets of board and metres of edge band share the table, so no unit is named.
+        self.assertIn("Кол-во", values)
+        self.assertIn("Итого", values)
+        sheet.cell(find_row(sheet, self.EDGE), BOARD_COLUMN).value = 200
+        buffer = BytesIO()
+        workbook.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue(), rows, form=form)
+        self.assertEqual((parsed.errors, parsed.extra_rows), ([], []))
+        items = order_items_from_form(apply_order_file(rows, parsed)).set_index("product")["quantity"].to_dict()
+        self.assertEqual(items, {self.BOARD: 12.0, self.EDGE: 200.0})
 
 
 class HettichFormTest(unittest.TestCase):

@@ -90,9 +90,19 @@ class SupplierForm:
     # The layout of the user's Hettich form: article, name, pieces in a box, boxes, pieces.
     # The pieces in a box are the order multiple set on the site.
     box_layout: bool = False
+    # A supplier without a form of its own matches only its own name, so "AGT" does not take "AGT Плюс".
+    exact_match: bool = False
+    # The unit of a goods-only form; empty when it mixes sheets with metres of edge band.
+    unit: str = "шт"
+
+    @property
+    def quantity_title(self) -> str:
+        return f"Кол-во, {self.unit}" if self.unit else "Кол-во"
 
     def matches(self, supplier: object) -> bool:
         text = _normalize(supplier)
+        if self.exact_match:
+            return text == _normalize(self.title)
         return any(_contains_term(text, term) for term in self.supplier_terms)
 
 
@@ -117,6 +127,27 @@ HETTICH_FORM = SupplierForm(
     box_layout=True,
 )
 SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM, HETTICH_FORM)
+
+
+def generic_supplier_form(supplier: str) -> SupplierForm:
+    """Any other supplier, Экстраверт for one: its goods in one table, as Nuomi's are."""
+    title = " ".join(str(supplier).split())
+    # The key names the downloaded file too, so it keeps only letters and digits.
+    key = re.sub(r"[^0-9a-zа-я]+", "_", _normalize(title)).strip("_") or "supplier"
+    return SupplierForm(
+        key,
+        title,
+        (title,),
+        fills_old_code=False,
+        goods_only=True,
+        exact_match=True,
+        unit="",
+    )
+
+
+def supplier_form_for(supplier: object) -> SupplierForm:
+    """The supplier's own form, or the common one when it has none."""
+    return next((form for form in SUPPLIER_FORMS if form.matches(supplier)), None) or generic_supplier_form(str(supplier))
 
 ORDER_FORM_COLUMNS = [
     "row_id",
@@ -781,7 +812,12 @@ def build_supplier_order_workbook(
 
     if form.goods_only:
         if other_records:
-            short_table("Товары", "Кол-во, шт", other_records, total_label="Итого, шт")
+            short_table(
+                "Товары",
+                form.quantity_title,
+                other_records,
+                total_label=f"Итого, {form.unit}" if form.unit else "Итого",
+            )
     else:
         if hpl_records:
             short_table("HPL", "HPL, листов", hpl_records)

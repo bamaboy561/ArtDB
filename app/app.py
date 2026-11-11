@@ -141,6 +141,8 @@ from supplier_order_forms import (
     SUPPLIER_FORMS,
     SupplierForm,
     build_order_form_rows,
+    generic_supplier_form,
+    supplier_form_for,
     apply_order_file,
     build_supplier_order_workbook,
     order_file_comment,
@@ -7044,7 +7046,7 @@ def to_excel_report_bytes(
     return buffer.getvalue()
 
 
-@st.cache_data(show_spinner=False, max_entries=8, ttl=900)
+@st.cache_data(show_spinner=False, max_entries=48, ttl=900)
 def cached_build_order_form_rows(
     _procurement_forecast: pd.DataFrame,
     forecast_key: str,
@@ -7171,6 +7173,12 @@ def stock_out_labels(stock_out_dates: pd.Series, available_stock: pd.Series) -> 
     return dates.dt.strftime("%d.%m.%Y").where(dates.notna(), empty.map({True: "уже нет", False: "—"}))
 
 
+def order_form_label(title: str, to_order: int) -> str:
+    """The folded order's title; it holds only the proposal, so editing the table keeps the order open."""
+    proposal = f"к заказу {to_order} поз." if to_order else "заказывать нечего"
+    return f"Заказ поставщику {title} · {proposal}"
+
+
 def render_order_arrival(lead_time_days: int) -> None:
     arrival = date.today() + timedelta(days=max(int(lead_time_days), 0))
     st.caption(
@@ -7190,8 +7198,8 @@ def render_supplier_order_form(
     order_rows = cached_build_order_form_rows(procurement_forecast, forecast_key, form)
     site_products = tuple(procurement_forecast["product"].astype(str)) if "product" in procurement_forecast.columns else ()
     if order_rows.empty:
-        with st.container(border=True):
-            render_panel_header(f"Заказ поставщику {form.title}", "Форма заполняется товарами этого поставщика.")
+        with st.expander(order_form_label(form.title, 0)):
+            st.caption("Форма заполняется товарами этого поставщика.")
             st.info(
                 f"Сейчас в выборке нет товаров поставщика {form.title}. "
                 "Проверьте фильтры и назначение поставщика у товаров."
@@ -7210,10 +7218,10 @@ def render_supplier_order_form(
     stock_out = add_order_dates(procurement_forecast, date.today()).set_index("product")["stock_out_date"]
     stock_out = stock_out[~stock_out.index.duplicated()]
 
-    with st.container(border=True):
-        render_panel_header(
-            f"Заказ поставщику {form.title}",
-            "Все товары поставщика на сайте. В файл попадут только позиции с количеством, его можно поправить в таблице.",
+    to_order = int((order_rows["quantity"].gt(0) | order_rows["edge_or_sheets"].gt(0)).sum())
+    with st.expander(order_form_label(form.title, to_order)):
+        st.caption(
+            "Все товары поставщика на сайте. В файл попадут только позиции с количеством, его можно поправить в таблице."
         )
         render_order_arrival(lead_time_days)
         table = order_rows.assign(
@@ -7231,7 +7239,7 @@ def render_supplier_order_form(
         ).sort_values(["board_qty", "edge_qty", "hpl_qty"], ascending=False, kind="stable").set_index("row_id")
         if form.goods_only:
             # Long names would push the quantity out of view, and the site's names often hold no code.
-            quantity_columns = {"hpl_qty": st.column_config.NumberColumn("Кол-во, шт", min_value=0, step=1)}
+            quantity_columns = {"hpl_qty": st.column_config.NumberColumn(form.quantity_title, min_value=0, step=1)}
             leading_columns = [
                 *quantity_columns,
                 *(["pack"] if form.box_layout else []),
@@ -7307,7 +7315,9 @@ def render_supplier_order_form(
         hpl_total = int(final_rows.loc[is_hpl, "edge_or_sheets"].sum())
         edge_total = int(final_rows.loc[~is_hpl, "edge_or_sheets"].sum())
         if form.goods_only:
-            st.caption(f"К заказу: позиций {int(final_rows['edge_or_sheets'].gt(0).sum())} · всего {hpl_total} шт")
+            st.caption(
+                f"К заказу: позиций {int(final_rows['edge_or_sheets'].gt(0).sum())} · всего {hpl_total} {form.unit}".rstrip()
+            )
         else:
             st.caption(
                 f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL и другое {hpl_total}"
@@ -7428,26 +7438,25 @@ def render_swiss_krono_order_form(
     lead_time_days: int,
 ) -> None:
     if not swiss_krono_template_ready():
-        with st.container(border=True):
-            render_panel_header("Заказ Swiss Krono", "Бланк завода заполняется товарами этого поставщика.")
+        with st.expander("Заказ Swiss Krono · нужен бланк завода"):
+            st.caption("Бланк завода заполняется товарами этого поставщика.")
             st.info("Загрузите бланк завода: файл, который присылает Swiss Krono. Он хранится только на сервере сайта.")
             if can_manage_procurement(current_user):
                 render_swiss_krono_template_upload(current_user)
         return
     order_rows = cached_build_swiss_krono_rows(procurement_forecast, forecast_key)
     if order_rows.empty:
-        with st.container(border=True):
-            render_panel_header("Заказ Swiss Krono", "Бланк завода заполняется товарами этого поставщика.")
+        with st.expander(order_form_label("Swiss Krono", 0)):
+            st.caption("Бланк завода заполняется товарами этого поставщика.")
             st.info("Сейчас в выборке нет товаров Swiss Krono. Назначьте им бренд или поставщика «Swiss Krono» и проверьте фильтры.")
-            if can_manage_procurement(current_user):
-                with st.expander("Обновить бланк завода"):
-                    render_swiss_krono_template_upload(current_user)
+            # A folded order cannot hold another fold, so the upload opens with a switch.
+            if can_manage_procurement(current_user) and st.toggle("Обновить бланк завода", key="swiss_krono_template_toggle_empty"):
+                render_swiss_krono_template_upload(current_user)
         return
 
-    with st.container(border=True):
-        render_panel_header(
-            "Заказ Swiss Krono",
-            "Бланк завода, заказ в паллетах. Потребность округлена до ближайшей паллеты, количество можно поправить в таблице.",
+    with st.expander(order_form_label("Swiss Krono", int(pd.to_numeric(order_rows["pallets"]).gt(0).sum()))):
+        st.caption(
+            "Бланк завода, заказ в паллетах. Потребность округлена до ближайшей паллеты, количество можно поправить в таблице."
         )
         render_order_arrival(lead_time_days)
         edited = st.data_editor(
@@ -7541,8 +7550,11 @@ def render_swiss_krono_order_form(
                     upload_round_key="swiss_krono_upload_round",
                 )
 
-        with st.expander("Обновить бланк завода"):
-            st.caption("Когда завод присылает новый бланк: в нём новые материалы и ценовые группы.")
+        if st.toggle(
+            "Обновить бланк завода",
+            key="swiss_krono_template_toggle",
+            help="Когда завод присылает новый бланк: в нём новые материалы и ценовые группы.",
+        ):
             render_swiss_krono_template_upload(current_user)
 
         uploaded_order = st.file_uploader(
@@ -7720,7 +7732,7 @@ def render_order_file_upload(
         )
     if form.goods_only:
         comparison = pd.DataFrame(
-            {"Код": file_rows["code"], "Название": file_rows["name"], "Кол-во, шт": file_rows["edge_or_sheets"]}
+            {"Код": file_rows["code"], "Название": file_rows["name"], form.quantity_title: file_rows["edge_or_sheets"]}
         )
     else:
         comparison = pd.DataFrame(
@@ -7735,7 +7747,7 @@ def render_order_file_upload(
     proposed_board = file_rows["row_id"].map(proposed["quantity"]).fillna(0).astype(int)
     proposed_edge = file_rows["row_id"].map(proposed["edge_or_sheets"]).fillna(0).astype(int)
     comparison["Предложено"] = (
-        [f"{edge} шт" for edge in proposed_edge]
+        [f"{edge} {form.unit}".rstrip() for edge in proposed_edge]
         if form.goods_only
         else [f"{board} шт · {edge}" for board, edge in zip(proposed_board, proposed_edge)]
     )
@@ -7744,7 +7756,7 @@ def render_order_file_upload(
     ordered = file_rows["quantity"].gt(0) | file_rows["edge_or_sheets"].gt(0)
     is_hpl = file_rows["section"].ne(SECTION_BOARDS)
     if form.goods_only:
-        file_summary = f"В файле: {int(file_rows['edge_or_sheets'].sum())} шт"
+        file_summary = f"В файле: {int(file_rows['edge_or_sheets'].sum())} {form.unit}".rstrip()
     else:
         file_summary = (
             f"В файле: плит {int(file_rows['quantity'].sum())} шт · "
@@ -17066,7 +17078,19 @@ if active_screen == "Закупки":
                     procurement_forecast, is_swiss_krono_supplier, procurement_lead_time_days
                 ),
             )
-            for supplier_form in SUPPLIER_FORMS:
+            # Every other supplier gets the same order with a file, Экстраверт for one.
+            other_suppliers = sorted(
+                {
+                    name
+                    for name in procurement_forecast.get("supplier", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+                    if name
+                    and name.casefold() != "не назначен"
+                    and not is_swiss_krono_supplier(name)
+                    and not any(form.matches(name) for form in SUPPLIER_FORMS)
+                },
+                key=str.casefold,
+            )
+            for supplier_form in [*SUPPLIER_FORMS, *map(generic_supplier_form, other_suppliers)]:
                 render_supplier_order_form(
                     supplier_form,
                     procurement_forecast,
@@ -17077,10 +17101,9 @@ if active_screen == "Закупки":
                     ),
                 )
             if can_manage_procurement(current_user):
-                with st.container(border=True):
-                    render_panel_header(
-                        "Создать заказ поставщику",
-                        "Соберите заказ прямо из текущего прогноза. В расчёт попадут только строки с количеством больше нуля.",
+                with st.expander("Создать заказ вручную · с ценами, статусом и комментарием"):
+                    st.caption(
+                        "Соберите заказ прямо из текущего прогноза. В расчёт попадут только строки с количеством больше нуля."
                     )
                     order_candidates = procurement_forecast[
                         procurement_forecast["recommended_order_qty"].fillna(0) > 0
@@ -17660,9 +17683,10 @@ if active_screen == "Закупки":
                                     key=f"procurement_order_krono_export_{selected_order_id}",
                                     use_container_width=True,
                                 )
-                            supplier_form = next(
-                                (form for form in SUPPLIER_FORMS if form.matches(selected_order_row["supplier"])),
-                                None,
+                            supplier_form = (
+                                None
+                                if is_swiss_krono_supplier(selected_order_row["supplier"])
+                                else supplier_form_for(selected_order_row["supplier"])
                             )
                             if supplier_form is not None:
                                 selected_order_form = order_form_from_items(
