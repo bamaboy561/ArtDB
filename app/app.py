@@ -141,7 +141,7 @@ from supplier_order_forms import (
     SUPPLIER_FORMS,
     SupplierForm,
     build_order_form_rows,
-    generic_supplier_form,
+    generic_supplier_forms,
     supplier_form_for,
     apply_order_file,
     build_supplier_order_workbook,
@@ -17090,7 +17090,7 @@ if active_screen == "Закупки":
                 },
                 key=str.casefold,
             )
-            for supplier_form in [*SUPPLIER_FORMS, *map(generic_supplier_form, other_suppliers)]:
+            for supplier_form in [*SUPPLIER_FORMS, *generic_supplier_forms(other_suppliers)]:
                 render_supplier_order_form(
                     supplier_form,
                     procurement_forecast,

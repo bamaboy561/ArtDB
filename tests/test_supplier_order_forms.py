@@ -25,6 +25,7 @@ from supplier_order_forms import (  # noqa: E402
     build_order_form_rows,
     build_supplier_order_workbook,
     generic_supplier_form,
+    generic_supplier_forms,
     order_file_comment,
     order_form_from_items,
     order_form_supplier,
@@ -593,6 +594,12 @@ class GenericSupplierFormTest(unittest.TestCase):
         self.assertEqual((form.title, form.key, form.goods_only), ("Экстраверт", "экстраверт", True))
         self.assertIs(supplier_form_for("WQ"), WQ_FORM)
         self.assertEqual(generic_supplier_form("ИП Иванов / Петров").key, "ип_иванов_петров")
+
+    def test_spellings_of_one_supplier_share_a_form_and_keys_stay_unique(self) -> None:
+        forms = generic_supplier_forms(["Emaks", "EMAKS", "Emaks ", "Emaks.", "AGT"])
+        # "Emaks." is another name with the same key: the key gets a number, as Streamlit needs.
+        self.assertEqual([form.title for form in forms], ["Emaks", "Emaks.", "AGT"])
+        self.assertEqual(len({form.key for form in forms}), 3)
 
     def test_only_the_exact_supplier_name_counts(self) -> None:
         form = generic_supplier_form("AGT")

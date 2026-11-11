@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from datetime import date
 import hashlib
 from io import BytesIO
@@ -143,6 +144,19 @@ def generic_supplier_form(supplier: str) -> SupplierForm:
         exact_match=True,
         unit="",
     )
+
+
+def generic_supplier_forms(suppliers: Iterable[str]) -> list[SupplierForm]:
+    """One form for each supplier: "Emaks" and "EMAKS" are one, and two names with one key get a number."""
+    forms: dict[str, SupplierForm] = {}
+    for supplier in suppliers:
+        if any(form.matches(supplier) for form in forms.values()):
+            continue
+        form = generic_supplier_form(supplier)
+        if form.key in forms:
+            form = replace(form, key=f"{form.key}_{len(forms) + 1}")
+        forms[form.key] = form
+    return list(forms.values())
 
 
 def supplier_form_for(supplier: object) -> SupplierForm:
