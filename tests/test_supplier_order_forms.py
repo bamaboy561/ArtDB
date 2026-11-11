@@ -627,6 +627,48 @@ class GenericSupplierFormTest(unittest.TestCase):
         self.assertEqual(items, {self.BOARD: 12.0, self.EDGE: 200.0})
 
 
+def site_export(*lines: tuple) -> bytes:
+    """The order as "Заказы в работе" downloads it."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Заказ"
+    sheet.append(["SKU / Товар", "Количество", "Принято", "Цена закупки", "Сумма", "Комментарий"])
+    for product, quantity in lines:
+        sheet.append([product, quantity, 0, None, None, None])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+class SiteExportFileTest(unittest.TestCase):
+    BOARD = GenericSupplierFormTest.BOARD
+    EDGE = GenericSupplierFormTest.EDGE
+
+    def test_the_sites_own_export_comes_back(self) -> None:
+        form = generic_supplier_form("Экстраверт")
+        rows = build_order_form_rows(forecast((self.BOARD, 12), (self.EDGE, 150), supplier="Экстраверт"), form=form)
+        content = site_export((self.BOARD, 26), (self.EDGE, 100), (self.BOARD, 26), ("ЛДСП Новый декор 2800X2070X16", 4))
+        parsed = parse_order_form_file(content, rows, form=form)
+        self.assertEqual(parsed.errors, [])
+        items = order_items_from_form(apply_order_file(rows, parsed)).set_index("product")["quantity"].to_dict()
+        # A product listed twice in the order is ordered twice; a new one keeps its name.
+        self.assertEqual(items, {self.BOARD: 52.0, self.EDGE: 100.0, "ЛДСП Новый декор 2800X2070X16": 4.0})
+
+    def test_edge_band_of_a_board_form_stays_edge_band(self) -> None:
+        rows = build_order_form_rows(forecast((MUFFIN, 10), (MUFFIN_EDGE, 300)))
+        parsed = parse_order_form_file(site_export((MUFFIN, 20), (MUFFIN_EDGE, 500)), rows)
+        line = row_named(apply_order_file(rows, parsed), "Маффин")
+        self.assertEqual((line["quantity"], line["edge_or_sheets"]), (20, 500))
+
+    def test_a_file_without_known_columns_is_still_refused(self) -> None:
+        workbook = Workbook()
+        workbook.active.append(["Что-то", "Сколько"])
+        buffer = BytesIO()
+        workbook.save(buffer)
+        parsed = parse_order_form_file(buffer.getvalue(), build_order_form_rows(forecast((MUFFIN, 1))))
+        self.assertTrue(parsed.errors)
+
+
 class HettichFormTest(unittest.TestCase):
     QUADRO = "Quadro V6 YOU M (30 кг) с демпфер Silent System, 250 мм, левый"
     TOPLINE = "Комплект фурнитуры TopLine L для 2 дверей, передняя справа, толщина двери 18-30 мм, 50 кг"

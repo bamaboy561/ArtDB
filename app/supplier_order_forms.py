@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import date
 import hashlib
@@ -487,8 +487,52 @@ _PIECE_TITLES = ("кол-во, шт", "количество в заказе")
 # Hettich's form says "Артикул" and "Наименование" for the code and the name.
 _CODE_TITLES = ("код", "артикул")
 _NAME_TITLES = ("название", "наименование")
+# The site's own order export, from "Заказы в работе": the site product and its quantity.
+_PRODUCT_TITLES = ("sku / товар", "товар")
+_EXPORT_QUANTITY_TITLE = "количество"
 # Characters of Calibri 11 that fit on one line of the goods' merged name cell.
 NAME_CHARS_PER_LINE = 58
+
+
+def _read_export_line(
+    row: list[object],
+    number: int,
+    cell: Callable[[list[object], tuple[str, ...]], object],
+    form: SupplierForm,
+    parsed: ParsedOrderFile,
+    by_product: dict[str, tuple[dict[str, object], bool]],
+    by_key: dict[str, dict[str, object]],
+    extras: dict[str, dict[str, object]],
+    searchable: list[tuple[str, str, str]],
+) -> None:
+    """One line of the site's own order export: a site product and its quantity."""
+    product = str(cell(row, _PRODUCT_TITLES) or "").strip()
+    if not product:
+        return
+    quantity = _file_quantity(cell(row, (_EXPORT_QUANTITY_TITLE,)))
+    if quantity is None:
+        parsed.errors.append(f"Строка {number}, товар {product}: количество должно быть числом не меньше нуля.")
+        return
+    kind = "" if form.goods_only else _product_kind(_normalize(product))
+    record, is_edge = by_product.get(_normalize_code(product), (None, kind == "edge"))
+    if record is None:
+        # Another site product of a decor already in the form, as a second board of one decor.
+        article, name = _split_product(product, kind)
+        record = by_key.get(_normalize_code(article)) or by_key.get(_normalize_code(name))
+    if record is None:
+        if not quantity:
+            return
+        section = SECTION_HPL if kind == "hpl" else SECTION_BOARDS if kind in ("board", "edge") else SECTION_OTHER
+        record = _extra_row("", "", product, section, searchable, form.catalog)
+        if not record["product"] and not record["edge_product"]:
+            record["edge_product" if is_edge else "product"] = product
+        record = extras.setdefault(str(record["row_id"]), record)
+    if record["section"] != SECTION_BOARDS or is_edge:
+        board, edge = 0, quantity
+    else:
+        board, edge = quantity, 0
+    previous = parsed.quantities.get(record["row_id"], (0, 0))
+    parsed.quantities[record["row_id"]] = (previous[0] + board, previous[1] + edge)
 
 
 def parse_order_form_file(
@@ -525,6 +569,12 @@ def parse_order_form_file(
     # A code can be missing or replaced by a "?" in a file typed by hand: the name then decides.
     for record in order_rows.to_dict(orient="records"):
         by_key.setdefault(_normalize_code(record["name"]), record)
+    # The site's export names the site product itself; True marks an edge band line.
+    by_product: dict[str, tuple[dict[str, object], bool]] = {}
+    for record in order_rows.to_dict(orient="records"):
+        for column, is_edge in (("product", False), ("edge_product", True)):
+            if record[column]:
+                by_product.setdefault(_normalize_code(record[column]), (record, is_edge))
     searchable = [
         (product, text, _product_kind(text))
         for product, text in ((str(product), _normalize(product)) for product in site_products)
@@ -534,6 +584,7 @@ def parse_order_form_file(
     # Each table of the form has its own header row, and files saved from the
     # earlier form layout are still accepted.
     columns: dict[str, int] = {}
+    site_export = False
 
     def cell(row: list[object], titles: tuple[str, ...]) -> object:
         for title in titles:
@@ -544,10 +595,16 @@ def parse_order_form_file(
 
     for number, row in enumerate(table, start=1):
         titles = {" ".join(str(value or "").casefold().split()): position for position, value in enumerate(row)}
+        if set(titles) & set(_PRODUCT_TITLES) and _EXPORT_QUANTITY_TITLE in titles:
+            columns, site_export = titles, True
+            continue
         if set(titles) & set(_CODE_TITLES) and set(titles) & {*_BOARD_TITLES, *_EDGE_TITLES, *_SHEET_TITLES, *_PIECE_TITLES}:
-            columns = titles
+            columns, site_export = titles, False
             continue
         if not columns:
+            continue
+        if site_export:
+            _read_export_line(row, number, cell, form, parsed, by_product, by_key, extras, searchable)
             continue
         raw_code = cell(row, _CODE_TITLES)
         if str(raw_code or "").strip() in ("?", "-"):
