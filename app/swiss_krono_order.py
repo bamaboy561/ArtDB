@@ -279,13 +279,15 @@ def rows_from_saved_order(items: pd.DataFrame) -> pd.DataFrame:
     return build_order_rows(items.rename(columns={"quantity": "recommended_order_qty"}), only_supplier=False)
 
 
-def _ordered(order_rows: pd.DataFrame) -> pd.DataFrame:
-    return order_rows[order_rows["in_catalog"].astype(bool) & pd.to_numeric(order_rows["pallets"]).gt(0)]
+def _ordered(order_rows: pd.DataFrame, *, any_line: bool = False) -> pd.DataFrame:
+    """Lines with pallets; the factory's form holds only its own materials, the user's list holds any."""
+    listed = order_rows["in_catalog"].astype(bool) | any_line
+    return order_rows[listed & pd.to_numeric(order_rows["pallets"]).gt(0)]
 
 
-def order_items_from_rows(order_rows: pd.DataFrame) -> pd.DataFrame:
-    """Order lines in sheets, the unit the forecast counts in, for goods the factory can supply."""
-    ordered = _ordered(order_rows)
+def order_items_from_rows(order_rows: pd.DataFrame, *, any_line: bool = False) -> pd.DataFrame:
+    """Order lines in sheets, the unit the forecast counts in; `any_line` for an order from the user's list."""
+    ordered = _ordered(order_rows, any_line=any_line)
     return pd.DataFrame(
         {
             "product": ordered["product"],
@@ -297,9 +299,9 @@ def order_items_from_rows(order_rows: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def order_totals(order_rows: pd.DataFrame) -> dict[str, float]:
+def order_totals(order_rows: pd.DataFrame, *, any_line: bool = False) -> dict[str, float]:
     """Totals as the form computes them, with the two price group shares of its top row."""
-    ordered = _ordered(order_rows)
+    ordered = _ordered(order_rows, any_line=any_line)
     sheets = ordered["pallets"] * ordered["pack"]
     total = float(sheets.sum())
     group_sheets = {group: float(sheets[ordered["price_group"].eq(group)].sum()) for group in range(1, 8)}
@@ -478,6 +480,10 @@ class ParsedFactoryFile:
     pallets: dict[str, float] = field(default_factory=dict)
     unknown: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # The user's own list is an order as it stands: every line counts, the factory's form plays no part.
+    from_list: bool = False
+    # Lines of the list that are not among the site's Swiss Krono goods, ordered under the list's name.
+    extra_rows: list[dict[str, object]] = field(default_factory=list)
 
 
 def _file_number(value: object) -> float | None:
@@ -582,10 +588,33 @@ def _parse_sheet_list(sheet: object, order_rows: pd.DataFrame, parsed: ParsedFac
             similar = [key for key in rows if key.startswith(f"{decor}/{structure}/")]
             row_id = similar[0] if len(similar) == 1 else row_id
         record = rows.get(row_id)
-        if record is None or not record["in_catalog"]:
+        if record is None:
+            clean_name = " ".join(_SIZE_TAIL.sub("", name).split()) or f"{raw} {match.group(2)}"
+            record = {
+                **{column: "" for column in ORDER_ROW_COLUMNS},
+                "row_id": row_id,
+                "label": f"D/{decor} {structure}",
+                "name": clean_name,
+                "decor": decor,
+                "structure": structure,
+                "thickness": thickness,
+                "length": length,
+                "pack": _default_pack(thickness, length) or 1,
+                "price_group": values[1] if len(values) > 1 and values[1] not in (None, "") else "",
+                "needed_sheets": 0.0,
+                "pallets": 0.0,
+                "available_stock_qty": 0.0,
+                "forecast_qty": 0.0,
+                "product": f"D/{decor} {structure}/{clean_name} {_size_label(length)}",
+                "supplier": "Swiss Krono",
+                "low_priority_skipped": False,
+                "in_catalog": False,
+            }
+            rows[row_id] = record
+            parsed.extra_rows.append(record)
             parsed.unknown.append(f"{raw} {match.group(2)}")
-            continue
         parsed.pallets[row_id] = parsed.pallets.get(row_id, 0.0) + sheets / float(record["pack"])
+    parsed.from_list = True
     return True
 
 
@@ -634,9 +663,13 @@ def parse_order_file(content: bytes, order_rows: pd.DataFrame) -> ParsedFactoryF
 def apply_order_file(order_rows: pd.DataFrame, parsed: ParsedFactoryFile) -> pd.DataFrame:
     """The lines with the file's pallets: a line left blank in the file is not ordered."""
     result = order_rows.copy()
+    if parsed.extra_rows:
+        extras = pd.DataFrame(parsed.extra_rows, columns=ORDER_ROW_COLUMNS)
+        result = extras if result.empty else pd.concat([result, extras], ignore_index=True)
     result["pallets"] = [parsed.pallets.get(row_id, 0.0) for row_id in result["row_id"]]
     return result
 
 
 def order_file_comment(filename: str, parsed: ParsedFactoryFile) -> str:
-    return f"Бланк завода Swiss Krono · файл {filename} · {parsed.fingerprint}"
+    source = "Список ЛДСП Swiss Krono" if parsed.from_list else "Бланк завода Swiss Krono"
+    return f"{source} · файл {filename} · {parsed.fingerprint}"

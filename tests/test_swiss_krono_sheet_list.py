@@ -111,10 +111,30 @@ class SheetListParseTest(unittest.TestCase):
         items = krono.order_items_from_rows(applied).set_index("product")["quantity"].to_dict()
         self.assertEqual(items["D/20267 OW/Аделия 2.75*1.83"], 792.0)
 
-    def test_decors_the_factory_does_not_list_are_named(self) -> None:
-        parsed = krono.parse_order_file(user_list(("3274 BS", 4, "Бетон 2.75*1.83", None, 99), ("9999 VL", 4, "Новый", None, 33)), ROWS)
-        self.assertEqual(parsed.pallets, {})
-        self.assertEqual(parsed.unknown, ["3274 BS", "9999 VL"])
+    def test_the_list_is_the_order_whatever_the_factory_form_holds(self) -> None:
+        content = user_list(
+            ("3274 BS", 4, "Бетон 2.75*1.83", None, 99),
+            ("9999 VL", 4, "Новый декор 2.75*1.83", None, 33),
+            ("20267 OW", 4, "Аделия 2.75*1.83", None, 66),
+        )
+        parsed = krono.parse_order_file(content, ROWS)
+        self.assertTrue(parsed.from_list)
+        # On the site but not in the factory form, and not on the site at all: both are ordered.
+        self.assertEqual(parsed.unknown, ["9999 VL"])
+        applied = krono.apply_order_file(ROWS, parsed)
+        items = krono.order_items_from_rows(applied, any_line=True).set_index("product")["quantity"].to_dict()
+        self.assertEqual(
+            items,
+            {
+                "D/3274 BS/Бетон 2.75*1.83": 99.0,
+                "D/9999 VL/Новый декор 2.75*1.83": 33.0,
+                "D/20267 OW/Аделия 2.75*1.83": 66.0,
+            },
+        )
+        self.assertEqual(krono.order_totals(applied, any_line=True)["sheets"], 198.0)
+        # The factory's form still takes only its own materials.
+        self.assertEqual(krono.order_items_from_rows(applied)["product"].tolist(), ["D/20267 OW/Аделия 2.75*1.83"])
+        self.assertTrue(krono.order_file_comment("list.xlsx", parsed).startswith("Список ЛДСП Swiss Krono"))
 
     def test_a_word_for_a_quantity_is_an_error(self) -> None:
         parsed = krono.parse_order_file(user_list(("20267 OW", 4, "Аделия 2.75*1.83", None, "много")), ROWS)

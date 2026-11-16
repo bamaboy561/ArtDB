@@ -7586,15 +7586,22 @@ def render_swiss_krono_order_form(
         if parsed.errors:
             st.info("Исправьте файл и загрузите его снова. Заказ не создан.")
             return
-        if parsed.unknown:
+        if parsed.unknown and parsed.from_list:
+            st.info(
+                "Этих декоров нет среди товаров Swiss Krono на сайте, в заказ они войдут под названием из списка: "
+                + ", ".join(parsed.unknown)
+                + ". При приёмке укажите приход по ним вручную."
+            )
+        elif parsed.unknown:
             st.warning(
                 "Этих материалов нет среди товаров Swiss Krono на сайте, они не войдут в заказ: "
                 + ", ".join(parsed.unknown)
                 + ". Назначьте товар этому поставщику на сайте и загрузите файл снова."
             )
         file_rows = apply_swiss_krono_file(order_rows, parsed)
-        render_swiss_krono_totals(file_rows, label="В файле")
-        file_items = swiss_krono_items_from_rows(file_rows)
+        # An order from the user's own list takes every line: the factory's form plays no part in it.
+        render_swiss_krono_totals(file_rows, label="В файле", any_line=parsed.from_list)
+        file_items = swiss_krono_items_from_rows(file_rows, any_line=parsed.from_list)
         file_comment = swiss_krono_file_comment(uploaded_order.name, parsed)
         existing_orders = load_procurement_orders()
         already_saved = (
@@ -7649,14 +7656,16 @@ def render_swiss_krono_template_upload(current_user: dict[str, str]) -> None:
     st.rerun()
 
 
-def render_swiss_krono_totals(rows: pd.DataFrame, *, label: str = "К заказу") -> None:
+def render_swiss_krono_totals(rows: pd.DataFrame, *, label: str = "К заказу", any_line: bool = False) -> None:
     """Pallets and area for fitting the wagon, and the shares the form colours red when too low."""
-    totals = swiss_krono_totals(rows)
+    totals = swiss_krono_totals(rows, any_line=any_line)
     _, middle_minimum, top_minimum = load_swiss_krono_catalog()
     st.caption(
         f"{label}: паллет {format_number(totals['pallets'])} · листов {format_number(totals['sheets'])} · "
         f"{format_number(totals['area'])} м² · ценовые группы 3–4: {totals['middle_share']:.0%}, 5–7: {totals['top_share']:.0%}"
     )
+    if any_line:
+        return  # The user's own list: the factory form's checks do not apply to it.
     if totals["sheets"] > 0 and (totals["middle_share"] < middle_minimum or totals["top_share"] < top_minimum):
         st.warning(
             f"Бланк завода подсветит доли красным: группы 3–4 должны быть от {middle_minimum:.0%}, "
