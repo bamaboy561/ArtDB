@@ -590,8 +590,8 @@ class GenericSupplierFormTest(unittest.TestCase):
     EDGE = "Кромка ABS M.604.S01 Зеленый еловый 19*0,8"
 
     def test_supplier_without_a_form_gets_the_common_one(self) -> None:
-        form = supplier_form_for("Экстраверт")
-        self.assertEqual((form.title, form.key, form.goods_only), ("Экстраверт", "экстраверт", True))
+        form = supplier_form_for("Самет")
+        self.assertEqual((form.title, form.key, form.goods_only), ("Самет", "самет", True))
         self.assertIs(supplier_form_for("WQ"), WQ_FORM)
         self.assertEqual(generic_supplier_form("ИП Иванов / Петров").key, "ип_иванов_петров")
 

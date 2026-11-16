@@ -95,6 +95,8 @@ class SupplierForm:
     exact_match: bool = False
     # The unit of a goods-only form; empty when it mixes sheets with metres of edge band.
     unit: str = "шт"
+    # A layout of its own, built in another module: "extravert".
+    layout: str = ""
 
     @property
     def quantity_title(self) -> str:
@@ -127,7 +129,16 @@ HETTICH_FORM = SupplierForm(
     goods_only=True,
     box_layout=True,
 )
-SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM, HETTICH_FORM)
+EXTRAVERT_LAYOUT = "extravert"
+# The layout of the supplier's price list the user sent: decor code and structure, sheets, edge band.
+EXTRAVERT_FORM = SupplierForm(
+    "extravert",
+    "Экстраверт",
+    ("экстраверт", "ekstravert", "extrawert", "extrovert", "extra vert"),
+    fills_old_code=False,
+    layout=EXTRAVERT_LAYOUT,
+)
+SUPPLIER_FORMS = (WQ_FORM, LIAMAX_FORM, NUOMI_FORM, HETTICH_FORM, EXTRAVERT_FORM)
 
 
 def generic_supplier_form(supplier: str) -> SupplierForm:
@@ -182,6 +193,9 @@ ORDER_FORM_COLUMNS = [
     "supplier",
     "low_priority_skipped",
     "pack",
+    # Экстраверт's table and the board format of a line.
+    "group",
+    "format",
 ]
 
 _EDGE_SIZE = re.compile(r"(?<![0-9])1\s*[*xх×]\s*22(?![0-9])")
@@ -269,6 +283,10 @@ def build_order_form_rows(
         if "supplier" not in forecast.columns:
             return pd.DataFrame(columns=ORDER_FORM_COLUMNS)
         forecast = forecast[forecast["supplier"].map(form.matches)]
+    if form.layout == EXTRAVERT_LAYOUT:
+        from extravert_order import build_extravert_rows
+
+        return build_extravert_rows(forecast)
 
     grouped: dict[str, dict[str, object]] = {}
     for record in forecast.to_dict(orient="records"):
@@ -303,6 +321,8 @@ def build_order_form_rows(
                 "supplier": record.get("supplier", ""),
                 "low_priority_skipped": False,
                 "pack": 0.0,
+                "group": "",
+                "format": "",
             },
         )
         multiple = pd.to_numeric(pd.Series([record.get("order_multiple")]), errors="coerce").fillna(0).iloc[0]
@@ -362,6 +382,12 @@ def order_items_from_form(order_rows: pd.DataFrame) -> pd.DataFrame:
         if record["section"] != SECTION_BOARDS:
             prefix = "HPL " if record["section"] == SECTION_HPL else ""
             lines = ((record["product"] or f"{prefix}{label}", record["edge_or_sheets"]),)
+        elif record.get("group"):
+            # Экстраверт: "302 W04 Дуб Уральский какао" with its own board format.
+            lines = (
+                (record["product"] or f"ЛДСП {label} {record.get('format') or ''}".strip(), record["quantity"]),
+                (record["edge_product"] or f"Кромка {label}", record["edge_or_sheets"]),
+            )
         else:
             lines = (
                 (record["product"] or f"{label} 18*1220*2800мм", record["quantity"]),
@@ -544,6 +570,13 @@ def parse_order_form_file(
 ) -> ParsedOrderFile:
     """Quantities from the file: `order_rows` lists the supplier's goods, `site_products` all goods of the site."""
     parsed = ParsedOrderFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
+    if form.layout == EXTRAVERT_LAYOUT:
+        from extravert_order import parse_extravert_file
+
+        # The supplier's layout first; the site's own export and the common table are read below.
+        if parse_extravert_file(content, order_rows, site_products, parsed):
+            return parsed
+        parsed = ParsedOrderFile(fingerprint=parsed.fingerprint)
     try:
         sheet = load_workbook(BytesIO(content), data_only=True, read_only=True).worksheets[0]
         table = [list(row) for row in sheet.iter_rows(values_only=True)]
@@ -742,6 +775,10 @@ def build_supplier_order_workbook(
     """The order: only positions with a quantity, in separate tables for boards, HPL and other goods."""
     if form.box_layout:
         return _build_box_workbook(order_rows, form.title)
+    if form.layout == EXTRAVERT_LAYOUT:
+        from extravert_order import build_extravert_workbook
+
+        return build_extravert_workbook(order_rows, order_date=order_date)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = f"Заказ {form.title}"

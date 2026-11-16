@@ -7255,8 +7255,9 @@ def render_supplier_order_form(
             quantity_columns = {
                 "board_qty": st.column_config.NumberColumn("Плиты, шт", min_value=0, step=1),
                 "edge_qty": st.column_config.NumberColumn("Кромка, м", min_value=0, step=1),
-                "hpl_qty": st.column_config.NumberColumn("HPL / другое", min_value=0, step=1),
             }
+            if is_hpl.any():
+                quantity_columns["hpl_qty"] = st.column_config.NumberColumn("HPL / другое", min_value=0, step=1)
             leading_columns = ["code", "name", *quantity_columns]
         edited = st.data_editor(
             table[
@@ -7320,7 +7321,8 @@ def render_supplier_order_form(
             )
         else:
             st.caption(
-                f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м · HPL и другое {hpl_total}"
+                f"К заказу: плит {int(final_rows['quantity'].sum())} шт · кромки {edge_total} м"
+                + (f" · HPL и другое {hpl_total}" if is_hpl.any() else "")
             )
         low_priority = order_rows.loc[order_rows["low_priority_skipped"], "name"].tolist()
         if low_priority:
