@@ -164,6 +164,7 @@ from swiss_krono_order import (
     apply_order_file as apply_swiss_krono_file,
     build_order_rows as build_swiss_krono_rows,
     build_order_workbook as build_swiss_krono_workbook,
+    build_sheet_list_workbook as build_swiss_krono_sheet_list,
     is_swiss_krono_supplier,
     load_catalog as load_swiss_krono_catalog,
     order_file_comment as swiss_krono_file_comment,
@@ -7533,6 +7534,15 @@ def render_swiss_krono_order_form(
                 key="dl_swiss_krono_order",
                 disabled=order_items.empty,
             )
+            st.download_button(
+                "Скачать список ЛДСП в листах",
+                data=partial(build_swiss_krono_sheet_list, final_rows),
+                file_name=f"ldsp_swiss_krono_{date.today():%Y%m%d}.xlsx",
+                mime=EXCEL_MIME,
+                width="stretch",
+                key="dl_swiss_krono_sheet_list",
+                help="Ваш список: декор, группа, название и сколько листов заказать. Его можно загрузить обратно ниже.",
+            )
         if not can_manage_procurement(current_user):
             return
         with order_col:
@@ -7560,10 +7570,13 @@ def render_swiss_krono_order_form(
             render_swiss_krono_template_upload(current_user)
 
         uploaded_order = st.file_uploader(
-            "Загрузить исправленный бланк",
+            "Загрузить исправленный бланк или список в листах",
             type=["xlsx"],
             key=f"swiss_krono_file_{st.session_state.get('swiss_krono_upload_round', 0)}",
-            help="Паллеты из файла становятся финальными, по всем колонкам месяца. Строка без паллет в заказ не попадёт.",
+            help=(
+                "Бланк завода: паллеты по всем колонкам месяца. Список ЛДСП: листы из колонки «к заказу», "
+                "они делятся на листы в паллете. Строка без количества в заказ не попадёт."
+            ),
         )
         if uploaded_order is None:
             return

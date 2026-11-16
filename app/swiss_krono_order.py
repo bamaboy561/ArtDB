@@ -8,6 +8,7 @@ a manager uploads it on the site and it stays in the data folder.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from functools import lru_cache
 import hashlib
 from io import BytesIO
@@ -20,7 +21,8 @@ from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, Side
 
 from supplier_order_forms import EXCLUDED_ORDER_PRIORITY, _contains_term, _normalize
 
@@ -488,16 +490,122 @@ def _file_number(value: object) -> float | None:
     return None if math.isnan(number) or number < 0 else number
 
 
+SHEET_LIST_TITLE = "к заказу"
+_LIST_DECOR = re.compile(r"^\s*([0-9A-Za-zА-Яа-я]+)\s+([A-Za-zА-Яа-я]{2})\s*$")
+_LIST_THICKNESS = re.compile(rf"(?<![0-9])({THICKNESSES})\s*мм", re.IGNORECASE)
+
+
+def _size_label(length: int) -> str:
+    return "2.75*1.83" if length == 2750 else "2.8*2.07"
+
+
+def build_sheet_list_workbook(order_rows: pd.DataFrame, *, order_date: date | None = None) -> bytes:
+    """The user's own list in sheets: decor and structure, price group, name, sheets to order."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Лист1"
+    for column, width in {"A": 11.9, "B": 7, "C": 34, "D": 8.7, "E": 12}.items():
+        sheet.column_dimensions[column].width = width
+    thin = Side(style="thin")
+    frame = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bold = Font(name="Calibri", size=11, bold=True)
+    sheet.merge_cells("C1:D1")
+    header = {"A1": f"{(order_date or date.today()):%d.%m.%Y}", "B1": "группа", "C1": "ЛДСП 2750х1830", "E1": "к заказу"}
+    for reference, value in header.items():
+        sheet[reference] = value
+    for column in "ABCDE":
+        sheet[f"{column}1"].font = bold
+        sheet[f"{column}1"].border = frame
+        sheet[f"{column}1"].alignment = Alignment(horizontal="center", vertical="center")
+    lines = order_rows.assign(_name=order_rows["name"].astype(str).str.casefold()).sort_values(["_name", "label"], kind="stable")
+    for row, record in enumerate(lines.to_dict(orient="records"), start=2):
+        thickness, length = int(record["thickness"]), int(record["length"])
+        name = f"{record['name']} {_size_label(length)}" + (f" {thickness} мм" if thickness != DEFAULT_THICKNESS else "")
+        group = record["price_group"]
+        values = {
+            "A": f"{record['decor']} {record['structure']}".strip(),
+            "B": group if group not in (None, "") else None,
+            "C": name,
+            "E": int(round(float(record["pallets"]) * float(record["pack"]))),
+        }
+        for column in "ABCDE":
+            cell = sheet[f"{column}{row}"]
+            cell.value = values.get(column)
+            cell.border = frame
+            cell.font = Font(name="Calibri", size=11, bold=column == "E" and bool(values["E"]))
+        sheet[f"B{row}"].alignment = Alignment(horizontal="center")
+        sheet[f"E{row}"].alignment = Alignment(horizontal="center")
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _parse_sheet_list(sheet: object, order_rows: pd.DataFrame, parsed: ParsedFactoryFile) -> bool:
+    """Sheets from the user's list; False when the sheet has no "к заказу" column."""
+    table = [list(values) for values in sheet.iter_rows(values_only=True)]
+    header = next(
+        (index for index, values in enumerate(table) if any(" ".join(str(value or "").casefold().split()) == SHEET_LIST_TITLE for value in values)),
+        None,
+    )
+    if header is None:
+        return False
+    titles = [" ".join(str(value or "").casefold().split()) for value in table[header]]
+    quantity_column = titles.index(SHEET_LIST_TITLE)
+    name_column = next((position for position, title in enumerate(titles) if title.startswith("лдсп")), 2)
+    rows = {str(record["row_id"]): record for record in order_rows.to_dict(orient="records")}
+    known_decors = {str(record["decor"]) for record in rows.values()}
+    for number, values in enumerate(table[header + 1 :], start=header + 2):
+        match = _LIST_DECOR.match(str(values[0] or "")) if values else None
+        if match is None:
+            continue
+        sheets = _file_number(values[quantity_column] if quantity_column < len(values) else None)
+        if sheets is None:
+            parsed.errors.append(f"Строка {number}, декор {values[0]}: количество листов должно быть числом не меньше нуля.")
+            continue
+        if sheets <= 0:
+            continue
+        raw, structure = match.group(1), _latin(match.group(2))
+        # "171" is the factory's U171, unless the site has a decor named "171" itself.
+        decor = _TYPED_TO_DECOR.get(raw, _latin(raw))
+        if decor not in known_decors and _latin(raw) in known_decors:
+            decor = _latin(raw)
+        # The list writes some decors with a U the factory omits, as "U6933".
+        if decor not in known_decors and re.fullmatch(r"U\d{4,}", decor) and decor[1:] in known_decors:
+            decor = decor[1:]
+        name = str(values[name_column] if name_column < len(values) else "") or ""
+        thickness_match = _LIST_THICKNESS.search(name)
+        thickness = int(thickness_match.group(1)) if thickness_match else DEFAULT_THICKNESS
+        length = 2800 if "2.8" in name or "2,8" in name else 2750
+        row_id = f"{decor}/{structure}/{thickness}/{length}"
+        if row_id not in rows:
+            # Without a thickness in the name the list may still mean the one board of this decor.
+            similar = [key for key in rows if key.startswith(f"{decor}/{structure}/")]
+            row_id = similar[0] if len(similar) == 1 else row_id
+        record = rows.get(row_id)
+        if record is None or not record["in_catalog"]:
+            parsed.unknown.append(f"{raw} {match.group(2)}")
+            continue
+        parsed.pallets[row_id] = parsed.pallets.get(row_id, 0.0) + sheets / float(record["pack"])
+    return True
+
+
 def parse_order_file(content: bytes, order_rows: pd.DataFrame) -> ParsedFactoryFile:
     parsed = ParsedFactoryFile(fingerprint=hashlib.sha256(content).hexdigest()[:12])
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             book = load_workbook(BytesIO(content), data_only=True)
-        sheet = book[ORDER_SHEET]
     except Exception:
-        parsed.errors.append("Не удалось прочитать файл. Нужен бланк завода Swiss Krono с листом «Заказ на ЛДСП».")
+        parsed.errors.append("Не удалось прочитать файл. Нужен Excel-файл в формате .xlsx.")
         return parsed
+    if ORDER_SHEET not in book.sheetnames:
+        if not _parse_sheet_list(book.worksheets[0], order_rows, parsed):
+            parsed.errors.append(
+                "Не удалось прочитать файл. Нужен бланк завода Swiss Krono с листом «Заказ на ЛДСП» "
+                "или список ЛДСП с колонкой «к заказу»."
+            )
+        return parsed
+    sheet = book[ORDER_SHEET]
     known = set(order_rows["row_id"])
     for row in range(FIRST_ROW, LAST_ROW + 1):
         typed = sheet[f"E{row}"].value
