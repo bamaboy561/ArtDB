@@ -1,0 +1,5 @@
+# The new site's server, on top of app/requirements.txt (pandas, openpyxl, psycopg and the rest).
+-r ../app/requirements.txt
+fastapi==0.163.1
+uvicorn==0.54.0
+python-multipart==0.0.34

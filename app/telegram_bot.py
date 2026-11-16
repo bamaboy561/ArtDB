@@ -142,8 +142,9 @@ def _supplier_rules() -> tuple[tuple[str, str], ...]:
     )
 
 
-def load_bot_sales_data() -> pd.DataFrame:
-    salons = load_salons()
+def load_bot_sales_data(salons: list[str] | None = None) -> pd.DataFrame:
+    """Sales with suppliers, brands and SKU merges applied, as the site shows them; all salons by default."""
+    salons = salons or load_salons()
     supplier_rules = _supplier_rules()
     archive_result = load_archive_data(
         salons=salons if salons else None,
@@ -218,8 +219,8 @@ def _enrich_sales_catalog(
             fill_mask = missing & mapped.fillna("").astype(str).str.strip().ne("")
             enriched.loc[fill_mask, column] = mapped.loc[fill_mask].astype(str).str.strip()
 
-    if supplier_rules:
-        fill_supplier_from_text(enriched, supplier_rules)
+    # As the site does: built-in names and 1C groups count even without rules of the user's own.
+    fill_supplier_from_text(enriched, supplier_rules)
 
     if (
         not supplier_product_assignments.empty

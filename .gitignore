@@ -24,3 +24,5 @@ certbot/conf/*
 !certbot/conf/.gitkeep
 certbot/www/*
 !certbot/www/.gitkeep
+web/frontend/node_modules/
+web/frontend/dist/
