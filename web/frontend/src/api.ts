@@ -43,6 +43,53 @@ export type FormDetail = {
   rows: OrderRow[];
 };
 
+export type FilePreviewLine = {
+  code: string;
+  name: string;
+  quantity: number;
+  edge_or_sheets: number;
+  proposed_quantity: number;
+  proposed_edge_or_sheets: number;
+  changed: boolean;
+  note: string;
+};
+
+export type FilePreview = {
+  errors: string[];
+  already_saved: boolean;
+  lines: FilePreviewLine[];
+  ordered_lines: number;
+  total_quantity: number;
+  total_edge_or_sheets: number;
+  new_positions: string[];
+};
+
+export type InboundOrder = {
+  order_id: string;
+  supplier: string;
+  status: string;
+  status_label: string;
+  order_date: string | null;
+  expected_date: string | null;
+  days_left: number | null;
+  overdue: boolean;
+  lines: number;
+  ordered: number;
+  received: number;
+  comment: string;
+  items?: { product: string; quantity: number; received: number; remaining: number }[];
+};
+
+export type Arrival = {
+  when: string | null;
+  user: string;
+  source: string;
+  order_id: string;
+  supplier: string;
+  product: string;
+  quantity: number;
+};
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -72,6 +119,26 @@ export const api = {
   forms: (salons: string[]) => request<FormSummary[]>(`/api/orders/forms?salons=${encodeURIComponent(salons.join(","))}`),
   form: (key: string, salons: string[]) =>
     request<FormDetail>(`/api/orders/forms/${encodeURIComponent(key)}?salons=${encodeURIComponent(salons.join(","))}`),
+
+  inTransit: (key: string, salons: string[], rows: OrderRow[]) =>
+    request<{ order_id: string }>(
+      `/api/orders/forms/${encodeURIComponent(key)}/in-transit`,
+      json({ salons, lines: rows.map(({ row_id, quantity, edge_or_sheets }) => ({ row_id, quantity, edge_or_sheets })) }),
+    ),
+
+  supplierFile<T = FilePreview>(key: string, salons: string[], file: File, confirm: boolean): Promise<T> {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("salons", salons.join(","));
+    body.append("confirm", String(confirm));
+    return request<T>(`/api/orders/forms/${encodeURIComponent(key)}/supplier-file`, { method: "POST", body });
+  },
+
+  inbound: (kind: "active" | "overdue" | "all") => request<InboundOrder[]>(`/api/inbound?kind=${kind}`),
+  inboundOrder: (orderId: string) => request<InboundOrder>(`/api/inbound/${encodeURIComponent(orderId)}`),
+  changeOrder: (orderId: string, action: "receive" | "reschedule" | "cancel", expectedDate?: string) =>
+    request<InboundOrder>(`/api/inbound/${encodeURIComponent(orderId)}`, json({ action, expected_date: expectedDate ?? null })),
+  arrivals: () => request<Arrival[]>("/api/inbound/arrivals"),
 
   async orderFile(key: string, salons: string[], rows: OrderRow[]): Promise<{ blob: Blob; filename: string }> {
     const lines = rows.map(({ row_id, quantity, edge_or_sheets }) => ({ row_id, quantity, edge_or_sheets }));

@@ -1,11 +1,28 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, User } from "./api";
+import Inbound from "./pages/Inbound";
 import Login from "./pages/Login";
 import Orders from "./pages/Orders";
+
+// Only the screens that already work: the rest move here one by one.
+const SECTIONS = [
+  {
+    title: "Закупки",
+    pages: [
+      { path: "orders", label: "Заказы поставщикам" },
+      { path: "inbound", label: "В пути" },
+    ],
+  },
+] as const;
+
+type Path = (typeof SECTIONS)[number]["pages"][number]["path"];
+
+const currentPath = (): Path => (window.location.hash.replace(/^#\/?/, "") === "inbound" ? "inbound" : "orders");
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  const [path, setPath] = useState<Path>(currentPath);
 
   useEffect(() => {
     api
@@ -15,6 +32,9 @@ export default function App() {
         if (!(error instanceof ApiError) || error.status !== 401) console.error(error);
       })
       .finally(() => setChecking(false));
+    const follow = () => setPath(currentPath());
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
   }, []);
 
   if (checking) return <div className="splash">Загрузка…</div>;
@@ -29,24 +49,29 @@ export default function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">{user.display_name.slice(0, 1).toUpperCase()}</div>
-          <div>
-            <div className="brand-name">{user.display_name}</div>
-            <div className="brand-meta">ArtDB · новая версия</div>
-          </div>
+          <div className="brand-mark">A</div>
+          <div className="brand-name">ArtDB</div>
         </div>
         <nav className="nav">
-          <div className="nav-label">Разделы</div>
-          <a className="nav-item active">Закупки · Заказы</a>
-          <div className="nav-soon">Остальные разделы переезжают сюда по очереди.</div>
+          {SECTIONS.map((section) => (
+            <div key={section.title} className="nav-group">
+              <div className="nav-label">{section.title}</div>
+              {section.pages.map((page) => (
+                <a key={page.path} href={`#/${page.path}`} className={`nav-item ${path === page.path ? "active" : ""}`}>
+                  {page.label}
+                </a>
+              ))}
+            </div>
+          ))}
         </nav>
-        <button className="button ghost" onClick={signOut}>
-          Выйти
-        </button>
+        <div className="account">
+          <div className="account-name">{user.display_name}</div>
+          <button className="link-button" onClick={signOut}>
+            Выйти
+          </button>
+        </div>
       </aside>
-      <main className="main">
-        <Orders user={user} />
-      </main>
+      <main className="main">{path === "inbound" ? <Inbound user={user} /> : <Orders user={user} />}</main>
     </div>
   );
 }

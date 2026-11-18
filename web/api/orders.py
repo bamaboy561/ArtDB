@@ -6,15 +6,22 @@ import math
 
 import pandas as pd
 
-import data  # noqa: F401  (puts app/ on the import path)
+import data
+from db import log_audit_event
 from procurement_analytics import supplier_lead_time
+from procurement_order_store import create_procurement_order, load_procurement_orders
 from supplier_order_forms import (
     SECTION_BOARDS,
     SUPPLIER_FORMS,
     SupplierForm,
+    apply_order_file,
     build_order_form_rows,
     build_supplier_order_workbook,
     generic_supplier_forms,
+    order_file_comment,
+    order_form_supplier,
+    order_items_from_form,
+    parse_order_form_file,
 )
 from swiss_krono_order import is_swiss_krono_supplier
 
@@ -119,11 +126,107 @@ def form_detail(forecast: pd.DataFrame, form: SupplierForm, default_lead_time: i
     }
 
 
-def order_workbook(forecast: pd.DataFrame, form: SupplierForm, quantities: dict[str, tuple[int, int]]) -> bytes:
-    """The supplier's file with the quantities as edited on the screen."""
+def _edited_rows(forecast: pd.DataFrame, form: SupplierForm, quantities: dict[str, tuple[int, int]]) -> pd.DataFrame:
     rows = build_order_form_rows(forecast, form=form)
     rows["quantity"] = [quantities.get(row_id, (quantity, 0))[0] for row_id, quantity in zip(rows["row_id"], rows["quantity"])]
     rows["edge_or_sheets"] = [
         quantities.get(row_id, (0, edge))[1] for row_id, edge in zip(rows["row_id"], rows["edge_or_sheets"])
     ]
-    return build_supplier_order_workbook(rows, form=form)
+    return rows
+
+
+def order_workbook(forecast: pd.DataFrame, form: SupplierForm, quantities: dict[str, tuple[int, int]]) -> bytes:
+    """The supplier's file with the quantities as edited on the screen."""
+    return build_supplier_order_workbook(_edited_rows(forecast, form, quantities), form=form)
+
+
+def _create_in_transit(rows: pd.DataFrame, form: SupplierForm, *, lead_time: int, comment: str, username: str) -> str:
+    items = order_items_from_form(rows)
+    if items.empty:
+        raise ValueError("В заказе нет ни одной позиции с количеством.")
+    order = create_procurement_order(
+        supplier=order_form_supplier(rows, default=form.title),
+        items_frame=items,
+        order_date=date.today(),
+        expected_date=date.today() + timedelta(days=max(int(lead_time), 0)),
+        comment=comment,
+        created_by=username,
+        status="in_transit",
+    )
+    try:
+        log_audit_event(
+            user_id=username,
+            action="procurement.order_create",
+            details={"order_id": order["order_id"], "supplier": order["supplier"], "status": "in_transit", "item_count": len(items)},
+        )
+    except Exception:  # The journal never stops the order itself.
+        pass
+    data.forget_forecasts()
+    return str(order["order_id"])
+
+
+def order_from_screen(
+    forecast: pd.DataFrame, form: SupplierForm, quantities: dict[str, tuple[int, int]], *, lead_time: int, username: str
+) -> str:
+    """"В пути": the supplier confirmed the order as it stands on the screen."""
+    rows = _edited_rows(forecast, form, quantities)
+    return _create_in_transit(rows, form, lead_time=lead_time, comment=f"Форма заказа {form.title}", username=username)
+
+
+def _already_saved(fingerprint: str) -> bool:
+    orders = load_procurement_orders()
+    if orders.empty:
+        return False
+    return bool((orders["comment"].astype(str).str.contains(fingerprint, regex=False) & orders["status"].ne("cancelled")).any())
+
+
+def file_preview(forecast: pd.DataFrame, form: SupplierForm, content: bytes) -> tuple[dict[str, object], pd.DataFrame, object]:
+    """What the supplier's file holds against the proposal, before it becomes an order."""
+    rows = build_order_form_rows(forecast, form=form)
+    site_products = tuple(forecast["product"].astype(str)) if "product" in forecast.columns else ()
+    parsed = parse_order_form_file(content, rows, site_products, form=form)
+    applied = apply_order_file(rows, parsed) if not parsed.errors else rows.assign(file_note="")
+    proposed = rows.set_index("row_id")
+    lines = []
+    for record in applied.to_dict(orient="records"):
+        was = proposed.loc[record["row_id"]] if record["row_id"] in proposed.index else None
+        before = (int(was["quantity"]), int(was["edge_or_sheets"])) if was is not None else (0, 0)
+        now = (int(record["quantity"]), int(record["edge_or_sheets"]))
+        if now == (0, 0) and before == (0, 0):
+            continue
+        lines.append(
+            {
+                "code": _clean(record.get("code")) or "",
+                "name": _clean(record.get("name")) or "",
+                "quantity": now[0],
+                "edge_or_sheets": now[1],
+                "proposed_quantity": before[0],
+                "proposed_edge_or_sheets": before[1],
+                "changed": now != before,
+                "note": _clean(record.get("file_note")) or "",
+            }
+        )
+    ordered = applied[(applied["quantity"] > 0) | (applied["edge_or_sheets"] > 0)] if not parsed.errors else applied.iloc[0:0]
+    preview = {
+        "errors": list(parsed.errors),
+        "fingerprint": parsed.fingerprint,
+        "already_saved": _already_saved(parsed.fingerprint),
+        "lines": lines,
+        "ordered_lines": int(len(ordered)),
+        "total_quantity": int(ordered["quantity"].sum()) if not ordered.empty else 0,
+        "total_edge_or_sheets": int(ordered["edge_or_sheets"].sum()) if not ordered.empty else 0,
+        "new_positions": [line["name"] for line in lines if line["note"]],
+    }
+    return preview, applied, parsed
+
+
+def order_from_file(
+    forecast: pd.DataFrame, form: SupplierForm, content: bytes, filename: str, *, lead_time: int, username: str
+) -> str:
+    """The supplier's corrected file becomes a new order on the way; the earlier orders stay as they are."""
+    preview, applied, parsed = file_preview(forecast, form, content)
+    if preview["errors"]:
+        raise ValueError(" ".join(preview["errors"]))
+    if preview["already_saved"]:
+        raise ValueError("Этот файл уже оформлен как заказ.")
+    return _create_in_transit(applied, form, lead_time=lead_time, comment=order_file_comment(filename, parsed, form=form), username=username)
