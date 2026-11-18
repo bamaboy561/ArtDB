@@ -20,9 +20,13 @@ PLAN_COLUMNS = [
     "revenue_plan",
     "margin_plan",
     "quantity_plan",
+    # Fittings: their share of the month's sales, as a fraction (0.15), and their sales in сом.
+    "fittings_share_plan",
+    "fittings_revenue_plan",
     "updated_at",
     "updated_by",
 ]
+PLAN_METRICS = ("revenue_plan", "margin_plan", "quantity_plan", "fittings_share_plan", "fittings_revenue_plan")
 
 
 def ensure_plan_store() -> None:
@@ -53,7 +57,7 @@ def _normalize_plan_frame(frame: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized[PLAN_COLUMNS]
     normalized["plan_month"] = pd.to_datetime(normalized["plan_month"], errors="coerce").dt.normalize()
     normalized["salon"] = normalized["salon"].fillna("").astype(str).str.strip()
-    for metric_column in ("revenue_plan", "margin_plan", "quantity_plan"):
+    for metric_column in PLAN_METRICS:
         normalized[metric_column] = pd.to_numeric(normalized[metric_column], errors="coerce")
     normalized["updated_at"] = normalized["updated_at"].fillna("").astype(str)
     normalized["updated_by"] = normalized["updated_by"].fillna("").astype(str).str.strip()
@@ -74,6 +78,8 @@ def load_monthly_plans() -> pd.DataFrame:
                         revenue_plan,
                         margin_plan,
                         quantity_plan,
+                        fittings_share_plan,
+                        fittings_revenue_plan,
                         updated_at,
                         COALESCE(updated_by, '') AS updated_by
                     FROM monthly_plans
@@ -86,9 +92,7 @@ def load_monthly_plans() -> pd.DataFrame:
                 {
                     "plan_month": row.get("plan_month"),
                     "salon": str(row.get("salon", "")).strip(),
-                    "revenue_plan": row.get("revenue_plan"),
-                    "margin_plan": row.get("margin_plan"),
-                    "quantity_plan": row.get("quantity_plan"),
+                    **{metric: row.get(metric) for metric in PLAN_METRICS},
                     "updated_at": isoformat_seconds(row.get("updated_at")),
                     "updated_by": str(row.get("updated_by", "")).strip(),
                 }
@@ -111,6 +115,8 @@ def upsert_monthly_plan(
     revenue_plan: float | int | None = None,
     margin_plan: float | int | None = None,
     quantity_plan: float | int | None = None,
+    fittings_share_plan: float | int | None = None,
+    fittings_revenue_plan: float | int | None = None,
     updated_by: str = "",
 ) -> dict[str, Any]:
     ensure_plan_store()
@@ -118,12 +124,19 @@ def upsert_monthly_plan(
     normalized_salon = normalize_plan_salon(salon)
     timestamp = datetime.now().isoformat(timespec="seconds")
 
-    revenue_value = None if revenue_plan is None or pd.isna(revenue_plan) else float(revenue_plan)
-    margin_value = None if margin_plan is None or pd.isna(margin_plan) else float(margin_plan)
-    quantity_value = None if quantity_plan is None or pd.isna(quantity_plan) else float(quantity_plan)
+    def _value(raw: float | int | None) -> float | None:
+        return None if raw is None or pd.isna(raw) else float(raw)
 
-    if revenue_value is None and margin_value is None and quantity_value is None:
-        raise ValueError("Укажите хотя бы одно плановое значение: выручку, маржу или количество.")
+    revenue_value = _value(revenue_plan)
+    margin_value = _value(margin_plan)
+    quantity_value = _value(quantity_plan)
+    share_value = _value(fittings_share_plan)
+    fittings_value = _value(fittings_revenue_plan)
+    if share_value is not None and not 0 <= share_value <= 1:
+        raise ValueError("Доля фурнитуры должна быть от 0 до 100%.")
+
+    if all(value is None for value in (revenue_value, margin_value, quantity_value, share_value, fittings_value)):
+        raise ValueError("Укажите хотя бы одно плановое значение: выручку, маржу, количество или фурнитуру.")
 
     if database_enabled():
         with get_db_connection() as connection:
@@ -136,14 +149,18 @@ def upsert_monthly_plan(
                         revenue_plan,
                         margin_plan,
                         quantity_plan,
+                        fittings_share_plan,
+                        fittings_revenue_plan,
                         updated_by,
                         updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (plan_month, salon) DO UPDATE SET
                         revenue_plan = EXCLUDED.revenue_plan,
                         margin_plan = EXCLUDED.margin_plan,
                         quantity_plan = EXCLUDED.quantity_plan,
+                        fittings_share_plan = EXCLUDED.fittings_share_plan,
+                        fittings_revenue_plan = EXCLUDED.fittings_revenue_plan,
                         updated_by = EXCLUDED.updated_by,
                         updated_at = NOW()
                     RETURNING
@@ -152,6 +169,8 @@ def upsert_monthly_plan(
                         revenue_plan,
                         margin_plan,
                         quantity_plan,
+                        fittings_share_plan,
+                        fittings_revenue_plan,
                         updated_at,
                         COALESCE(updated_by, '') AS updated_by
                     """,
@@ -161,6 +180,8 @@ def upsert_monthly_plan(
                         revenue_value,
                         margin_value,
                         quantity_value,
+                        share_value,
+                        fittings_value,
                         str(updated_by).strip(),
                     ),
                 )
@@ -168,9 +189,7 @@ def upsert_monthly_plan(
         return {
             "plan_month": isoformat_seconds(row.get("plan_month")),
             "salon": str(row.get("salon", "")).strip(),
-            "revenue_plan": row.get("revenue_plan"),
-            "margin_plan": row.get("margin_plan"),
-            "quantity_plan": row.get("quantity_plan"),
+            **{metric: row.get(metric) for metric in PLAN_METRICS},
             "updated_at": isoformat_seconds(row.get("updated_at")),
             "updated_by": str(row.get("updated_by", "")).strip(),
         }
@@ -185,6 +204,8 @@ def upsert_monthly_plan(
         "revenue_plan": revenue_value,
         "margin_plan": margin_value,
         "quantity_plan": quantity_value,
+        "fittings_share_plan": share_value,
+        "fittings_revenue_plan": fittings_value,
         "updated_at": timestamp,
         "updated_by": str(updated_by).strip(),
     }
@@ -201,6 +222,8 @@ def upsert_monthly_plan(
         "revenue_plan": revenue_value,
         "margin_plan": margin_value,
         "quantity_plan": quantity_value,
+        "fittings_share_plan": share_value,
+        "fittings_revenue_plan": fittings_value,
         "updated_at": timestamp,
         "updated_by": str(updated_by).strip(),
     }

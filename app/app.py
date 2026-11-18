@@ -50,6 +50,7 @@ from data_center import (
 )
 from data_quality import analyze_sales_quality, build_catalog_health, missing_supplier_rows
 from plan_store import delete_monthly_plan, load_monthly_plans, normalize_plan_month, upsert_monthly_plan
+from fittings_plan import TEST as FITTINGS_TEST, monthly_structure, scope_fittings_plans
 from db import database_enabled, list_audit_logs, log_audit_event
 from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
 from inventory_analytics import (
@@ -4260,6 +4261,96 @@ def build_plan_pace(latest_plan_row: pd.Series, source_data: pd.DataFrame, *, al
         "month_label": str(latest_plan_row["month_label"]),
         "last_day": last_day,
     }
+
+
+@st.cache_data(show_spinner=False, max_entries=8, ttl=900)
+def cached_fittings_structure(_sales: pd.DataFrame, sales_key: str, plans: pd.DataFrame) -> pd.DataFrame:
+    return monthly_structure(_sales, plans)
+
+
+def render_fittings_structure(structure: pd.DataFrame) -> None:
+    """The fittings share against its plan, and K of the motivation test for the salary."""
+    if structure.empty:
+        return
+    latest = structure.iloc[-1]
+
+    def share_text(value: object) -> str:
+        return "нет продаж" if value is None or pd.isna(value) else f"{float(value) * 100:.2f}%"
+
+    with st.container(border=True):
+        render_panel_header(
+            "Фурнитура и плитный материал",
+            f"Доля фурнитуры в продажах и коэффициент К к зарплате. Тест мотивации: "
+            f"{FITTINGS_TEST.start:%d.%m.%Y}–{FITTINGS_TEST.end:%d.%m.%Y}.",
+        )
+        coefficient = latest["coefficient"]
+        render_snapshot_strip(
+            [
+                {
+                    "label": f"Доля фурнитуры {latest['month_label']}" + (f" ({latest['days_label']})" if latest["days_label"] else ""),
+                    "value": share_text(latest["share"]),
+                    "hint": f"план {share_text(latest['share_plan'])}",
+                    "tone": "success" if coefficient == 1.0 else ("warning" if coefficient is not None else "neutral"),
+                },
+                {
+                    "label": "Коэффициент К",
+                    "value": "—" if coefficient is None or pd.isna(coefficient) else f"{float(coefficient):.4f}".rstrip("0").rstrip("."),
+                    "hint": "выплата "
+                    + ("не определяется" if coefficient is None or pd.isna(coefficient) else f"{float(coefficient) * 100:.2f}% зарплаты"),
+                    "tone": "info",
+                },
+                {
+                    "label": "Фурнитура, сом",
+                    "value": format_money(latest["fittings"]),
+                    "hint": (
+                        f"план {format_money(latest['fittings_plan'])} · выполнено {float(latest['plan_execution']) * 100:.1f}%"
+                        if latest["fittings_plan"] is not None and not pd.isna(latest["fittings_plan"]) and latest["plan_execution"] is not None
+                        else "план в сомах не задан"
+                    ),
+                    "tone": "info",
+                },
+                {
+                    "label": "Плитный материал, сом",
+                    "value": format_money(latest["plate"]),
+                    "hint": "все остальные продажи, включая услуги",
+                    "tone": "neutral",
+                },
+            ]
+        )
+        st.caption(
+            "К = 1, если доля фурнитуры не ниже плана (по умолчанию 15%); ниже — К = 0,80 + доля, например 13% → 0,93. "
+            "Доля считается без округления. В январе и апреле теста — только по дням теста. "
+            "Фурнитура: Emaks, Hettich, Italiana Ferramenta, Nuomi, Самет, Слорос, Слорос Titus; остальное — плитный материал."
+        )
+        table = structure.assign(
+            period=structure["month_label"] + structure["days_label"].map(lambda label: f" ({label})" if label else ""),
+            test=structure["in_test"].map({True: "тест", False: ""}),
+            share_pct=structure["share"].map(lambda value: None if value is None or pd.isna(value) else float(value) * 100),
+            share_plan_pct=structure["share_plan"] * 100,
+            execution_pct=structure["plan_execution"].map(lambda value: None if value is None or pd.isna(value) else float(value) * 100),
+            payout_pct=structure["coefficient"].map(lambda value: None if value is None or pd.isna(value) else float(value) * 100),
+        ).sort_values("month", ascending=False)
+        # As numbers, so that an empty cell stays empty instead of showing "None".
+        for column in ("share_pct", "share_plan_pct", "fittings_plan", "execution_pct", "coefficient", "payout_pct"):
+            table[column] = pd.to_numeric(table[column], errors="coerce").astype(float)
+        st.dataframe(
+            table[["period", "test", "fittings", "plate", "share_pct", "share_plan_pct", "fittings_plan", "execution_pct", "coefficient", "payout_pct"]],
+            hide_index=True,
+            width="stretch",
+            height=min(420, 38 + 35 * len(table)),
+            column_config={
+                "period": st.column_config.TextColumn("Месяц"),
+                "test": st.column_config.TextColumn("Тест"),
+                "fittings": st.column_config.NumberColumn("Фурнитура, сом", format="%.0f"),
+                "plate": st.column_config.NumberColumn("Плитный, сом", format="%.0f"),
+                "share_pct": st.column_config.NumberColumn("Доля фурнитуры, %", format="%.2f"),
+                "share_plan_pct": st.column_config.NumberColumn("План доли, %", format="%.2f"),
+                "fittings_plan": st.column_config.NumberColumn("План фурнитуры, сом", format="%.0f"),
+                "execution_pct": st.column_config.NumberColumn("Выполнение, %", format="%.1f"),
+                "coefficient": st.column_config.NumberColumn("К", format="%.4f"),
+                "payout_pct": st.column_config.NumberColumn("Выплата, %", format="%.2f"),
+            },
+        )
 
 
 def render_plan_pace(pace: dict) -> None:
@@ -18138,6 +18229,14 @@ if active_screen == "План / факт":
                 )
                 render_plan_pace(plan_pace)
 
+        render_fittings_structure(
+            cached_fittings_structure(
+                plan_fact_source_data,
+                plan_source_cache_key,
+                scope_fittings_plans(monthly_plans, plan_scope_salons, allow_network_fallback=allow_network_plan_fallback),
+            )
+        )
+
         plan_chart_left, plan_chart_right = st.columns([1.35, 0.95], gap="medium")
 
         with plan_chart_left:
@@ -18261,6 +18360,20 @@ if active_screen == "План / факт":
                         key=f"plan_quantity_{selected_plan_scope}_{selected_plan_month}",
                         placeholder="Например: 1800",
                     )
+                    _share_prefill = (existing_plan_record or {}).get("fittings_share_plan")
+                    fittings_share_text = st.text_input(
+                        "Доля фурнитуры, %",
+                        value="" if is_missing(_share_prefill) else f"{float(_share_prefill) * 100:g}",
+                        key=f"plan_fittings_share_{selected_plan_scope}_{selected_plan_month}",
+                        placeholder="Пусто — 15%",
+                        help="Цель по доле фурнитуры в продажах. От неё зависит коэффициент К к зарплате.",
+                    )
+                    fittings_revenue_text = st.text_input(
+                        "План по фурнитуре, сом",
+                        value=_plan_prefill("fittings_revenue_plan"),
+                        key=f"plan_fittings_revenue_{selected_plan_scope}_{selected_plan_month}",
+                        placeholder="Например: 4000000",
+                    )
 
                 if fact_hint:
                     st.caption(
@@ -18277,12 +18390,15 @@ if active_screen == "План / факт":
                             revenue_plan_value = parse_plan_input(revenue_plan_text)
                             margin_plan_value = parse_plan_input(margin_plan_text)
                             quantity_plan_value = parse_plan_input(quantity_plan_text)
+                            fittings_share_value = parse_plan_input(fittings_share_text.replace("%", ""))
                             record = upsert_monthly_plan(
                                 plan_month=normalize_plan_month(f"{selected_plan_month}-01"),
                                 salon=selected_plan_scope,
                                 revenue_plan=revenue_plan_value,
                                 margin_plan=margin_plan_value,
                                 quantity_plan=quantity_plan_value,
+                                fittings_share_plan=None if fittings_share_value is None else fittings_share_value / 100,
+                                fittings_revenue_plan=parse_plan_input(fittings_revenue_text),
                                 updated_by=current_user["username"],
                             )
                             audit_event(

@@ -456,6 +456,12 @@ def _migrate_procurement_order_items_table(cursor: Any) -> None:
     )
 
 
+def _migrate_monthly_plans_table(cursor: Any) -> None:
+    # The plan for fittings: their share of the month's sales and their sales in сом.
+    cursor.execute("ALTER TABLE monthly_plans ADD COLUMN IF NOT EXISTS fittings_share_plan DOUBLE PRECISION")
+    cursor.execute("ALTER TABLE monthly_plans ADD COLUMN IF NOT EXISTS fittings_revenue_plan DOUBLE PRECISION")
+
+
 def _migrate_supplier_assignments_to_brands(cursor: Any) -> None:
     cursor.execute(
         "SELECT last_run_key FROM service_state WHERE service_name = %s",
@@ -605,6 +611,7 @@ def ensure_database_ready() -> None:
             _migrate_audit_logs_table(cursor)
             _migrate_procurement_items_table(cursor)
             _migrate_procurement_order_items_table(cursor)
+            _migrate_monthly_plans_table(cursor)
             _migrate_supplier_assignments_to_brands(cursor)
             _restore_migrated_supplier_assignments(cursor)
     _DB_READY = True
