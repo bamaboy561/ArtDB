@@ -789,6 +789,73 @@ def build_open_order_summary(
     return summary[columns]
 
 
+ARRIVAL_HISTORY_COLUMNS = ["when", "user", "source", "order_id", "supplier", "product", "quantity"]
+
+
+def _number(value: object) -> float:
+    number = pd.to_numeric(value, errors="coerce")
+    return 0.0 if pd.isna(number) else float(number)
+
+
+def build_arrival_history(
+    audit_logs: list[dict[str, Any]],
+    orders_frame: pd.DataFrame,
+    order_items_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """What arrived and when: the arrivals accepted with stock files and the orders received by hand.
+
+    The journal keeps each stock upload's accepted lines; a manual receipt keeps only
+    its order, so its lines are the order's own.
+    """
+    suppliers = (
+        orders_frame.set_index("order_id")["supplier"].astype(str).to_dict()
+        if not orders_frame.empty and {"order_id", "supplier"}.issubset(orders_frame.columns)
+        else {}
+    )
+    records: list[dict[str, object]] = []
+    for entry in audit_logs:
+        action = str(entry.get("action", ""))
+        details = entry.get("details") or {}
+        when = pd.to_datetime(entry.get("timestamp"), errors="coerce", utc=True)
+        user = str(entry.get("user_id", ""))
+        if action == "procurement.stock_upload":
+            source = f"Остатки: {details.get('filename') or 'файл'}"
+            for line in details.get("order_arrivals") or []:
+                order_id = str(line.get("order_id", ""))
+                records.append(
+                    {
+                        "when": when,
+                        "user": user,
+                        "source": source,
+                        "order_id": order_id,
+                        "supplier": suppliers.get(order_id, ""),
+                        "product": str(line.get("product", "")),
+                        "quantity": _number(line.get("arrived_qty")),
+                    }
+                )
+        elif action == "procurement.order_receive":
+            order_id = str(details.get("order_id", ""))
+            lines = (
+                order_items_frame[order_items_frame["order_id"].astype(str) == order_id]
+                if not order_items_frame.empty
+                else order_items_frame
+            )
+            for line in lines.to_dict(orient="records"):
+                records.append(
+                    {
+                        "when": when,
+                        "user": user,
+                        "source": "Заказ принят целиком",
+                        "order_id": order_id,
+                        "supplier": suppliers.get(order_id, ""),
+                        "product": str(line.get("product", "")),
+                        "quantity": _number(line.get("quantity")),
+                    }
+                )
+    history = pd.DataFrame(records, columns=ARRIVAL_HISTORY_COLUMNS)
+    return history.sort_values("when", ascending=False, kind="stable").reset_index(drop=True)
+
+
 def build_procurement_order_overview(
     orders_frame: pd.DataFrame,
     order_items_frame: pd.DataFrame,

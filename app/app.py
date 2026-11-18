@@ -73,6 +73,7 @@ from procurement_order_store import (
     apply_order_arrivals,
     apply_procurement_order_receipt,
     build_arrival_lines,
+    build_arrival_history,
     build_open_order_summary,
     build_procurement_order_overview,
     create_procurement_order,
@@ -180,6 +181,7 @@ from telegram_reports import (
     build_supplier_order_content,
     discover_telegram_chats,
     get_telegram_bot_profile,
+    get_timezone,
     has_supplier_order_items,
     send_targeted_telegram_report,
     send_telegram_message,
@@ -7810,6 +7812,83 @@ def render_order_file_upload(
         disabled=already_saved or not ordered.any(),
     ):
         create_supplier_form_order(form, file_rows, current_user, lead_time_days, comment=file_comment)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def cached_arrival_logs() -> list[dict[str, object]]:
+    """The journal's arrivals: stock uploads and manual receipts, newest first."""
+    if not database_enabled():
+        return []
+    return [
+        entry
+        for entry in list_audit_logs(limit=2000)
+        if entry.get("action") in {"procurement.stock_upload", "procurement.order_receive"}
+    ]
+
+
+def render_arrival_history(orders: pd.DataFrame, items: pd.DataFrame) -> None:
+    """What the stock uploads and manual receipts took in, so an accepted arrival can be checked later."""
+    history = build_arrival_history(cached_arrival_logs(), orders, items)
+    received = pd.DataFrame()
+    if not items.empty and "received_quantity" in items.columns:
+        received = items[pd.to_numeric(items["received_quantity"], errors="coerce").fillna(0).gt(0)].copy()
+    with st.expander(f"Приход по заказам · принято строк: {len(received)}"):
+        st.caption(
+            "Что приехало и когда: приход, принятый при загрузке остатков, и заказы, принятые вручную. "
+            "Ниже — сколько принято по каждой строке заказа и сколько ещё в пути."
+        )
+        if history.empty:
+            st.info(
+                "В журнале пока нет принятого прихода."
+                if database_enabled()
+                else "Журнал ведётся только с базой данных; ниже видно, что принято по строкам заказов."
+            )
+        else:
+            when = pd.to_datetime(history["when"], errors="coerce", utc=True).dt.tz_convert(get_timezone())
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "Когда": when.dt.strftime("%d.%m.%Y %H:%M"),
+                        "Откуда": history["source"],
+                        "Заказ": history["order_id"].astype(str).str[-4:].radd("#"),
+                        "Поставщик": history["supplier"],
+                        "Товар": history["product"],
+                        "Принято": history["quantity"],
+                        "Кто": history["user"],
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
+                height=min(360, 38 + 35 * len(history)),
+                column_config={"Принято": st.column_config.NumberColumn(format="%.0f")},
+            )
+        if not received.empty:
+            order_info = orders.set_index("order_id")[["supplier", "status"]] if not orders.empty else pd.DataFrame()
+            quantity = pd.to_numeric(received["quantity"], errors="coerce").fillna(0)
+            accepted = pd.to_numeric(received["received_quantity"], errors="coerce").fillna(0)
+            st.markdown("**Принято по строкам заказов**")
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "Заказ": received["order_id"].astype(str).str[-4:].radd("#"),
+                        "Поставщик": received["order_id"].map(order_info["supplier"]) if not order_info.empty else "",
+                        "Статус": received["order_id"].map(order_info["status"]).map(PROCUREMENT_ORDER_STATUS_LABELS)
+                        if not order_info.empty
+                        else "",
+                        "Товар": received["product"],
+                        "Заказано": quantity,
+                        "Принято": accepted,
+                        "Осталось в пути": (quantity - accepted).clip(lower=0),
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
+                height=min(360, 38 + 35 * len(received)),
+                column_config={
+                    column: st.column_config.NumberColumn(format="%.0f")
+                    for column in ("Заказано", "Принято", "Осталось в пути")
+                },
+            )
 
 
 def render_access_tab(registered_salons: list[str]) -> None:
@@ -17308,7 +17387,13 @@ if active_screen == "Закупки":
                 if procurement_order_overview.empty:
                     st.info("Заказы ещё не создавались. Сформируйте первый заказ из прогноза выше.")
                 else:
-                    order_filter_options = ["Активные", "Все", *[PROCUREMENT_ORDER_STATUS_LABELS[status] for status in PROCUREMENT_ORDER_STATUSES]]
+                    render_arrival_history(procurement_orders, procurement_order_items)
+                    order_filter_options = [
+                        "Активные",
+                        "Просроченные",
+                        "Все",
+                        *[PROCUREMENT_ORDER_STATUS_LABELS[status] for status in PROCUREMENT_ORDER_STATUSES],
+                    ]
                     selected_order_filter = st.selectbox(
                         "Какие заказы показать",
                         options=order_filter_options,
@@ -17319,6 +17404,10 @@ if active_screen == "Закупки":
                     if selected_order_filter == "Активные":
                         filtered_order_overview = filtered_order_overview[
                             filtered_order_overview["status"].isin(active_order_statuses)
+                        ].copy()
+                    elif selected_order_filter == "Просроченные":
+                        filtered_order_overview = filtered_order_overview[
+                            filtered_order_overview["status"].isin(ACTIVE_INBOUND_ORDER_STATUSES)
                         ].copy()
                     elif selected_order_filter != "Все":
                         matching_status = next(
@@ -17343,10 +17432,12 @@ if active_screen == "Закупки":
                         ),
                         axis=1,
                     )
+                    if selected_order_filter == "Просроченные":
+                        filtered_order_overview = filtered_order_overview[filtered_order_overview["_overdue"].astype(bool)].copy()
                     filtered_order_overview["status_label_display"] = filtered_order_overview.apply(
                         lambda _row: f"⚠️ {_row['status_label']} — просрочен" if _row["_overdue"] else _row["status_label"],
                         axis=1,
-                    )
+                    ) if not filtered_order_overview.empty else pd.Series(dtype=str)
                     _order_line_totals = procurement_order_items.assign(
                         _line_total=pd.to_numeric(procurement_order_items["quantity"], errors="coerce").fillna(0.0)
                         * pd.to_numeric(procurement_order_items["unit_cost"], errors="coerce").fillna(0.0)
