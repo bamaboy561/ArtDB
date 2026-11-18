@@ -111,6 +111,36 @@ class PreparedArchiveCacheTest(unittest.TestCase):
                 parsed_data=frame,
             )
 
+    def test_a_mistaken_upload_can_be_deleted(self) -> None:
+        salon_data_store.load_archive_data(salons=["Тест"])  # builds the caches of every file
+        manifest = salon_data_store.load_manifest()
+        mistaken = manifest[manifest["source_filename"] == "report_2.xlsx"].iloc[0]
+        result = salon_data_store.delete_upload(str(mistaken["upload_id"]))
+        self.assertEqual((result["salon"], result["source_filename"]), ("Тест", "report_2.xlsx"))
+        self.assertGreaterEqual(result["deleted_files"], 2)  # the file and its caches
+        self.assertEqual(sorted(salon_data_store.load_manifest()["source_filename"]), ["report_1.xlsx", "report_3.xlsx"])
+        self.assertEqual(list(self.uploads_dir.rglob(f"*{mistaken['upload_id']}*")), [])
+        products = salon_data_store.load_archive_data(salons=["Тест"]).data["product"].tolist()
+        self.assertNotIn("Петля", products)
+        self.assertIn("Кромка", products)
+
+    def test_files_outside_the_store_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "report.xlsx"
+            outside.write_bytes(b"x")
+            manifest = salon_data_store.load_manifest()
+            manifest.loc[manifest["source_filename"] == "report_3.xlsx", "stored_path"] = str(outside)
+            salon_data_store.save_manifest(manifest)
+            upload_id = str(manifest.loc[manifest["source_filename"] == "report_3.xlsx", "upload_id"].iloc[0])
+            self.assertEqual(salon_data_store.delete_upload(upload_id)["deleted_files"], 0)
+            self.assertTrue(outside.exists())
+            self.assertEqual(len(salon_data_store.load_manifest()), 2)
+
+    def test_deleting_an_unknown_upload_fails(self) -> None:
+        with self.assertRaises(ValueError):
+            salon_data_store.delete_upload("nope")
+        self.assertEqual(len(salon_data_store.load_manifest()), 3)
+
     def cache_files(self) -> list[Path]:
         return sorted(self.uploads_dir.rglob("*.prepared-*.pkl"))
 

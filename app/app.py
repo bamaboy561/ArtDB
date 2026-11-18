@@ -123,6 +123,7 @@ from salon_data_store import (
     EnrichedArchive,
     count_uploads_for_salon,
     delete_salon,
+    delete_upload,
     load_archive_data,
     load_manifest,
     load_salons,
@@ -4500,6 +4501,61 @@ def render_section_intro(title: str, description: str) -> None:
         </div>
         """
     )
+
+
+def upload_choice_label(row: pd.Series) -> str:
+    report_day = pd.to_datetime(row.get("report_date"), errors="coerce")
+    uploaded = pd.to_datetime(row.get("uploaded_at"), errors="coerce")
+    parts = [
+        str(row.get("salon", "") or "—"),
+        f"отчёт за {report_day:%d.%m.%Y}" if pd.notna(report_day) else "без даты",
+        str(row.get("source_filename", "") or "файл без имени"),
+    ]
+    if pd.notna(uploaded):
+        parts.append(f"загружен {uploaded:%d.%m.%Y %H:%M}")
+    return " · ".join(parts)
+
+
+def render_upload_delete(manifest: pd.DataFrame, current_user: dict[str, str]) -> None:
+    """Delete a report uploaded by mistake: its sales leave the analytics."""
+    if manifest.empty or "upload_id" not in manifest.columns:
+        return
+    rows = manifest.copy()
+    if current_user["role"] == "salon":
+        rows = rows[rows["salon"].astype(str) == str(current_user.get("salon", ""))]
+    if rows.empty:
+        return
+    rows["_uploaded"] = pd.to_datetime(rows.get("uploaded_at"), errors="coerce")
+    rows = rows.sort_values("_uploaded", ascending=False, na_position="last")
+    labels = {str(row["upload_id"]): upload_choice_label(row) for _, row in rows.iterrows()}
+
+    with st.expander("Удалить ошибочную загрузку", expanded=False):
+        st.caption("Файл уберётся из архива, а его продажи — из всей аналитики. Вернуть его можно только загрузив файл заново.")
+        chosen = st.selectbox(
+            "Какой файл удалить",
+            options=list(labels),
+            format_func=lambda upload_id: labels.get(upload_id, upload_id),
+            index=None,
+            placeholder="Выберите загрузку",
+            key="delete_upload_choice",
+        )
+        confirmed = st.checkbox("Да, удалить этот файл", key="delete_upload_confirm", disabled=chosen is None)
+        if st.button("Удалить", key="delete_upload_button", type="primary", disabled=chosen is None or not confirmed):
+            try:
+                result = delete_upload(chosen)
+            except ValueError as error:
+                st.error(str(error))
+                return
+            audit_event(
+                action="sales.upload_delete",
+                user_id=current_user["username"],
+                details={"upload_id": chosen, **result},
+            )
+            clear_application_caches()
+            for key in ("delete_upload_choice", "delete_upload_confirm"):
+                st.session_state.pop(key, None)
+            st.session_state["upload_flash_message"] = f"Удалено: {labels.get(chosen, chosen)}."
+            st.rerun()
 
 
 def render_panel_header(title: str, description: str) -> None:
@@ -19930,6 +19986,7 @@ if active_screen == "Данные":
                         hide_index=True,
                         height=320,
                     )
+                render_upload_delete(manifest_table, current_user)
 
         with st.container(border=True):
             render_panel_header(

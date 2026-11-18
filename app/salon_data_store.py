@@ -321,6 +321,38 @@ def delete_salon(salon_name: str, *, remove_uploads: bool = False) -> dict[str, 
     }
 
 
+def delete_upload(upload_id: str) -> dict[str, object]:
+    """Remove one uploaded report: its line in the list of uploads, its file and the copies parsed from it."""
+    ensure_store()
+    normalized_id = str(upload_id or "").strip()
+    manifest = load_manifest()
+    matching = manifest[manifest["upload_id"].astype(str).str.strip() == normalized_id] if not manifest.empty else manifest
+    if not normalized_id or matching.empty:
+        raise ValueError("Такой загрузки нет.")
+    record = matching.iloc[0].to_dict()
+    if database_enabled():
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM uploads WHERE upload_id = %s", (normalized_id,))
+    else:
+        save_manifest(manifest.loc[manifest.index.difference(matching.index)].copy())
+    deleted_files = 0
+    uploads_root = UPLOADS_DIR.resolve()
+    for path_text in matching["stored_path"].astype(str).tolist():
+        if not path_text.strip():
+            continue
+        stored_path = Path(path_text).resolve()
+        # A copied store can still point at another store's files: those stay untouched.
+        if uploads_root in stored_path.parents:
+            deleted_files += _remove_upload_artifacts(stored_path)
+    return {
+        "salon": str(record.get("salon", "")),
+        "report_date": str(record.get("report_date", "")),
+        "source_filename": str(record.get("source_filename", "")),
+        "deleted_files": deleted_files,
+    }
+
+
 def load_manifest() -> pd.DataFrame:
     ensure_store()
     if database_enabled():
