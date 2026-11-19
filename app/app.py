@@ -117,6 +117,7 @@ from sales_analytics import (
     load_input_file,
     prepare_sales_data,
 )
+from new_site_bridge import attach_running as attach_new_site
 from run_memory import release_previous_run
 from salon_data_store import (
     PRE_ALIAS_TRACKED_COLUMNS,
@@ -239,6 +240,8 @@ st.set_page_config(
 
 start_telegram_scheduler()
 start_telegram_bot()
+# The new site at /new, when the server was started without run_server.py.
+attach_new_site()
 
 
 DASHBOARD_CSS = f"""

@@ -1,7 +1,8 @@
 """The ArtDB API: the old site's logic behind plain HTTP, for the new interface and anything else.
 
-Run locally from the repository root:
-    .venv/Scripts/python.exe -m uvicorn main:app --app-dir web/api --port 8000
+On the server it is served at /new by the Streamlit process (see new_site_bridge.py).
+Run it alone locally from the repository root:
+    .venv/Scripts/python.exe -m uvicorn web_api.main:app --app-dir app --port 8000
 """
 from __future__ import annotations
 
@@ -15,16 +16,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import data
-import inbound
-import orders
+from web_api import data
+from web_api import inbound
+from web_api import orders
 from auth_store import authenticate_session, authenticate_user, create_auth_session, revoke_auth_session
 from procurement_analytics import supplier_lead_time
 
 SESSION_COOKIE = "artdb_session"
 # Behind HTTPS in production the cookie must be secure; locally the site runs on plain http.
 SECURE_COOKIE = os.getenv("ARTDB_SECURE_COOKIE", "false").strip().casefold() in {"1", "true", "yes"}
-FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+FRONTEND_DIST = Path(__file__).resolve().parent / "dist"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 app = FastAPI(title="ArtDB API")
@@ -87,12 +88,12 @@ def _salons(raw: str | list[str] | None) -> tuple[str, ...]:
 
 
 @app.post("/api/auth/login")
-def login(body: LoginRequest, response: Response) -> dict:
+def login(body: LoginRequest, request: Request, response: Response) -> dict:
     user = authenticate_user(body.login, body.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Неверный логин или пароль.")
     token = create_auth_session(user["username"])
-    response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=SECURE_COOKIE, max_age=30 * 86400)
+    response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=SECURE_COOKIE or request.url.scheme == "https", max_age=30 * 86400)
     return user
 
 

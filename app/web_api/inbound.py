@@ -6,7 +6,7 @@ import math
 
 import pandas as pd
 
-import data  # noqa: F401  (puts app/ on the import path)
+from web_api import data  # noqa: F401  (puts app/ on the import path)
 from db import database_enabled, list_audit_logs, log_audit_event
 from procurement_order_store import (
     ACTIVE_INBOUND_ORDER_STATUSES,

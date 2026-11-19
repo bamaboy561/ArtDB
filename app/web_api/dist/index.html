@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#003461" />
+    <title>ArtDB</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
+    <script>
+      // The theme is set before the first paint, so the page does not flash.
+      try {
+        var saved = localStorage.getItem("artdb-theme");
+        document.documentElement.dataset.theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      } catch (error) {}
+    </script>
+    <script type="module" crossorigin src="./assets/index-BEQZhXvm.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BF1ihubI.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

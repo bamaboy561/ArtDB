@@ -6,7 +6,7 @@ import math
 
 import pandas as pd
 
-import data
+from web_api import data
 from db import log_audit_event
 from procurement_analytics import supplier_lead_time
 from procurement_order_store import create_procurement_order, load_procurement_orders

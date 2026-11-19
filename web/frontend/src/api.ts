@@ -97,7 +97,8 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { credentials: "same-origin", ...init });
+  // Relative, so the site works at / locally and at /new on the server.
+  const response = await fetch(path.replace(/^\//, ""), { credentials: "same-origin", ...init });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new ApiError(response.status, body.detail ?? `Ошибка ${response.status}`);
@@ -142,7 +143,7 @@ export const api = {
 
   async orderFile(key: string, salons: string[], rows: OrderRow[]): Promise<{ blob: Blob; filename: string }> {
     const lines = rows.map(({ row_id, quantity, edge_or_sheets }) => ({ row_id, quantity, edge_or_sheets }));
-    const response = await fetch(`/api/orders/forms/${encodeURIComponent(key)}/file`, json({ salons, lines }));
+    const response = await fetch(`api/orders/forms/${encodeURIComponent(key)}/file`, json({ salons, lines }));
     if (!response.ok) throw new ApiError(response.status, "Не удалось собрать файл заказа.");
     const disposition = response.headers.get("Content-Disposition") ?? "";
     const encoded = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];

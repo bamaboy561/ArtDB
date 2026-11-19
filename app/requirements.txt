@@ -7,3 +7,6 @@ openpyxl==3.1.5
 xlrd==2.0.2
 pillow==12.2.0
 psycopg[binary,pool]==3.3.3
+# The new site at /new (app/web_api), served by the same process.
+fastapi==0.115.14
+python-multipart==0.0.20

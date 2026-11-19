@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from io import BytesIO
 import sys
@@ -9,14 +9,14 @@ from unittest.mock import patch
 import pandas as pd
 from openpyxl import load_workbook
 
-API_DIR = Path(__file__).resolve().parents[1] / "web" / "api"
-if str(API_DIR) not in sys.path:
-    sys.path.insert(0, str(API_DIR))
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 try:
     from fastapi.testclient import TestClient
 
-    import main
+    from web_api import main
 except ImportError:  # The new site's packages are not installed: its tests are skipped.
     main = None
 

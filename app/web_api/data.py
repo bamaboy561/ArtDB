@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-APP_DIR = Path(__file__).resolve().parents[2] / "app"
+APP_DIR = Path(__file__).resolve().parents[1]
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
@@ -29,6 +29,8 @@ from sku_catalog_store import apply_sku_aliases, load_sku_aliases  # noqa: E402
 from telegram_bot import load_bot_sales_data  # noqa: E402
 
 CACHE_SECONDS = 600
+# A few salon choices at a time: the server has little memory.
+CACHE_ENTRIES = 6
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ def procurement_forecast(salons: tuple[str, ...], settings: ForecastSettings) ->
     )
     with _lock:
         _cache[key] = (time.monotonic(), forecast)
+        while len(_cache) > CACHE_ENTRIES:
+            _cache.pop(min(_cache, key=lambda entry: _cache[entry][0]))
     return forecast
 
 
