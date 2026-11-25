@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import time
 from typing import Any
 
 from db import database_enabled, ensure_database_ready, get_db_connection, get_pgcrypto_key, isoformat_seconds
@@ -188,7 +189,22 @@ def _save_raw_users(users: list[dict[str, Any]]) -> None:
                 else:
                     cursor.execute("DELETE FROM users")
         return
-    USERS_PATH.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(USERS_PATH, users)
+
+
+def _write_json(path: Path, records: list[dict[str, Any]]) -> None:
+    """Replace the file in one step, so a request reading it never sees it half-written."""
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    temporary.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:  # Windows: a reader still holds the file open for a moment.
+            if attempt == 4:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02)
 
 
 def _load_raw_sessions() -> list[dict[str, Any]]:
@@ -240,7 +256,7 @@ def _save_raw_sessions(sessions: list[dict[str, Any]]) -> None:
                         ),
                     )
         return
-    SESSIONS_PATH.write_text(json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(SESSIONS_PATH, sessions)
 
 
 def _cleanup_sessions(sessions: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -276,7 +292,9 @@ def _cleanup_sessions(sessions: list[dict[str, Any]] | None = None) -> list[dict
             }
         )
 
-    if changed or sessions is None:
+    # Checking a session only reads: rewriting the store on every request let two requests at
+    # once see it half-written and sign the user out.
+    if changed:
         _save_raw_sessions(cleaned)
 
     return cleaned

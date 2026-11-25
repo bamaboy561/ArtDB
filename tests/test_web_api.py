@@ -68,6 +68,12 @@ class WebApiTest(unittest.TestCase):
         self.assertTrue(answer["started_at"])
         self.assertIn("memory_mb", answer)
 
+    @unittest.skipUnless(main is not None and main.FRONTEND_DIST.is_dir(), "the interface is not built")
+    def test_the_page_is_never_taken_from_the_cache(self) -> None:
+        response = self.client.get("/orders")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-cache")
+
     def test_a_wrong_password_is_refused(self) -> None:
         with patch.object(main, "authenticate_user", lambda login, password: None):
             response = self.client.post("/api/auth/login", json={"login": "admin", "password": "x"})
@@ -100,6 +106,23 @@ class WebApiTest(unittest.TestCase):
         sheet = load_workbook(BytesIO(response.content)).active
         lines = [values for values in sheet.iter_rows(values_only=True) if values[2] == "Маффин"]
         self.assertEqual((lines[0][4], lines[0][5]), (20, 150))
+
+    def test_the_stock_says_how_long_it_lasts(self) -> None:
+        self.sign_in("admin-token")
+        forms = {form["title"]: form for form in self.client.get("/api/orders/forms").json()}
+        # 1 left at 10 a month lasts 3 days: less than the 14 days the order takes to arrive.
+        self.assertEqual(forms["WQ"]["stock"], {"out": 0, "short": 1, "low": 0, "ok": 0})
+        row = self.client.get("/api/orders/forms/wq").json()["rows"][0]
+        self.assertEqual((row["cover_days"], row["stock_level"]), (3.0, "short"))
+
+    def test_the_stock_levels(self) -> None:
+        from web_api.orders import _stock_level
+
+        self.assertEqual(_stock_level(5, 0, True, 14), "idle")
+        self.assertEqual(_stock_level(0, 10, True, 14), "out")
+        self.assertEqual(_stock_level(4, 10, True, 14), "short")
+        self.assertEqual(_stock_level(20, 10, True, 14), "low")
+        self.assertEqual(_stock_level(20, 10, False, 14), "ok")
 
     def test_an_unknown_supplier_is_not_found(self) -> None:
         self.sign_in("admin-token")

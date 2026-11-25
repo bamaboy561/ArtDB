@@ -3,8 +3,10 @@ import { api, FilePreview, FormDetail, FormSummary, InboundOrder, OrderRow, User
 import { Empty, Icon, initials, SalonPicker, SearchField, Segmented, Skeleton, Stat, tintOf, useFeedback } from "../ui";
 
 export const dateLabel = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") : "—");
+/** "09.12" this year, the full date otherwise. */
+export const shortDate = (iso: string | null) =>
+  iso && iso.startsWith(String(new Date().getFullYear())) ? dateLabel(iso).slice(0, 5) : dateLabel(iso);
 const number = (value: number) => Math.round(value).toLocaleString("ru-RU");
-const daysUntil = (iso: string) => Math.round((new Date(`${iso}T00:00:00`).getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
 
 type Filter = "wanted" | "all";
 
@@ -46,41 +48,36 @@ export default function Orders({ user }: { user: User }) {
   };
 
   const withOrders = forms?.filter((form) => form.to_order > 0) ?? [];
-  const nearest = withOrders.map((form) => form.arrival).filter(Boolean).sort()[0];
-  const lateCount = onTheWay?.filter((order) => order.overdue).length ?? 0;
   const needle = query.trim().toLowerCase();
   const shown = (forms ?? [])
     .filter((form) => (filter === "wanted" ? form.to_order > 0 : true))
     .filter((form) => !needle || form.title.toLowerCase().includes(needle))
-    .sort((a, b) => b.to_order - a.to_order || a.title.localeCompare(b.title, "ru"));
+    .sort((a, b) => urgent(b) - urgent(a) || b.to_order - a.to_order || a.title.localeCompare(b.title, "ru"));
+  const today = new Date().toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
 
   return (
     <section className="page">
       <header className="page-header">
         <div>
-          <h1>Заказы поставщикам</h1>
-          <p className="muted">Откройте поставщика, проверьте количества и скачайте файл заказа.</p>
+          <p className="muted eyebrow">
+            {today[0].toUpperCase() + today.slice(1)}
+            {chosen.length ? ` · прогноз по ${chosen.length} ${plural(chosen.length, ["салону", "салонам", "салонам"])}` : ""}
+          </p>
+          <h1>Что заказать сегодня</h1>
         </div>
         {salons.length > 0 && <SalonPicker salons={salons} chosen={chosen} onChange={setChosen} />}
       </header>
 
       <div className="stats">
-        <Stat icon="orders" label="Поставщиков к заказу" value={forms ? withOrders.length : "…"} hint={forms ? `из ${forms.length}` : undefined} tone="accent" />
-        <Stat icon="box" label="Позиций к заказу" value={forms ? number(withOrders.reduce((sum, form) => sum + form.to_order, 0)) : "…"} />
+        <Outlook forms={forms} />
         <Stat
-          icon="calendar"
-          label="Ближайший приход"
-          value={nearest ? dateLabel(nearest) : "—"}
-          hint={nearest ? `если заказать сегодня · ${Math.max(daysUntil(nearest), 0)} дн.` : undefined}
+          icon="box"
+          label="Позиций к заказу"
+          value={forms ? number(withOrders.reduce((sum, form) => sum + form.to_order, 0)) : "…"}
+          hint={forms ? `у ${withOrders.length} ${plural(withOrders.length, ["поставщика", "поставщиков", "поставщиков"])}` : undefined}
         />
         <a className="stat-link" href="#/inbound" title="Открыть «В пути»">
-          <Stat
-            icon="truck"
-            label="Уже в пути"
-            value={onTheWay ? onTheWay.length : "…"}
-            hint={onTheWay ? (lateCount ? `просрочено ${lateCount} →` : "всё по графику →") : undefined}
-            tone={lateCount ? "danger" : ""}
-          />
+          <OnTheWay orders={onTheWay} />
         </a>
       </div>
 
@@ -103,7 +100,7 @@ export default function Orders({ user }: { user: User }) {
         </div>
       )}
       {!forms && !error && (
-        <div className="list">
+        <div className="suppliers">
           {[0, 1, 2, 3].map((index) => (
             <div key={index} className="order ghost">
               <Skeleton rows={1} />
@@ -119,13 +116,147 @@ export default function Orders({ user }: { user: User }) {
         />
       )}
       {forms && shown.length > 0 && (
-        <div className="list">
+        <div className="suppliers">
+          <div className="suppliers-head" aria-hidden="true">
+            <span>Поставщик</span>
+            <span>Запас по позициям</span>
+            <span className="number">К заказу</span>
+            <span className="number">Придёт</span>
+            <span />
+          </div>
           {shown.map((form) => (
             <SupplierOrder key={`${form.key}:${chosen.join(",")}:${round}`} summary={form} salons={chosen} user={user} onOrdered={ordered} />
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+const urgent = (form: FormSummary) => form.stock.out + form.stock.short;
+
+export function plural(count: number, [one, few, many]: [string, string, string]) {
+  const tens = count % 100;
+  const ones = count % 10;
+  if (tens >= 11 && tens <= 14) return many;
+  if (ones === 1) return one;
+  return ones >= 2 && ones <= 4 ? few : many;
+}
+
+/** The main card: how many positions run out before an order placed today arrives. */
+function Outlook({ forms }: { forms: FormSummary[] | null }) {
+  if (!forms)
+    return (
+      <div className="outlook">
+        <Skeleton rows={2} />
+      </div>
+    );
+  const sum = (level: keyof FormSummary["stock"]) => forms.reduce((total, form) => total + form.stock[level], 0);
+  const out = sum("out");
+  const short = out + sum("short");
+  const low = sum("low");
+  const ok = sum("ok");
+  const suppliers = forms.filter((form) => urgent(form) > 0).length;
+  return (
+    <div className="outlook">
+      <span className="outlook-label">{short ? "Не хватит до прихода, если не заказать сегодня" : "До следующего прихода хватит всего"}</span>
+      <div className="outlook-figure">
+        {short ? (
+          <>
+            <b>{number(short)}</b>
+            <span>
+              {plural(short, ["позиция", "позиции", "позиций"])} у {suppliers} {plural(suppliers, ["поставщика", "поставщиков", "поставщиков"])}
+              {out ? ` · ${number(out)} уже нет на складе` : ""}
+            </span>
+          </>
+        ) : (
+          <>
+            <Icon name="check" size={30} />
+            <span>ничего не закончится раньше поставки</span>
+          </>
+        )}
+      </div>
+      <StockBar short={short} low={low} ok={ok} />
+      <div className="outlook-legend">
+        <span>
+          <i className="dot short" />
+          не хватит — {number(short)}
+        </span>
+        <span>
+          <i className="dot low" />
+          стоит пополнить — {number(low)}
+        </span>
+        <span>
+          <i className="dot ok" />
+          хватает — {number(ok)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function OnTheWay({ orders }: { orders: InboundOrder[] | null }) {
+  const late = orders?.filter((order) => order.overdue).length ?? 0;
+  const next = orders
+    ?.map((order) => order.expected_date)
+    .filter((when): when is string => !!when)
+    .sort()[0];
+  const hint = !orders ? undefined : late ? `просрочено ${late} →` : next ? `ближайший ${shortDate(next)} · по графику →` : "→";
+  return (
+    <Stat
+      icon="truck"
+      label="Уже в пути"
+      value={orders ? `${orders.length} ${plural(orders.length, ["заказ", "заказа", "заказов"])}` : "…"}
+      hint={hint}
+      tone={late ? "danger" : orders?.length ? "good" : ""}
+    />
+  );
+}
+
+/** Red: runs out before the next delivery; amber: worth topping up; green: enough. */
+function StockBar({ short, low, ok }: { short: number; low: number; ok: number }) {
+  const total = short + low + ok;
+  const width = (part: number) => `${total ? (part / total) * 100 : 0}%`;
+  return (
+    <div className="stock-bar" aria-hidden="true">
+      <span className="short" style={{ width: width(short) }} />
+      <span className="low" style={{ width: width(low) }} />
+      <span className="ok" style={{ width: width(ok) }} />
+    </div>
+  );
+}
+
+function stockCaption(form: FormSummary) {
+  const parts = [
+    form.stock.out ? `${form.stock.out} нет на складе` : "",
+    form.stock.short ? `${form.stock.short} не хватит до прихода` : "",
+    form.stock.low ? `${form.stock.low} пополнить` : "",
+    form.stock.ok ? `${form.stock.ok} хватает` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "нет продаж";
+}
+
+/** How many days the stock lasts; the mark is when an order placed today arrives. */
+function Cover({ row, lead }: { row: OrderRow; lead: number }) {
+  const scale = Math.max(60, lead * 2);
+  const days = row.cover_days;
+  const fill = days === null ? 0 : Math.min(100, (days / scale) * 100);
+  const text =
+    row.stock_level === "idle"
+      ? "не продаётся"
+      : row.stock_level === "out"
+        ? "нет на складе"
+        : days !== null && days >= scale
+          ? `хватит больше чем на ${Math.round(scale / 30)} мес.`
+          : `хватит на ${Math.round(days ?? 0)} дн.${row.stock_level === "short" ? " — кончится до прихода" : ""}`;
+  return (
+    <div className={`cover ${row.stock_level}`}>
+      <div className="cover-track" aria-hidden="true">
+        <span className="cover-fill" style={{ width: `${row.stock_level === "out" ? 0 : Math.max(fill, 2)}%` }} />
+        {lead > 0 && <span className="cover-mark" style={{ left: `${(lead / scale) * 100}%` }} />}
+      </div>
+      <span className="cover-text">{text}</span>
+    </div>
   );
 }
 
@@ -180,8 +311,9 @@ function SupplierOrder({
       (loaded) => {
         setDetail(loaded);
         // What to order comes first; the rest of the supplier's goods follow.
+        const rank: Record<OrderRow["stock_level"], number> = { out: 0, short: 1, low: 2, ok: 3, idle: 4 };
         const wanted = (row: OrderRow) => (row.quantity > 0 || row.edge_or_sheets > 0 ? 0 : 1);
-        setRows([...loaded.rows].sort((a, b) => wanted(a) - wanted(b)));
+        setRows([...loaded.rows].sort((a, b) => wanted(a) - wanted(b) || rank[a.stock_level] - rank[b.stock_level]));
       },
       (failure) => setError(failure.message),
     );
@@ -262,19 +394,30 @@ function SupplierOrder({
   return (
     <details className="order" onToggle={open}>
       <summary>
-        <span className={`supplier-avatar tint-${tintOf(summary.title)}`}>{initials(summary.title)}</span>
-        <span className="order-heading">
-          <span className="order-title">{summary.title}</span>
-          <span className="order-sub">
-            {summary.positions} поз. в ассортименте{leadDays ? ` · поставка ${leadDays} дн.` : ""}
+        <span className="supplier-name">
+          <span className={`supplier-avatar tint-${tintOf(summary.title)}`}>{initials(summary.title)}</span>
+          <span className="order-heading">
+            <span className="order-title">{summary.title}</span>
+            <span className="order-sub">
+              {summary.positions} поз. в ассортименте{leadDays ? ` · поставка ${leadDays} дн.` : ""}
+            </span>
           </span>
         </span>
-        {summary.to_order > 0 ? <span className="pill warn">{summary.to_order} поз. к заказу</span> : <span className="pill quiet">хватает</span>}
-        <span className="order-meta" title="Когда придёт, если заказать сегодня">
-          <span className="order-when">
-            <small>придёт</small>
-            {dateLabel(summary.arrival)}
-          </span>
+        <span className="supplier-stock">
+          <StockBar short={urgent(summary)} low={summary.stock.low} ok={summary.stock.ok} />
+          <span className={`supplier-stock-text ${urgent(summary) ? "late" : ""}`}>{stockCaption(summary)}</span>
+        </span>
+        <span className="supplier-order number">
+          {summary.to_order > 0 ? (
+            <>
+              <b>{summary.to_order}</b> поз.
+            </>
+          ) : (
+            <span className="muted">—</span>
+          )}
+        </span>
+        <span className="supplier-when number" title="Когда придёт, если заказать сегодня">
+          {shortDate(summary.arrival)}
         </span>
         <Icon name="chevron" size={16} className="order-chevron" />
       </summary>
@@ -304,8 +447,9 @@ function SupplierOrder({
                   <tr>
                     <th>Товар</th>
                     {detail.layout.box_layout && <th className="number">В упаковке</th>}
-                    <th className="number">Есть и в пути</th>
-                    <th className="number">Продаётся в мес.</th>
+                    <th className="cover-head">
+                      Запас <span className="cover-hint">· черта — приход заказа, сделанного сегодня{leadDays ? ` (${leadDays} дн.)` : ""}</span>
+                    </th>
                     {detail.layout.columns.map((column) => (
                       <th key={column.field} className="number">
                         {column.title}
@@ -316,7 +460,6 @@ function SupplierOrder({
                 <tbody>
                   {visibleRows.map((row) => {
                     const wanted = row.quantity > 0 || row.edge_or_sheets > 0;
-                    const short = row.forecast_qty > 0 && row.available_stock_qty < row.forecast_qty;
                     return (
                       <tr key={row.row_id} className={wanted ? "" : "idle"}>
                         <td className="goods-name">
@@ -325,6 +468,9 @@ function SupplierOrder({
                             <span className="product-tags">
                               {row.code && <span className="code">{row.code}</span>}
                               {row.abc_class && <span className={`tag abc-${row.abc_class.toLowerCase()}`}>{row.abc_class}</span>}
+                              <span className="code">
+                                есть {number(row.available_stock_qty)} · продаётся {number(row.forecast_qty)} в мес.
+                              </span>
                             </span>
                           </div>
                         </td>
@@ -333,11 +479,8 @@ function SupplierOrder({
                             {row.pack || ""}
                           </td>
                         )}
-                        <td className={`number goods-fact ${short ? "late" : ""}`} data-label="есть и в пути">
-                          {number(row.available_stock_qty)}
-                        </td>
-                        <td className="number goods-fact" data-label="в месяц">
-                          {number(row.forecast_qty)}
+                        <td className="goods-cover">
+                          <Cover row={row} lead={leadDays} />
                         </td>
                         {detail.layout.columns.map((column) => (
                           <td key={column.field} className="number goods-qty" data-label={column.title}>

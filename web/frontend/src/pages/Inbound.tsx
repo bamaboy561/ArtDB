@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
-import { api, Arrival, InboundOrder, User } from "../api";
+import { Fragment, useEffect, useState } from "react";
+import { api, Arrival, FormSummary, InboundOrder, User } from "../api";
 import { Empty, Icon, initials, SearchField, Segmented, Skeleton, Stat, tintOf, useFeedback } from "../ui";
-import { dateLabel } from "./Orders";
+import { dateLabel, shortDate } from "./Orders";
 
-type View = "active" | "overdue" | "all" | "arrivals";
+type View = "schedule" | "active" | "overdue" | "all" | "arrivals";
 
 const amount = (value: number) => Math.round(value).toLocaleString("ru-RU");
 
@@ -23,7 +23,8 @@ function statusPill(order: InboundOrder) {
 }
 
 export default function Inbound({ user }: { user: User }) {
-  const [view, setView] = useState<View>("active");
+  const [view, setView] = useState<View>("schedule");
+  const [planned, setPlanned] = useState<FormSummary[] | null>(null);
   const [orders, setOrders] = useState<InboundOrder[] | null>(null);
   const [active, setActive] = useState<InboundOrder[] | null>(null);
   const [arrivals, setArrivals] = useState<Arrival[] | null>(null);
@@ -37,8 +38,18 @@ export default function Inbound({ user }: { user: User }) {
     api.inbound("active").then(setActive, () => setActive([]));
   }, [round]);
 
+  // The schedule also shows when the orders still to place would arrive if placed today.
+  useEffect(() => {
+    if (view !== "schedule" || planned) return;
+    api
+      .salons()
+      .then((salons) => api.forms(salons))
+      .then(setPlanned, () => setPlanned([]));
+  }, [view, planned]);
+
   useEffect(() => {
     setError("");
+    if (view === "schedule") return;
     if (view === "arrivals") {
       setArrivals(null);
       api.arrivals().then(setArrivals, (failure) => setError(failure.message));
@@ -93,6 +104,7 @@ export default function Inbound({ user }: { user: User }) {
           value={view}
           onChange={choose}
           options={[
+            { key: "schedule", label: "График" },
             { key: "active", label: "Активные", count: active?.length },
             { key: "overdue", label: "Просроченные", count: active ? overdue : undefined },
             { key: "all", label: "Все" },
@@ -112,6 +124,14 @@ export default function Inbound({ user }: { user: User }) {
         <ArrivalList arrivals={arrivals ? shownArrivals : null} />
       ) : (
         <div className={`split ${selected ? "with-card" : ""}`}>
+          {view === "schedule" ? (
+            <Schedule
+              orders={active?.filter((order) => !needle || order.supplier.toLowerCase().includes(needle)) ?? null}
+              planned={planned?.filter((form) => form.to_order > 0 && (!needle || form.title.toLowerCase().includes(needle))) ?? null}
+              selected={selected}
+              onPick={setSelected}
+            />
+          ) : (
           <div className="panel">
             {!orders && !error && <Skeleton rows={6} />}
             {orders && shownOrders.length === 0 && (
@@ -164,6 +184,7 @@ export default function Inbound({ user }: { user: User }) {
               </div>
             )}
           </div>
+          )}
           {selected && (
             <OrderCard
               key={`${selected}:${round}`}
@@ -176,6 +197,176 @@ export default function Inbound({ user }: { user: User }) {
         </div>
       )}
     </section>
+  );
+}
+
+const WEEKS = 5;
+const DAY = 86_400_000;
+const MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const atMidnight = (iso: string) => new Date(`${iso}T00:00:00`).getTime();
+
+function weekLabel(start: Date) {
+  const end = new Date(start.getTime() + 6 * DAY);
+  return start.getMonth() === end.getMonth()
+    ? `${start.getDate()}–${end.getDate()} ${MONTHS[end.getMonth()]}`
+    : `${start.getDate()} ${MONTHS[start.getMonth()]} – ${end.getDate()} ${MONTHS[end.getMonth()]}`;
+}
+
+type Lane = {
+  key: string;
+  title: string;
+  sub: string;
+  kind: "on" | "late" | "plan";
+  from: number;
+  to: number;
+  label: string;
+  orderId?: string;
+};
+
+/** Orders as bars over five weeks: what is on the way, what is late, and what an order placed today would bring. */
+function Schedule({
+  orders,
+  planned,
+  selected,
+  onPick,
+}: {
+  orders: InboundOrder[] | null;
+  planned: FormSummary[] | null;
+  selected: string;
+  onPick: (orderId: string) => void;
+}) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const monday = new Date(today.getTime() - ((today.getDay() + 6) % 7) * DAY);
+  const start = monday.getTime();
+  const span = WEEKS * 7 * DAY;
+  const place = (time: number) => Math.min(Math.max(((time - start) / span) * 100, 0), 100);
+  const now = today.getTime();
+
+  if (!orders || !planned)
+    return (
+      <div className="panel">
+        <Skeleton rows={6} />
+      </div>
+    );
+
+  const lanes: Lane[] = [
+    ...[...orders]
+      .sort((a, b) => (a.expected_date ?? "9").localeCompare(b.expected_date ?? "9"))
+      .map((order): Lane => {
+        const expected = order.expected_date ? atMidnight(order.expected_date) : now;
+        const ordered = order.order_date ? atMidnight(order.order_date) : now;
+        return {
+          key: order.order_id,
+          orderId: order.order_id,
+          title: `${order.supplier || "Без поставщика"} · #${order.order_id.slice(-4)}`,
+          sub: order.overdue ? `опаздывает на ${-(order.days_left ?? 0)} дн.` : `в пути · заказ от ${shortDate(order.order_date)}`,
+          kind: order.overdue ? "late" : "on",
+          from: ordered,
+          to: order.overdue ? now + DAY : expected,
+          label: order.overdue ? `ждали ${shortDate(order.expected_date)}` : shortDate(order.expected_date),
+        };
+      }),
+    ...[...planned]
+      .sort((a, b) => a.arrival.localeCompare(b.arrival) || b.to_order - a.to_order)
+      .map(
+        (form): Lane => ({
+          key: `plan:${form.key}`,
+          title: `${form.title} · ${form.to_order} поз.`,
+          sub: `поставка ${form.lead_time_days} дн.`,
+          kind: "plan",
+          from: now,
+          to: atMidnight(form.arrival),
+          label: shortDate(form.arrival),
+        }),
+      ),
+  ];
+
+  const weeks = Array.from({ length: WEEKS }, (_, index) => weekLabel(new Date(start + index * 7 * DAY)));
+  const todayAt = place(now);
+
+  return (
+    <div className="panel schedule">
+      {lanes.length === 0 ? (
+        <Empty icon="check" title="Ничего не едет и заказывать нечего" />
+      ) : (
+        <div className="schedule-scroll">
+          <div className="schedule-grid">
+            <div className="schedule-row schedule-head">
+              <span className="schedule-name">Заказ</span>
+              <div className="schedule-weeks">
+                {weeks.map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </div>
+            </div>
+            {lanes.map((lane, index) => {
+              const left = place(lane.from);
+              const width = Math.max(place(lane.to) - left, 3);
+              const content = (
+                <>
+                  <span className="schedule-name">
+                    <b>{lane.title}</b>
+                    <span className={`schedule-sub ${lane.kind}`}>{lane.sub}</span>
+                  </span>
+                  <span className="schedule-track">
+                    <span className="schedule-today" style={{ left: `${todayAt}%` }} />
+                    <span className={`schedule-bar ${lane.kind}`} style={{ left: `${left}%`, width: `${width}%` }}>
+                      <span>{lane.label}</span>
+                    </span>
+                  </span>
+                </>
+              );
+              const heading =
+                index === 0 || lanes[index - 1].orderId !== undefined
+                  ? lane.orderId
+                    ? index === 0 && "В пути"
+                    : "Ещё не заказано — когда придёт, если заказать сегодня"
+                  : false;
+              const row = lane.orderId ? (
+                <button
+                  key={lane.key}
+                  type="button"
+                  className={`schedule-row ${selected === lane.orderId ? "picked" : ""}`}
+                  onClick={() => onPick(lane.orderId!)}
+                >
+                  {content}
+                </button>
+              ) : (
+                <a key={lane.key} className="schedule-row" href="#/orders" title="Открыть заказы поставщикам">
+                  {content}
+                </a>
+              );
+              return heading ? (
+                <Fragment key={lane.key}>
+                  <div className="schedule-divider">{heading}</div>
+                  {row}
+                </Fragment>
+              ) : (
+                row
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div className="schedule-legend">
+        <span>
+          <i className="schedule-key today" />
+          сегодня, {today.getDate()} {MONTHS[today.getMonth()]}
+        </span>
+        <span>
+          <i className="schedule-key on" />в пути, по графику
+        </span>
+        <span>
+          <i className="schedule-key plan" />
+          если заказать сегодня
+        </span>
+        <span>
+          <i className="schedule-key late" />
+          опаздывает
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -29,6 +29,11 @@
   --radius: 14px;
   --radius-sm: 10px;
   --ring: 0 0 0 3px rgba(0, 52, 97, 0.16);
+  --bar-short: #c0261a;
+  --bar-low: #d88a14;
+  --bar-ok: #2a9d6f;
+  --bar-track: #eef2f6;
+  --hero: #003461;
   color-scheme: light;
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
   font-size: 15px;
@@ -66,6 +71,11 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px -10px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
   --ring: 0 0 0 3px rgba(106, 168, 236, 0.28);
+  --bar-short: #ff7b6e;
+  --bar-low: #f2b45a;
+  --bar-ok: #3ccf95;
+  --bar-track: #233142;
+  --hero: #0f2d4d;
   color-scheme: dark;
 }
 
@@ -335,6 +345,74 @@ b { font-weight: 600; }
 .legend { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 0.25rem; }
 .legend.changed { background: var(--warn-soft); border: 1px solid var(--warn); }
 
+/* What to order: the main card, the stock bars and the coverage of each position */
+.eyebrow { margin-bottom: 0.3rem; }
+.stats .outlook { grid-column: span 2; }
+.outlook {
+  background: var(--hero); color: #fff; border-radius: var(--radius); padding: 1.15rem 1.3rem; display: grid; gap: 0.75rem; align-content: start;
+  box-shadow: var(--shadow);
+}
+.outlook .skeleton-line { background: rgba(255, 255, 255, 0.14); }
+.outlook-label { font-size: 0.86rem; color: #c9d8ea; }
+.outlook-figure { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.outlook-figure b { font-family: Manrope, sans-serif; font-weight: 800; font-size: 2.6rem; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.outlook-figure span { color: #dbe6f2; font-size: 0.95rem; }
+.outlook-figure .icon { color: #3ccf95; align-self: center; }
+.outlook .stock-bar { height: 10px; border-radius: 5px; background: rgba(255, 255, 255, 0.14); }
+.outlook .stock-bar .short { background: #ff8a7a; }
+.outlook .stock-bar .low { background: #f2b45a; }
+.outlook .stock-bar .ok { background: #3ccf95; }
+.outlook-legend { display: flex; gap: 0.4rem 1.1rem; flex-wrap: wrap; font-size: 0.8rem; color: #dbe6f2; }
+.outlook-legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.short { background: #ff8a7a; }
+.dot.low { background: #f2b45a; }
+.dot.ok { background: #3ccf95; }
+.stat.good .stat-hint { color: var(--ok); font-weight: 600; }
+
+.stock-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--bar-track); }
+.stock-bar span { height: 100%; transition: width 0.3s; }
+.stock-bar .short { background: var(--bar-short); }
+.stock-bar .low { background: var(--bar-low); }
+.stock-bar .ok { background: var(--bar-ok); }
+
+.suppliers { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; }
+.suppliers, .suppliers > * { min-width: 0; }
+.suppliers-head, .suppliers .order summary {
+  display: grid; grid-template-columns: minmax(200px, 2fr) minmax(180px, 3fr) 88px 88px 18px; gap: 1rem; align-items: center;
+}
+.suppliers-head {
+  padding: 0.6rem 1.1rem; background: var(--surface-2); border-bottom: 1px solid var(--line);
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.suppliers .order { border: 0; border-radius: 0; box-shadow: none; border-top: 1px solid var(--line); }
+.suppliers .order:first-child, .suppliers-head + .order { border-top: 0; }
+.suppliers .order:hover { background: var(--surface-2); }
+.suppliers .order[open] { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--brand); }
+.suppliers .order summary { border-radius: 0; }
+.suppliers .order-body { border-top-color: var(--line); }
+.supplier-name { display: flex; gap: 0.75rem; align-items: center; min-width: 0; }
+.supplier-stock { display: grid; gap: 0.35rem; min-width: 0; }
+.supplier-stock-text { font-size: 0.8rem; color: var(--text-2); }
+.supplier-stock-text.late { color: var(--late); font-weight: 500; }
+.supplier-order { font-size: 0.82rem; color: var(--muted); }
+.supplier-order b { font-family: Manrope, sans-serif; font-weight: 800; font-size: 1.1rem; color: var(--text); }
+.supplier-when { font-size: 0.9rem; color: var(--text-2); }
+
+.cover-head { min-width: 220px; }
+.cover-hint { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.goods-cover { min-width: 220px; width: 34%; }
+.cover { display: grid; gap: 0.3rem; }
+.cover-track { position: relative; height: 8px; border-radius: 4px; background: var(--bar-track); }
+.cover-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--bar-ok); }
+.cover-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+.cover-text { font-size: 0.8rem; font-weight: 500; color: var(--ok); }
+.cover.short .cover-fill, .cover.out .cover-fill { background: var(--bar-short); }
+.cover.short .cover-text, .cover.out .cover-text { color: var(--late); }
+.cover.low .cover-fill { background: var(--bar-low); }
+.cover.low .cover-text { color: var(--warn); }
+.cover.idle .cover-text { color: var(--muted); font-weight: 400; }
+
 /* Tables */
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 0.3rem; min-width: 0; }
 .panel > .skeleton { padding: 1rem; }
@@ -409,6 +487,8 @@ tr.row-late td:first-child { box-shadow: inset 3px 0 0 var(--late); }
 
 @media (max-width: 1100px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .suppliers-head, .suppliers .order summary { grid-template-columns: minmax(180px, 2fr) minmax(150px, 2fr) 80px 18px; }
+  .suppliers-head > :nth-child(4), .supplier-when { display: none; }
 }
 
 @media (max-width: 960px) {
@@ -451,6 +531,13 @@ tr.row-late td:first-child { box-shadow: inset 3px 0 0 var(--late); }
   .search { min-width: 0; flex: 1 1 100%; }
   .order summary { padding: 0.75rem 0.8rem; gap: 0.65rem; }
   .order-meta { display: none; }
+  .suppliers-head { display: none; }
+  .suppliers .order summary { grid-template-columns: minmax(0, 1fr) auto 18px; gap: 0.6rem 0.75rem; }
+  .supplier-stock { grid-column: 1 / -1; grid-row: 2; }
+  .outlook { padding: 1rem; }
+  .outlook-figure b { font-size: 2.1rem; }
+  table.goods td.goods-cover { flex: 1 1 100%; width: auto; min-width: 0; }
+  .cover-head { min-width: 0; }
   .order-body { padding: 0.8rem 0.8rem 0.9rem; }
   .action-bar .actions, .action-bar .button.primary { width: 100%; }
   .actions .button { flex: 1; }
@@ -461,4 +548,60 @@ tr.row-late td:first-child { box-shadow: inset 3px 0 0 var(--late); }
   }
   .tabbar a { display: grid; justify-items: center; gap: 0.15rem; padding: 0.35rem; border-radius: 10px; color: var(--muted); text-decoration: none; font-size: 0.72rem; font-weight: 500; }
   .tabbar a.active { color: var(--brand); background: var(--brand-soft); }
+}
+
+/* The delivery schedule: five weeks, a line for today, one bar per order */
+.schedule { padding: 0; overflow: hidden; }
+.schedule-scroll { overflow-x: auto; }
+.schedule-grid { min-width: 760px; }
+.schedule-row {
+  display: grid; grid-template-columns: 230px minmax(0, 1fr); width: 100%; min-height: 60px; padding: 0; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; font: inherit; color: inherit; text-align: left; text-decoration: none; cursor: pointer;
+}
+.schedule-row:hover { background: var(--surface-2); }
+.schedule-row.picked { background: var(--brand-soft); }
+.schedule-row:focus-visible { outline: none; box-shadow: inset var(--ring); }
+.schedule-head { min-height: 0; cursor: default; background: var(--surface-2); }
+.schedule-head:hover { background: var(--surface-2); }
+.schedule-name { display: grid; align-content: center; gap: 0.1rem; padding: 0.55rem 1rem; min-width: 0; }
+.schedule-head .schedule-name, .schedule-weeks span {
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding-top: 0.6rem; padding-bottom: 0.6rem;
+}
+.schedule-name b { font-weight: 600; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.schedule-sub { font-size: 0.78rem; color: var(--muted); }
+.schedule-sub.on { color: var(--ok); }
+.schedule-sub.late { color: var(--late); font-weight: 500; }
+.schedule-weeks { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.schedule-weeks span { padding-left: 0.7rem; border-left: 1px solid var(--line); text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.schedule-track {
+  position: relative; border-left: 1px solid var(--line);
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px); background-size: 20% 100%;
+}
+.schedule-today { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--brand); z-index: 1; }
+.schedule-bar {
+  position: absolute; top: 50%; transform: translateY(-50%); height: 28px; border-radius: 8px; border: 1px solid; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: flex-end; padding: 0 0.55rem; min-width: 44px;
+}
+.schedule-bar span { font-size: 0.76rem; font-weight: 700; white-space: nowrap; }
+.schedule-bar.on { background: var(--ok-soft); border-color: var(--bar-ok); color: var(--ok); }
+.schedule-bar.plan { background: var(--brand-soft); border: 1px dashed color-mix(in srgb, var(--brand) 60%, transparent); color: var(--brand); }
+.schedule-bar.late { background: var(--late-soft); border-color: var(--bar-short); color: var(--late); }
+.schedule-legend { display: flex; gap: 0.5rem 1.3rem; flex-wrap: wrap; padding: 0.8rem 1rem; font-size: 0.8rem; color: var(--text-2); }
+.schedule-legend span { display: inline-flex; align-items: center; gap: 0.45rem; }
+.schedule-key { width: 22px; height: 12px; border-radius: 4px; border: 1px solid; display: inline-block; }
+.schedule-key.today { width: 2px; height: 16px; border: 0; border-radius: 1px; background: var(--brand); }
+.schedule-key.on { background: var(--ok-soft); border-color: var(--bar-ok); }
+.schedule-key.plan { background: var(--brand-soft); border-style: dashed; border-color: var(--brand); }
+.schedule-key.late { background: var(--late-soft); border-color: var(--bar-short); }
+@media (max-width: 760px) {
+  .schedule-grid { min-width: 600px; }
+  .schedule-row { grid-template-columns: 140px minmax(0, 1fr); }
+  .schedule-name { padding: 0.5rem 0.75rem; position: sticky; left: 0; z-index: 2; background: var(--surface); border-right: 1px solid var(--line); }
+  .schedule-head .schedule-name, .schedule-head:hover .schedule-name { background: var(--surface-2); }
+  .schedule-row.picked .schedule-name { background: var(--brand-soft); }
+  .schedule-divider { position: sticky; left: 0; width: 100vw; max-width: calc(100vw - 34px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+.schedule-divider {
+  padding: 0.5rem 1rem; font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
 }

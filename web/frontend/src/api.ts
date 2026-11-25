@@ -14,7 +14,12 @@ export type FormSummary = {
   positions: number;
   lead_time_days: number;
   arrival: string;
+  stock: StockCounts;
 };
+
+// out: nothing left; short: runs out before an order placed today arrives; low: worth topping up; ok: enough.
+export type StockLevel = "out" | "short" | "low" | "ok" | "idle";
+export type StockCounts = Record<Exclude<StockLevel, "idle">, number>;
 
 export type OrderRow = {
   row_id: string;
@@ -30,6 +35,8 @@ export type OrderRow = {
   stock_status: string;
   available_stock_qty: number;
   forecast_qty: number;
+  cover_days: number | null;
+  stock_level: StockLevel;
 };
 
 export type QuantityColumn = { field: "quantity" | "edge_or_sheets"; title: string };

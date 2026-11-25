@@ -239,4 +239,5 @@ if FRONTEND_DIST.is_dir():
 
     @app.get("/{path:path}", include_in_schema=False)
     def interface(path: str) -> FileResponse:
-        return FileResponse(FRONTEND_DIST / "index.html")
+        # The page names this build's files: a stale copy after a deploy would ask for files that are gone.
+        return FileResponse(FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})

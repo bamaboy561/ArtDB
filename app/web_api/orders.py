@@ -78,6 +78,46 @@ def _layout(form: SupplierForm, rows: pd.DataFrame) -> dict[str, object]:
     return {"columns": columns, "box_layout": form.box_layout, "unit": form.unit if form.goods_only else ""}
 
 
+DAYS_PER_MONTH = 30.4
+STOCK_LEVELS = ("out", "short", "low", "ok")
+
+
+def _cover_days(available: float, monthly: float) -> float | None:
+    """How many days the stock lasts at the forecast pace; None when the position does not sell."""
+    if monthly <= 0:
+        return None
+    return max(available, 0.0) / (monthly / DAYS_PER_MONTH)
+
+
+def _stock_level(available: float, monthly: float, wanted: bool, lead_time: int) -> str:
+    """out: nothing left; short: runs out before an order placed today arrives; low: the forecast asks
+    for more; ok: the stock is enough; idle: does not sell."""
+    days = _cover_days(available, monthly)
+    if days is None:
+        return "idle"
+    if available <= 0:
+        return "out"
+    if days < max(lead_time, 0):
+        return "short"
+    return "low" if wanted else "ok"
+
+
+def _row_level(record: dict[str, object], lead_time: int) -> tuple[float | None, str]:
+    available = float(record.get("available_stock_qty") or 0)
+    monthly = float(record.get("forecast_qty") or 0)
+    wanted = float(record.get("quantity") or 0) > 0 or float(record.get("edge_or_sheets") or 0) > 0
+    return _cover_days(available, monthly), _stock_level(available, monthly, wanted, lead_time)
+
+
+def _stock_counts(rows: pd.DataFrame, lead_time: int) -> dict[str, int]:
+    counts = dict.fromkeys(STOCK_LEVELS, 0)
+    for record in rows.to_dict(orient="records"):
+        level = _row_level(record, lead_time)[1]
+        if level in counts:
+            counts[level] += 1
+    return counts
+
+
 def _to_order(rows: pd.DataFrame) -> int:
     if rows.empty:
         return 0
@@ -97,6 +137,7 @@ def form_summaries(forecast: pd.DataFrame, default_lead_time: int) -> list[dict[
                 "positions": int(len(rows)),
                 "lead_time_days": int(lead_time),
                 "arrival": (date.today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
+                "stock": _stock_counts(rows, int(lead_time)),
             }
         )
     return summaries
@@ -119,11 +160,16 @@ def form_detail(forecast: pd.DataFrame, form: SupplierForm, default_lead_time: i
         "layout": _layout(form, rows),
         "lead_time_days": int(lead_time),
         "arrival": (date.today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
-        "rows": [
-            {field: _clean(record.get(field)) for field in ROW_FIELDS}
-            for record in rows.to_dict(orient="records")
-        ],
+        "rows": [_detail_row(record, int(lead_time)) for record in rows.to_dict(orient="records")],
     }
+
+
+def _detail_row(record: dict[str, object], lead_time: int) -> dict[str, object]:
+    row = {field: _clean(record.get(field)) for field in ROW_FIELDS}
+    days, level = _row_level(record, lead_time)
+    row["cover_days"] = None if days is None else round(days, 1)
+    row["stock_level"] = level
+    return row
 
 
 def _edited_rows(forecast: pd.DataFrame, form: SupplierForm, quantities: dict[str, tuple[int, int]]) -> pd.DataFrame:
