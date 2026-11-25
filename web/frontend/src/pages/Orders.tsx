@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, FilePreview, FormDetail, FormSummary, OrderRow, User } from "../api";
+import { api, FilePreview, FormDetail, FormSummary, InboundOrder, OrderRow, User } from "../api";
 import { Empty, Icon, initials, SalonPicker, SearchField, Segmented, Skeleton, Stat, tintOf, useFeedback } from "../ui";
 
 export const dateLabel = (iso: string | null) => (iso ? iso.split("-").reverse().join(".") : "—");
@@ -16,7 +16,13 @@ export default function Orders({ user }: { user: User }) {
   const [round, setRound] = useState(0);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("wanted");
+  const [onTheWay, setOnTheWay] = useState<InboundOrder[] | null>(null);
   const { notify } = useFeedback();
+
+  // What is already on the way belongs next to what to order: a late order changes the decision.
+  useEffect(() => {
+    api.inbound("active").then(setOnTheWay, () => setOnTheWay([]));
+  }, [round]);
 
   useEffect(() => {
     api.salons().then((names) => {
@@ -41,6 +47,7 @@ export default function Orders({ user }: { user: User }) {
 
   const withOrders = forms?.filter((form) => form.to_order > 0) ?? [];
   const nearest = withOrders.map((form) => form.arrival).filter(Boolean).sort()[0];
+  const lateCount = onTheWay?.filter((order) => order.overdue).length ?? 0;
   const needle = query.trim().toLowerCase();
   const shown = (forms ?? [])
     .filter((form) => (filter === "wanted" ? form.to_order > 0 : true))
@@ -66,7 +73,15 @@ export default function Orders({ user }: { user: User }) {
           value={nearest ? dateLabel(nearest) : "—"}
           hint={nearest ? `если заказать сегодня · ${Math.max(daysUntil(nearest), 0)} дн.` : undefined}
         />
-        <Stat icon="store" label="Прогноз по салонам" value={`${chosen.length} / ${salons.length || "…"}`} hint="по их продажам" />
+        <a className="stat-link" href="#/inbound" title="Открыть «В пути»">
+          <Stat
+            icon="truck"
+            label="Уже в пути"
+            value={onTheWay ? onTheWay.length : "…"}
+            hint={onTheWay ? (lateCount ? `просрочено ${lateCount} →` : "всё по графику →") : undefined}
+            tone={lateCount ? "danger" : ""}
+          />
+        </a>
       </div>
 
       <div className="toolbar">
@@ -254,10 +269,12 @@ function SupplierOrder({
             {summary.positions} поз. в ассортименте{leadDays ? ` · поставка ${leadDays} дн.` : ""}
           </span>
         </span>
-        {summary.to_order > 0 ? <span className="pill warn">к заказу {summary.to_order}</span> : <span className="pill quiet">хватает</span>}
-        <span className="order-meta">
-          <Icon name="calendar" size={14} />
-          {dateLabel(summary.arrival)}
+        {summary.to_order > 0 ? <span className="pill warn">{summary.to_order} поз. к заказу</span> : <span className="pill quiet">хватает</span>}
+        <span className="order-meta" title="Когда придёт, если заказать сегодня">
+          <span className="order-when">
+            <small>придёт</small>
+            {dateLabel(summary.arrival)}
+          </span>
         </span>
         <Icon name="chevron" size={16} className="order-chevron" />
       </summary>
@@ -282,7 +299,7 @@ function SupplierOrder({
               </label>
             </div>
             <div className="table-wrap">
-              <table>
+              <table className="goods">
                 <thead>
                   <tr>
                     <th>Товар</th>
@@ -302,7 +319,7 @@ function SupplierOrder({
                     const short = row.forecast_qty > 0 && row.available_stock_qty < row.forecast_qty;
                     return (
                       <tr key={row.row_id} className={wanted ? "" : "idle"}>
-                        <td>
+                        <td className="goods-name">
                           <div className="product">
                             <span className="product-name">{row.name}</span>
                             <span className="product-tags">
@@ -311,11 +328,19 @@ function SupplierOrder({
                             </span>
                           </div>
                         </td>
-                        {detail.layout.box_layout && <td className="number">{row.pack || ""}</td>}
-                        <td className={`number ${short ? "late" : ""}`}>{number(row.available_stock_qty)}</td>
-                        <td className="number">{number(row.forecast_qty)}</td>
+                        {detail.layout.box_layout && (
+                          <td className="number goods-fact" data-label="в упаковке">
+                            {row.pack || ""}
+                          </td>
+                        )}
+                        <td className={`number goods-fact ${short ? "late" : ""}`} data-label="есть и в пути">
+                          {number(row.available_stock_qty)}
+                        </td>
+                        <td className="number goods-fact" data-label="в месяц">
+                          {number(row.forecast_qty)}
+                        </td>
                         {detail.layout.columns.map((column) => (
-                          <td key={column.field} className="number">
+                          <td key={column.field} className="number goods-qty" data-label={column.title}>
                             <Stepper value={row[column.field]} onChange={(value) => setQuantity(row.row_id, column.field, value)} />
                           </td>
                         ))}
@@ -356,8 +381,14 @@ function SupplierOrder({
               <div className="actions">
                 {canOrder && (
                   <>
-                    <button className="button ghost" onClick={asIs} disabled={!!busy || totals.lines === 0} title="Поставщик подтвердил заказ без изменений">
-                      <Icon name="truck" size={16} />В пути без изменений
+                    <button
+                      className="button ghost"
+                      onClick={asIs}
+                      disabled={!!busy || totals.lines === 0}
+                      title="Поставщик подтвердил заказ как есть: он сразу уходит в «В пути», без файла"
+                    >
+                      <Icon name="truck" size={16} />
+                      Оформить как есть
                     </button>
                     <button className="button" onClick={() => picker.current?.click()} disabled={!!busy}>
                       <Icon name="upload" size={16} />

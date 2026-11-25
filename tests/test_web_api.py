@@ -62,6 +62,12 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/orders/forms").status_code, 401)
         self.assertEqual(self.client.get("/api/auth/me").status_code, 401)
 
+    def test_health_tells_when_the_server_started(self) -> None:
+        answer = self.client.get("/api/health").json()
+        self.assertTrue(answer["ok"])
+        self.assertTrue(answer["started_at"])
+        self.assertIn("memory_mb", answer)
+
     def test_a_wrong_password_is_refused(self) -> None:
         with patch.object(main, "authenticate_user", lambda login, password: None):
             response = self.client.post("/api/auth/login", json={"login": "admin", "password": "x"})

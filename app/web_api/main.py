@@ -6,7 +6,7 @@ Run it alone locally from the repository root:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import os
 from pathlib import Path
 from urllib.parse import quote
@@ -29,6 +29,20 @@ FRONTEND_DIST = Path(__file__).resolve().parent / "dist"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 app = FastAPI(title="ArtDB API")
+# Loaded as the server starts, so this is when the server (both sites) last started.
+STARTED_AT = datetime.now(timezone.utc)
+
+
+def memory_mb() -> int | None:
+    """The memory the whole server process holds now (Linux); None where it cannot be read."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024)
+    except OSError:
+        return None
+    return None
 
 
 class LoginRequest(BaseModel):
@@ -102,6 +116,12 @@ def logout(request: Request, response: Response) -> dict:
     revoke_auth_session(request.cookies.get(SESSION_COOKIE, ""))
     response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}
+
+
+@app.get("/api/health")
+def health() -> dict:
+    """When the server last started and how much memory it holds: restarts and load show here."""
+    return {"ok": True, "started_at": STARTED_AT.isoformat(timespec="seconds"), "memory_mb": memory_mb()}
 
 
 @app.get("/api/auth/me")
