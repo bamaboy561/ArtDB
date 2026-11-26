@@ -198,6 +198,7 @@ from telegram_reports import (
 )
 from telegram_bot import start_telegram_bot
 from telegram_scheduler import start_telegram_scheduler
+from local_time import local_today
 from telegram_settings_store import (
     add_telegram_chat_id,
     load_telegram_settings,
@@ -7270,7 +7271,7 @@ def render_missing_supplier_panel(procurement_forecast: pd.DataFrame, current_us
 def render_procurement_settings_summary(*, lead_time_days: int, coverage_days: int, safety_days: int) -> None:
     """The settings told as dates and one worked example, so that it is clear what each of them changes."""
     timeline = order_timeline(
-        date.today(), lead_time_days=lead_time_days, coverage_days=coverage_days, safety_days=safety_days
+        local_today(), lead_time_days=lead_time_days, coverage_days=coverage_days, safety_days=safety_days
     )
     total_days = lead_time_days + coverage_days + safety_days
     example_qty = 2 * total_days - 30 - 10
@@ -7306,7 +7307,7 @@ def order_form_label(title: str, to_order: int) -> str:
 
 
 def render_order_arrival(lead_time_days: int) -> None:
-    arrival = date.today() + timedelta(days=max(int(lead_time_days), 0))
+    arrival = local_today() + timedelta(days=max(int(lead_time_days), 0))
     st.caption(
         f"Если отправить заказ сегодня, груз придёт **{arrival:%d.%m.%Y}**, через {lead_time_days} дн. "
         "Эта дата запишется в заказ как ожидаемая. Срок берётся у товара, а если не указан, из «Параметров закупки»."
@@ -7341,7 +7342,7 @@ def render_supplier_order_form(
                 )
         return
     is_hpl = order_rows["section"].ne(SECTION_BOARDS)
-    stock_out = add_order_dates(procurement_forecast, date.today()).set_index("product")["stock_out_date"]
+    stock_out = add_order_dates(procurement_forecast, local_today()).set_index("product")["stock_out_date"]
     stock_out = stock_out[~stock_out.index.duplicated()]
 
     to_order = int((order_rows["quantity"].gt(0) | order_rows["edge_or_sheets"].gt(0)).sum())
@@ -7462,7 +7463,7 @@ def render_supplier_order_form(
             st.download_button(
                 f"Скачать заказ {form.title}",
                 data=partial(build_supplier_order_workbook, final_rows, form=form),
-                file_name=f"{form.key}_zakaz_{date.today():%Y%m%d}.xlsx",
+                file_name=f"{form.key}_zakaz_{local_today():%Y%m%d}.xlsx",
                 mime=EXCEL_MIME,
                 type="primary",
                 width="stretch",
@@ -7526,8 +7527,8 @@ def create_form_order(
         created_order = create_procurement_order(
             supplier=supplier,
             items_frame=order_items,
-            order_date=date.today(),
-            expected_date=date.today() + timedelta(days=max(int(lead_time_days), 0)),
+            order_date=local_today(),
+            expected_date=local_today() + timedelta(days=max(int(lead_time_days), 0)),
             comment=comment,
             created_by=current_user["username"],
             status="in_transit",
@@ -7652,7 +7653,7 @@ def render_swiss_krono_order_form(
             st.download_button(
                 "Скачать бланк Swiss Krono",
                 data=partial(build_swiss_krono_workbook, final_rows),
-                file_name=f"swiss_krono_zakaz_{date.today():%Y%m%d}.xlsx",
+                file_name=f"swiss_krono_zakaz_{local_today():%Y%m%d}.xlsx",
                 mime=EXCEL_MIME,
                 type="primary",
                 width="stretch",
@@ -7662,7 +7663,7 @@ def render_swiss_krono_order_form(
             st.download_button(
                 "Скачать список ЛДСП в листах",
                 data=partial(build_swiss_krono_sheet_list, final_rows),
-                file_name=f"ldsp_swiss_krono_{date.today():%Y%m%d}.xlsx",
+                file_name=f"ldsp_swiss_krono_{local_today():%Y%m%d}.xlsx",
                 mime=EXCEL_MIME,
                 width="stretch",
                 key="dl_swiss_krono_sheet_list",
@@ -10353,7 +10354,7 @@ selected_categories: list[str] | None = None
 selected_managers: list[str] | None = None
 selected_salons_filter: list[str] | None = None
 selected_salons_for_archive: list[str] = []
-current_file_report_date = date.today()
+current_file_report_date = local_today()
 auto_detected_report_date: date | None = None
 sheet_name: str | int | None = 0
 csv_separator = ";"
@@ -10398,7 +10399,7 @@ with st.sidebar:
     if current_user["role"] == "salon":
         work_mode = st.radio("Режим салона", ["Архив салона", "Новая выгрузка"], index=0, key="main_work_mode")
         if work_mode == "Новая выгрузка":
-            current_file_report_date = st.date_input("Дата отчёта", value=date.today(), key="main_report_date")
+            current_file_report_date = st.date_input("Дата отчёта", value=local_today(), key="main_report_date")
             replace_existing_upload = st.checkbox("Заменять файл за эту дату", value=True, key="main_replace_upload")
     else:
         work_mode = st.radio(
@@ -10423,7 +10424,7 @@ with st.sidebar:
             else:
                 selected_salon_name = chosen_salon
 
-            current_file_report_date = st.date_input("Дата отчёта", value=date.today(), key="main_report_date")
+            current_file_report_date = st.date_input("Дата отчёта", value=local_today(), key="main_report_date")
             replace_existing_upload = st.checkbox("Заменять файл за эту дату", value=True, key="main_replace_upload")
 
     st.markdown("---")
@@ -10575,7 +10576,7 @@ if work_mode in upload_modes:
             detected_dates = prepared_result.data["date"].dropna().dt.date.unique().tolist()
             if len(detected_dates) == 1:
                 auto_detected_report_date = detected_dates[0]
-                if work_mode in {"Новая выгрузка", "Загрузка салона"} and current_file_report_date == date.today():
+                if work_mode in {"Новая выгрузка", "Загрузка салона"} and current_file_report_date == local_today():
                     current_file_report_date = auto_detected_report_date
 
             upload_fingerprint = hashlib.sha256(file_bytes).hexdigest()[:12]
@@ -10885,7 +10886,7 @@ try:
         _active_orders = _quick_orders[_active_mask]
         if "expected_date" in _active_orders.columns and not _active_orders.empty:
             _exp = pd.to_datetime(_active_orders["expected_date"], errors="coerce")
-            _sidebar_overdue = int((_exp.dt.date < date.today()).sum())
+            _sidebar_overdue = int((_exp.dt.date < local_today()).sum())
 except Exception:
     pass
 _sidebar_critical = int(st.session_state.get("_health_critical_count", 0))
@@ -13971,7 +13972,7 @@ if active_screen == "Обзор":
     with main_col:
         # Data freshness & alert strip
         _data_max_date = data["date"].max().date() if not data.empty and "date" in data.columns else None
-        _data_age_days = (date.today() - _data_max_date).days if _data_max_date else 0
+        _data_age_days = (local_today() - _data_max_date).days if _data_max_date else 0
         render_overview_alert_strip(
             overdue=_sidebar_overdue,
             critical=int(procurement_overview.get("critical_stock_count", 0) or 0),
@@ -15836,7 +15837,7 @@ if active_screen == "Закупки":
         + procurement_safety_days
     )
     procurement_timeline = order_timeline(
-        date.today(),
+        local_today(),
         lead_time_days=procurement_lead_time_days,
         coverage_days=procurement_coverage_days,
         safety_days=procurement_safety_days,
@@ -17441,7 +17442,7 @@ if active_screen == "Закупки":
                             )
                             order_date_value = st.date_input(
                                 "Дата заказа",
-                                value=date.today(),
+                                value=local_today(),
                                 key="procurement_order_date",
                             )
                             selected_lead_days = pd.to_numeric(
@@ -17543,7 +17544,7 @@ if active_screen == "Закупки":
                             filtered_order_overview["status"] == matching_status
                         ].copy()
 
-                    _today = date.today()
+                    _today = local_today()
                     filtered_order_overview = filtered_order_overview.copy()
                     filtered_order_overview["_overdue"] = filtered_order_overview.apply(
                         lambda _row: (
@@ -17987,7 +17988,7 @@ if active_screen == "Закупки":
                                     expected_date_input_value = (
                                         parsed_expected_date.date()
                                         if pd.notna(parsed_expected_date)
-                                        else (pd.Timestamp(date.today()) + pd.Timedelta(days=max(procurement_lead_time_days, 1))).date()
+                                        else (pd.Timestamp(local_today()) + pd.Timedelta(days=max(procurement_lead_time_days, 1))).date()
                                     )
                                     updated_status_value = st.selectbox(
                                         "Новый статус",
@@ -18157,7 +18158,7 @@ if active_screen == "Закупки":
                 procurement_rename_map["avg_margin_per_unit"] = "Маржа на единицу"
                 procurement_rename_map["forecast_margin"] = "Прогноз маржи"
 
-            procurement_table = add_order_dates(procurement_forecast, date.today())[procurement_table_columns]
+            procurement_table = add_order_dates(procurement_forecast, local_today())[procurement_table_columns]
 
             with st.container(border=True):
                 render_panel_header(
@@ -18340,7 +18341,7 @@ if active_screen == "План / факт":
                 if plan_month_options:
                     latest_editor_month = pd.to_datetime(f"{plan_month_options[-1]}-01", errors="coerce")
                 else:
-                    latest_editor_month = pd.Timestamp(date.today().replace(day=1))
+                    latest_editor_month = pd.Timestamp(local_today().replace(day=1))
                 for offset in range(4):
                     existing_month_labels.add((latest_editor_month + pd.DateOffset(months=offset)).strftime("%Y-%m"))
                 editor_month_options = sorted(existing_month_labels)

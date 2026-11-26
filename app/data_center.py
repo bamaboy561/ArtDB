@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import pandas as pd
+from local_time import local_today
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ def evaluate_freshness(
     fresh_days: int = 1,
     warning_days: int = 3,
 ) -> FreshnessStatus:
-    current_date = today or date.today()
+    current_date = today or local_today()
     parsed = pd.to_datetime(value, errors="coerce", utc=True)
     if pd.isna(parsed):
         return FreshnessStatus(

@@ -27,6 +27,7 @@ from supplier_order_forms import (
     _normalize,
     _normalize_code,
 )
+from local_time import local_today
 
 BOARD_TABLE = "board"
 TSP_TABLE = "tsp"
@@ -172,7 +173,7 @@ def build_extravert_workbook(order_rows: pd.DataFrame, *, order_date: date | Non
     frame = Border(left=thin, right=thin, top=thin, bottom=thin)
     yellow = PatternFill("solid", fgColor="FFFF00")
     center = Alignment(horizontal="center", vertical="center")
-    sheet["B1"] = f"Заказ от {(order_date or date.today()):%d.%m.%Y}"
+    sheet["B1"] = f"Заказ от {(order_date or local_today()):%d.%m.%Y}"
     sheet["B1"].font = Font(name="Calibri", size=11, bold=True)
 
     records = [

@@ -21,6 +21,7 @@ from web_api import inbound
 from web_api import orders
 from auth_store import authenticate_session, authenticate_user, create_auth_session, revoke_auth_session
 from procurement_analytics import supplier_lead_time
+from local_time import local_today
 
 SESSION_COOKIE = "artdb_session"
 # Behind HTTPS in production the cookie must be secure; locally the site runs on plain http.
@@ -159,7 +160,7 @@ def order_file(key: str, body: OrderFileRequest, user: dict = Depends(network_us
         raise HTTPException(status_code=404, detail="Нет такого поставщика.")
     quantities = {line.row_id: (max(line.quantity, 0), max(line.edge_or_sheets, 0)) for line in body.lines}
     content = orders.order_workbook(forecast, form, quantities)
-    filename = f"{form.key}_zakaz_{date.today():%Y%m%d}.xlsx"
+    filename = f"{form.key}_zakaz_{local_today():%Y%m%d}.xlsx"
     return Response(
         content,
         media_type=EXCEL_MIME,

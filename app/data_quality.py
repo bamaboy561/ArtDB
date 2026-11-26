@@ -7,6 +7,7 @@ from typing import Iterable
 import pandas as pd
 
 from sales_analytics import clean_identifier_series, coerce_numeric, parse_dates
+from local_time import local_today
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ def analyze_sales_quality(
     salon_name: str = "",
     replace_existing: bool = True,
 ) -> DataQualityReport:
-    today = today or date.today()
+    today = today or local_today()
     issues: list[DataQualityIssue] = []
     problem_rows: list[pd.DataFrame] = []
     raw_rows = int(len(raw_frame))

@@ -25,6 +25,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 
 from supplier_order_forms import EXCLUDED_ORDER_PRIORITY, _contains_term, _normalize
+from local_time import local_today
 
 
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(Path(__file__).resolve().parent.parent / "data"))).resolve()
@@ -516,7 +517,7 @@ def build_sheet_list_workbook(order_rows: pd.DataFrame, *, order_date: date | No
     frame = Border(left=thin, right=thin, top=thin, bottom=thin)
     bold = Font(name="Calibri", size=11, bold=True)
     sheet.merge_cells("C1:D1")
-    header = {"A1": f"{(order_date or date.today()):%d.%m.%Y}", "B1": "группа", "C1": "ЛДСП 2750х1830", "E1": "к заказу"}
+    header = {"A1": f"{(order_date or local_today()):%d.%m.%Y}", "B1": "группа", "C1": "ЛДСП 2750х1830", "E1": "к заказу"}
     for reference, value in header.items():
         sheet[reference] = value
     for column in "ABCDE":

@@ -1,7 +1,7 @@
 """Supplier orders for the API: the same forms, files and rules as on the old site."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 import math
 
 import pandas as pd
@@ -24,6 +24,7 @@ from supplier_order_forms import (
     parse_order_form_file,
 )
 from swiss_krono_order import is_swiss_krono_supplier
+from local_time import local_today
 
 ROW_FIELDS = (
     "row_id",
@@ -136,7 +137,7 @@ def form_summaries(forecast: pd.DataFrame, default_lead_time: int) -> list[dict[
                 "to_order": _to_order(rows),
                 "positions": int(len(rows)),
                 "lead_time_days": int(lead_time),
-                "arrival": (date.today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
+                "arrival": (local_today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
                 "stock": _stock_counts(rows, int(lead_time)),
             }
         )
@@ -159,7 +160,7 @@ def form_detail(forecast: pd.DataFrame, form: SupplierForm, default_lead_time: i
         "title": form.title,
         "layout": _layout(form, rows),
         "lead_time_days": int(lead_time),
-        "arrival": (date.today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
+        "arrival": (local_today() + timedelta(days=max(int(lead_time), 0))).isoformat(),
         "rows": [_detail_row(record, int(lead_time)) for record in rows.to_dict(orient="records")],
     }
 
@@ -193,8 +194,8 @@ def _create_in_transit(rows: pd.DataFrame, form: SupplierForm, *, lead_time: int
     order = create_procurement_order(
         supplier=order_form_supplier(rows, default=form.title),
         items_frame=items,
-        order_date=date.today(),
-        expected_date=date.today() + timedelta(days=max(int(lead_time), 0)),
+        order_date=local_today(),
+        expected_date=local_today() + timedelta(days=max(int(lead_time), 0)),
         comment=comment,
         created_by=username,
         status="in_transit",

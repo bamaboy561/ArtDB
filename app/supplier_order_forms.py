@@ -14,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from local_time import local_today
 
 
 SECTION_BOARDS = "boards"
@@ -862,7 +863,7 @@ def build_supplier_order_workbook(
     heading(1, f"Заказ поставщику {form.title}", Font(name="Calibri", size=16, bold=True, color=navy), 26)
     heading(
         2,
-        f"Дата заказа: {(order_date or date.today()):%d.%m.%Y}",
+        f"Дата заказа: {(order_date or local_today()):%d.%m.%Y}",
         Font(name="Calibri", size=11, color="5B6B7B"),
         18,
     )

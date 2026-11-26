@@ -18,6 +18,7 @@ from procurement_order_store import (
     load_procurement_orders,
     update_procurement_order,
 )
+from local_time import local_today
 
 FILTERS = ("active", "overdue", "all")
 
@@ -34,7 +35,7 @@ def _iso(value: object) -> str | None:
 
 def order_list(kind: str, today: date | None = None) -> list[dict[str, object]]:
     """Active orders, the overdue ones among them, or all; each with its progress in units."""
-    today = today or date.today()
+    today = today or local_today()
     orders = load_procurement_orders()
     items = load_procurement_order_items()
     if orders.empty:
