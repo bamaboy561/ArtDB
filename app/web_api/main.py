@@ -180,16 +180,20 @@ def order_in_transit(key: str, body: OrderFileRequest, user: dict = Depends(admi
 
 
 @app.post("/api/orders/forms/{key}/supplier-file")
-async def supplier_file(
+def supplier_file(
     key: str,
     file: UploadFile = File(...),
     salons: str = Form(""),
     confirm: bool = Form(False),
     user: dict = Depends(admin_user),
 ) -> dict:
-    """The supplier's corrected file: shown first, an order on the way once confirmed."""
+    """The supplier's corrected file: shown first, an order on the way once confirmed.
+
+    A plain function, so it runs in a worker thread: on the server's own loop the forecast
+    and the Excel parsing would hold up every page and the health check.
+    """
     forecast, form, lead_time = _supplier_form(key, _salons(salons))
-    content = await file.read()
+    content = file.file.read()
     if not confirm:
         preview, _, _ = orders.file_preview(forecast, form, content)
         return preview

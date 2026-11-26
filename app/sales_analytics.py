@@ -375,20 +375,29 @@ def fill_supplier_from_text(
         missing = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
         if not columns or not missing.any():
             continue
-        text = data.loc[missing, columns].fillna("").astype(str)
-        combined = text.iloc[:, 0]
+        key_columns = list(columns)
+        if columns is group_columns and "product" in data.columns:
+            key_columns.append("product")
+        rows = data.loc[missing, key_columns].fillna("").astype(str)
+        # Sales repeat the same goods thousands of times: work out each distinct row once.
+        codes = rows.groupby(key_columns, sort=False).ngroup().to_numpy()
+        text = rows.loc[~pd.Series(codes).duplicated().to_numpy()]
+        combined = text[columns[0]]
         for column in columns[1:]:
             combined = combined.str.cat(text[column], sep=" ")
         inferred = infer_supplier_series(combined, supplier_rules).fillna("").astype(str).str.strip()
         if columns is group_columns:
-            groups = text.iloc[:, 0]
+            groups = text[columns[0]]
             for column in columns[1:]:
                 groups = groups.str.cat(text[column], sep=" > ")
-            products = data.loc[missing, "product"].fillna("").astype(str) if "product" in data.columns else groups
-            pairs = list(zip(products, groups))
-            lookup = {pair: supplier_by_group(*pair) for pair in set(pairs)}
-            told = pd.Series([lookup[pair] for pair in pairs], index=products.index, dtype=object)
+            products = text["product"] if "product" in data.columns else groups
+            told = pd.Series(
+                [supplier_by_group(product, group) for product, group in zip(products, groups)],
+                index=text.index,
+                dtype=object,
+            )
             inferred = told.where(told.ne(""), inferred)
+        inferred = pd.Series(inferred.to_numpy(dtype=object)[codes], index=rows.index)
         found = inferred.ne("")
         if found.any():
             data.loc[inferred.index[found], "supplier"] = inferred.loc[found]

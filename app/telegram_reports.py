@@ -28,7 +28,8 @@ from procurement_order_store import (
 )
 from procurement_store import load_procurement_items
 from report_workbook import build_report_workbook
-from salon_data_store import load_archive_data, load_manifest, load_salons
+from salon_data_store import load_manifest, load_salons
+from sales_source import load_sales_archive
 from sales_analytics import (
     build_abc_analysis,
     build_monthly_summary,
@@ -235,21 +236,27 @@ def send_telegram_message(
     if not target_chat_ids:
         raise RuntimeError("Не выбран Telegram-чат для отчётов.")
 
+    failures: list[str] = []
     for target_chat_id in target_chat_ids:
-        fields = {
-            "chat_id": target_chat_id,
-            "text": _normalize_telegram_html(text),
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        }
-        if reply_markup:
-            fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
-        payload = parse.urlencode(fields).encode("utf-8")
-        _telegram_api_request(
-            "sendMessage",
-            payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        try:
+            fields = {
+                "chat_id": target_chat_id,
+                "text": _normalize_telegram_html(text),
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            }
+            if reply_markup:
+                fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+            payload = parse.urlencode(fields).encode("utf-8")
+            _telegram_api_request(
+                "sendMessage",
+                payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except Exception as error:  # One chat that fails must not keep the report from the others.
+            failures.append(f"{target_chat_id}: {error}")
+    if failures:
+        raise RuntimeError("Telegram не принял отправку в чаты: " + "; ".join(failures))
 
 
 def get_telegram_updates(*, offset: int = 0, timeout: int = 20) -> list[dict[str, object]]:
@@ -379,28 +386,34 @@ def send_telegram_document(
     if not target_chat_ids:
         raise RuntimeError("Не выбран Telegram-чат для отчётов.")
 
+    failures: list[str] = []
     for target_chat_id in target_chat_ids:
-        fields = {
-            "chat_id": target_chat_id,
-            "caption": _normalize_telegram_html(report_file.caption)[:1024],
-            "parse_mode": "HTML",
-        }
-        payload, boundary = _encode_multipart_formdata(
-            fields,
-            [
-                (
-                    "document",
-                    report_file.filename,
-                    report_file.content,
-                    report_file.content_type,
-                )
-            ],
-        )
-        _telegram_api_request(
-            "sendDocument",
-            payload,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
+        try:
+            fields = {
+                "chat_id": target_chat_id,
+                "caption": _normalize_telegram_html(report_file.caption)[:1024],
+                "parse_mode": "HTML",
+            }
+            payload, boundary = _encode_multipart_formdata(
+                fields,
+                [
+                    (
+                        "document",
+                        report_file.filename,
+                        report_file.content,
+                        report_file.content_type,
+                    )
+                ],
+            )
+            _telegram_api_request(
+                "sendDocument",
+                payload,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+        except Exception as error:  # One chat that fails must not keep the report from the others.
+            failures.append(f"{target_chat_id}: {error}")
+    if failures:
+        raise RuntimeError("Telegram не принял отправку в чаты: " + "; ".join(failures))
 
 
 def send_telegram_photo(
@@ -413,28 +426,34 @@ def send_telegram_photo(
     if not target_chat_ids:
         raise RuntimeError("Не выбран Telegram-чат для отчётов.")
 
+    failures: list[str] = []
     for target_chat_id in target_chat_ids:
-        fields = {
-            "chat_id": target_chat_id,
-            "caption": _normalize_telegram_html(report_file.caption)[:1024],
-            "parse_mode": "HTML",
-        }
-        payload, boundary = _encode_multipart_formdata(
-            fields,
-            [
-                (
-                    "photo",
-                    report_file.filename,
-                    report_file.content,
-                    report_file.content_type,
-                )
-            ],
-        )
-        _telegram_api_request(
-            "sendPhoto",
-            payload,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
+        try:
+            fields = {
+                "chat_id": target_chat_id,
+                "caption": _normalize_telegram_html(report_file.caption)[:1024],
+                "parse_mode": "HTML",
+            }
+            payload, boundary = _encode_multipart_formdata(
+                fields,
+                [
+                    (
+                        "photo",
+                        report_file.filename,
+                        report_file.content,
+                        report_file.content_type,
+                    )
+                ],
+            )
+            _telegram_api_request(
+                "sendPhoto",
+                payload,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+        except Exception as error:  # One chat that fails must not keep the report from the others.
+            failures.append(f"{target_chat_id}: {error}")
+    if failures:
+        raise RuntimeError("Telegram не принял отправку в чаты: " + "; ".join(failures))
 
 
 def format_money_plain(value: object) -> str:
@@ -883,7 +902,7 @@ def build_daily_summary() -> str:
     else:
         summary_lines.append(_telegram_metric_line("Статус", "все салоны загрузили данные"))
 
-    archive_result = load_archive_data(salons=salons if salons else None)
+    archive_result = load_sales_archive(salons or None).result
     procurement_forecast = pd.DataFrame()
     if not archive_result.data.empty:
         monthly_summary = build_monthly_summary(archive_result.data)
@@ -1076,7 +1095,7 @@ def build_automation_alerts(
 def build_risk_alert_message() -> str:
     salons = load_salons()
     manifest = load_manifest()
-    archive_result = load_archive_data(salons=salons if salons else None)
+    archive_result = load_sales_archive(salons or None).result
     procurement_forecast = build_default_procurement_forecast(archive_result.data)
     alerts = build_automation_alerts(
         archive_result.data,
@@ -1227,7 +1246,7 @@ def build_supplier_order_file(
 
 def build_supplier_order_report_files() -> list[TelegramReportFile]:
     salons = load_salons()
-    archive_result = load_archive_data(salons=salons if salons else None)
+    archive_result = load_sales_archive(salons or None).result
     procurement_forecast = build_default_procurement_forecast(archive_result.data)
     order_file = build_supplier_order_file(procurement_forecast)
     return [order_file] if order_file is not None else []
@@ -1406,7 +1425,7 @@ def build_targeted_telegram_card(
 
 def build_daily_telegram_card() -> TelegramReportFile | None:
     salons = load_salons()
-    archive_result = load_archive_data(salons=salons if salons else None)
+    archive_result = load_sales_archive(salons or None).result
     if archive_result.data.empty:
         return None
 
@@ -1959,7 +1978,7 @@ def send_targeted_telegram_report(
 
 def build_telegram_report_files() -> list[TelegramReportFile]:
     salons = load_salons()
-    archive_result = load_archive_data(salons=salons if salons else None)
+    archive_result = load_sales_archive(salons or None).result
     now = datetime.now(get_timezone())
     today_label = now.strftime("%Y%m%d")
 
@@ -2216,7 +2235,13 @@ def send_telegram_report_pack(*, with_files: bool = True, caption: str | None = 
     except Exception as error:
         print(f"Telegram daily visual card error: {error}", flush=True)
 
-    send_telegram_message(caption or build_daily_summary())
+    # The summary failing in one chat must not keep the files from being sent.
+    summary_error: Exception | None = None
+    try:
+        send_telegram_message(caption or build_daily_summary())
+    except Exception as error:
+        summary_error = error
+        print(f"Telegram daily summary error: {error}", flush=True)
     sent_files = 0
     if with_files:
         for report_file in build_telegram_report_files():
@@ -2225,4 +2250,6 @@ def send_telegram_report_pack(*, with_files: bool = True, caption: str | None = 
                 sent_files += 1
             except Exception as error:
                 print(f"Telegram report file {report_file.filename} error: {error}", flush=True)
+    if summary_error is not None:
+        raise summary_error
     return sent_files

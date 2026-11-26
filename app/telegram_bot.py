@@ -18,17 +18,7 @@ from db import (
     log_audit_event,
     set_service_state,
 )
-from procurement_store import load_procurement_items
-from product_identity import apply_product_category_rules, map_unique, normalize_product_match_key
-from salon_data_store import load_archive_data, load_salons
-from sales_analytics import apply_brand_supplier, fill_supplier_from_text
-from sku_catalog_store import (
-    apply_sku_aliases,
-    apply_sku_attribute_overrides,
-    load_sku_aliases,
-    load_sku_attribute_overrides,
-)
-from supplier_rules_store import load_supplier_keyword_rules, load_supplier_product_assignments
+from sales_source import load_sales_archive
 from telegram_reports import (
     TARGETED_TELEGRAM_REPORT_LABELS,
     answer_telegram_callback,
@@ -129,122 +119,9 @@ def resolve_report_period(data: pd.DataFrame, period_key: str) -> tuple[date, da
     raise ValueError("Неизвестный период отчёта.")
 
 
-def _supplier_rules() -> tuple[tuple[str, str], ...]:
-    rules = load_supplier_keyword_rules()
-    if rules.empty or not {"supplier", "keyword"}.issubset(rules.columns):
-        return ()
-    if "is_active" in rules.columns:
-        rules = rules[rules["is_active"].fillna(True).astype(bool)]
-    return tuple(
-        (str(row["supplier"]).strip(), str(row["keyword"]).strip())
-        for _, row in rules.iterrows()
-        if str(row["supplier"]).strip() and str(row["keyword"]).strip()
-    )
-
-
 def load_bot_sales_data(salons: list[str] | None = None) -> pd.DataFrame:
     """Sales with suppliers, brands and SKU merges applied, as the site shows them; all salons by default."""
-    salons = salons or load_salons()
-    supplier_rules = _supplier_rules()
-    archive_result = load_archive_data(
-        salons=salons if salons else None,
-        supplier_rules=supplier_rules,
-    )
-    data = archive_result.data
-    if data.empty:
-        return data
-    aliases = load_sku_aliases()
-    procurement_items = apply_sku_aliases(
-        load_procurement_items(),
-        aliases,
-        aggregate_inventory=True,
-    )
-    archive_result = None
-    supplier_product_assignments = load_supplier_product_assignments()
-    data = _enrich_sales_catalog(
-        data,
-        procurement_items=procurement_items,
-        supplier_product_assignments=supplier_product_assignments,
-        supplier_rules=supplier_rules,
-    )
-    data = apply_sku_attribute_overrides(
-        data,
-        load_sku_attribute_overrides(),
-        copy_data=False,
-    )
-    data = apply_brand_supplier(data, supplier_product_assignments, copy_data=False)
-    data = apply_sku_aliases(data, aliases, copy_data=False)
-    return apply_product_category_rules(data, copy_data=False)
-
-
-def _enrich_sales_catalog(
-    data: pd.DataFrame,
-    *,
-    procurement_items: pd.DataFrame,
-    supplier_product_assignments: pd.DataFrame,
-    supplier_rules: tuple[tuple[str, str], ...] = (),
-) -> pd.DataFrame:
-    if data.empty:
-        return data
-
-    enriched = data.copy(deep=False)
-    for column in ("supplier", "brand"):
-        enriched[column] = (
-            enriched.get(column, pd.Series("", index=enriched.index))
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    if not procurement_items.empty and "product" in procurement_items.columns:
-        catalog = procurement_items.copy()
-        catalog["_lookup_key"] = map_unique(catalog["product"], normalize_product_match_key)
-        catalog = catalog[catalog["_lookup_key"].ne("")]
-        product_lookup = map_unique(enriched["product"], normalize_product_match_key)
-        product_key_lookup = (
-            map_unique(enriched["product_key"], normalize_product_match_key)
-            if "product_key" in enriched.columns
-            else product_lookup
-        )
-        for column in ("supplier", "brand"):
-            if column not in catalog.columns:
-                continue
-            source = catalog[["_lookup_key", column]].copy()
-            source[column] = source[column].fillna("").astype(str).str.strip()
-            source = source[source[column].ne("")].drop_duplicates("_lookup_key", keep="last")
-            lookup = source.set_index("_lookup_key")[column].to_dict()
-            mapped = product_lookup.map(lookup).fillna(product_key_lookup.map(lookup))
-            current = enriched[column].fillna("").astype(str).str.strip()
-            missing = current.eq("") | current.str.casefold().eq("не назначен")
-            fill_mask = missing & mapped.fillna("").astype(str).str.strip().ne("")
-            enriched.loc[fill_mask, column] = mapped.loc[fill_mask].astype(str).str.strip()
-
-    # As the site does: built-in names and 1C groups count even without rules of the user's own.
-    fill_supplier_from_text(enriched, supplier_rules)
-
-    if (
-        not supplier_product_assignments.empty
-        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
-    ):
-        assignments = supplier_product_assignments.copy()
-        assignments["_lookup_key"] = (
-            assignments["product_key"].fillna("").astype(str).str.strip().str.casefold()
-        )
-        assignments["supplier"] = assignments["supplier"].fillna("").astype(str).str.strip()
-        assignments = assignments[
-            assignments["_lookup_key"].ne("") & assignments["supplier"].ne("")
-        ].drop_duplicates("_lookup_key", keep="last")
-        assignment_lookup = assignments.set_index("_lookup_key")["supplier"].to_dict()
-        identity_column = "product_key" if "product_key" in enriched.columns else "product"
-        identity_lookup = enriched[identity_column].fillna("").astype(str).str.strip().str.casefold()
-        product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
-        assigned = identity_lookup.map(assignment_lookup).fillna(product_lookup.map(assignment_lookup))
-        assigned_mask = assigned.fillna("").astype(str).str.strip().ne("")
-        enriched.loc[assigned_mask, "supplier"] = assigned.loc[assigned_mask].astype(str).str.strip()
-
-    enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
-    enriched["brand"] = enriched["brand"].fillna("").astype(str).str.strip().replace("", "Не назначен")
-    return enriched
+    return load_sales_archive(salons).result.data
 
 
 def _short_text(value: object, limit: int = 54) -> str:

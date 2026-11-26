@@ -11,7 +11,6 @@ from html import escape
 from io import BytesIO
 from pathlib import Path
 import secrets
-import uuid
 from textwrap import dedent
 
 import pandas as pd
@@ -110,7 +109,6 @@ from sales_analytics import (
     extract_return_rows,
     guess_column_mapping,
     apply_brand_supplier,
-    fill_supplier_from_text,
     fit_period,
     has_assigned_brand,
     list_excel_sheets,
@@ -119,13 +117,20 @@ from sales_analytics import (
 )
 from new_site_bridge import attach_running as attach_new_site
 from run_memory import release_previous_run
+from sales_source import (
+    SalesReferences,
+    dataframe_cache_key,
+    enrich_sales_with_brand,
+    enrich_sales_with_supplier,
+    forget_sales_archive,
+    load_sales_archive,
+    supplier_rule_items_from_frame,
+)
 from salon_data_store import (
-    PRE_ALIAS_TRACKED_COLUMNS,
     EnrichedArchive,
     count_uploads_for_salon,
     delete_salon,
     delete_upload,
-    load_archive_data,
     load_manifest,
     load_salons,
     register_upload,
@@ -6028,55 +6033,13 @@ def enrich_sales_frame(
     return data, pre_alias
 
 
-def changed_tracked_rows(before: pd.DataFrame, after: pd.DataFrame) -> pd.DataFrame:
-    """Original values of the rows that aliases or category rules rewrote."""
-    columns = [column for column in PRE_ALIAS_TRACKED_COLUMNS if column in before.columns and column in after.columns]
-    if not columns or before.empty:
-        return pd.DataFrame()
-    changed = pd.Series(False, index=before.index)
-    for column in columns:
-        old_values = before[column].astype(object)
-        new_values = after[column].astype(object)
-        changed |= ~(old_values.eq(new_values) | (old_values.isna() & new_values.isna()))
-    return before.loc[changed, columns].copy()
-
-
-@st.cache_resource(
-    show_spinner="Загружаю архив продаж. После обновления сайта это может занять пару минут, затем будет быстро.",
-    max_entries=1,
-    ttl=3600,
-)
 def cached_load_enriched_archive(
     selected_salons: tuple[str, ...],
-    supplier_rule_items: tuple[tuple[str, str], ...],
-    reference_key: str,
-    *,
-    _procurement_items: pd.DataFrame,
-    _supplier_product_assignments: pd.DataFrame,
-    _sku_attribute_overrides: pd.DataFrame,
-    _sku_aliases: pd.DataFrame,
+    references: SalesReferences,
 ) -> EnrichedArchive:
-    """Load the archive and enrich it once; only the enriched copy stays in memory."""
-    result = load_archive_data(salons=list(selected_salons), supplier_rules=supplier_rule_items)
-    pre_alias_rows = pd.DataFrame()
-    if not result.data.empty:
-        data = enrich_sales_with_supplier(
-            result.data,
-            _procurement_items,
-            supplier_rule_items=supplier_rule_items,
-            supplier_product_assignments=_supplier_product_assignments,
-            copy_data=False,
-        )
-        data = enrich_sales_with_brand(data, _procurement_items, copy_data=False)
-        data = apply_sku_attribute_overrides(data, _sku_attribute_overrides, copy_data=False)
-        data = apply_brand_supplier(data, _supplier_product_assignments, copy_data=False)
-        tracked = [column for column in PRE_ALIAS_TRACKED_COLUMNS if column in data.columns]
-        before_aliases = data[tracked].copy()
-        data = apply_sku_aliases(data, _sku_aliases, copy_data=False)
-        data = apply_product_category_rules(data, copy_data=False)
-        pre_alias_rows = changed_tracked_rows(before_aliases, data)
-        result.data = data
-    return EnrichedArchive(result=result, data_key=uuid.uuid4().hex, pre_alias_rows=pre_alias_rows)
+    """The shared archive of the server (see sales_source), shown for the chosen salons."""
+    with st.spinner("Загружаю архив продаж. После обновления сайта это может занять пару минут, затем будет быстро."):
+        return load_sales_archive(list(selected_salons), references)
 
 
 def keep_rows(frame: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
@@ -6101,6 +6064,7 @@ def cached_load_manifest() -> pd.DataFrame:
 def clear_application_caches() -> None:
     st.cache_data.clear()
     st.cache_resource.clear()
+    forget_sales_archive()
 
 
 @st.cache_data(show_spinner=False, max_entries=2, ttl=300)
@@ -6145,160 +6109,6 @@ def cached_build_supplier_assignment_catalog(
     combined_key: str,
 ) -> pd.DataFrame:
     return build_supplier_assignment_catalog(_frame, _assignments)
-
-
-def supplier_rule_items_from_frame(frame: pd.DataFrame) -> tuple[tuple[str, str], ...]:
-    if frame.empty or not {"supplier", "keyword"}.issubset(frame.columns):
-        return ()
-
-    if "is_active" in frame.columns:
-        active_frame = frame[frame["is_active"].fillna(True).astype(bool)].copy()
-    else:
-        active_frame = frame.copy()
-
-    items = []
-    seen_keywords: set[str] = set()
-    for row in active_frame.to_dict(orient="records"):
-        supplier = str(row.get("supplier", "")).strip()
-        keyword = str(row.get("keyword", "")).strip()
-        keyword_key = keyword.casefold()
-        if supplier and keyword and keyword_key not in seen_keywords:
-            seen_keywords.add(keyword_key)
-            items.append((supplier, keyword))
-    return tuple(items)
-
-
-def enrich_sales_with_supplier(
-    data: pd.DataFrame,
-    procurement_items: pd.DataFrame,
-    supplier_rule_items: tuple[tuple[str, str], ...] = (),
-    supplier_product_assignments: pd.DataFrame | None = None,
-    *,
-    copy_data: bool = True,
-) -> pd.DataFrame:
-    if data.empty:
-        return data
-
-    enriched = data.copy() if copy_data else data
-    if "supplier" not in enriched.columns:
-        enriched["supplier"] = ""
-
-    supplier_text = enriched["supplier"].fillna("").astype(str).str.strip()
-    missing_supplier = supplier_text.eq("") | supplier_text.str.casefold().eq("не назначен")
-    enriched["supplier"] = supplier_text
-
-    if not procurement_items.empty and {"product", "supplier"}.issubset(procurement_items.columns):
-        supplier_lookup_source = procurement_items.copy()
-        supplier_lookup_source["product_lookup_key"] = supplier_lookup_source["product"].map(
-            normalize_product_match_key
-        )
-        supplier_lookup_source["supplier"] = supplier_lookup_source["supplier"].fillna("").astype(str).str.strip()
-        supplier_lookup_source = supplier_lookup_source[
-            supplier_lookup_source["product_lookup_key"].ne("") & supplier_lookup_source["supplier"].ne("")
-        ]
-
-        if not supplier_lookup_source.empty:
-            supplier_lookup = (
-                supplier_lookup_source.drop_duplicates("product_lookup_key", keep="last")
-                .set_index("product_lookup_key")["supplier"]
-                .to_dict()
-            )
-            product_lookup = map_unique(enriched["product"], normalize_product_match_key)
-            mapped_supplier = product_lookup.map(supplier_lookup)
-
-            if "product_key" in enriched.columns:
-                product_key_lookup = map_unique(enriched["product_key"], normalize_product_match_key)
-                mapped_supplier = mapped_supplier.fillna(product_key_lookup.map(supplier_lookup))
-
-            fill_mask = missing_supplier & mapped_supplier.fillna("").astype(str).str.strip().ne("")
-            enriched.loc[fill_mask, "supplier"] = mapped_supplier.loc[fill_mask].astype(str).str.strip()
-
-    fill_supplier_from_text(enriched, supplier_rule_items)
-
-    if (
-        supplier_product_assignments is not None
-        and not supplier_product_assignments.empty
-        and {"product_key", "supplier"}.issubset(supplier_product_assignments.columns)
-    ):
-        assignment_source = supplier_product_assignments.copy()
-        assignment_source["assignment_key"] = (
-            assignment_source["product_key"].fillna("").astype(str).str.strip().str.casefold()
-        )
-        assignment_source["supplier"] = assignment_source["supplier"].fillna("").astype(str).str.strip()
-        assignment_source = assignment_source[
-            assignment_source["assignment_key"].ne("") & assignment_source["supplier"].ne("")
-        ]
-        if not assignment_source.empty:
-            assignment_lookup = (
-                assignment_source.drop_duplicates("assignment_key", keep="last")
-                .set_index("assignment_key")["supplier"]
-                .to_dict()
-            )
-            if "product_key" in enriched.columns:
-                product_key_lookup = enriched["product_key"].fillna("").astype(str).str.strip().str.casefold()
-            else:
-                product_key_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
-            assigned_supplier = product_key_lookup.map(assignment_lookup)
-
-            product_lookup = enriched["product"].fillna("").astype(str).str.strip().str.casefold()
-            assigned_supplier = assigned_supplier.fillna(product_lookup.map(assignment_lookup))
-            assigned_mask = assigned_supplier.fillna("").astype(str).str.strip().ne("")
-            if assigned_mask.any():
-                enriched.loc[assigned_mask, "supplier"] = assigned_supplier.loc[assigned_mask].astype(str).str.strip()
-
-    enriched["supplier"] = enriched["supplier"].fillna("").astype(str).str.strip().replace("", "Не назначен")
-    return enriched
-
-
-def enrich_sales_with_brand(
-    data: pd.DataFrame,
-    procurement_items: pd.DataFrame,
-    *,
-    copy_data: bool = True,
-) -> pd.DataFrame:
-    if data.empty:
-        return data
-
-    enriched = data.copy() if copy_data else data
-    enriched["brand"] = (
-        enriched.get("brand", pd.Series("", index=enriched.index))
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-    if procurement_items.empty or not {"product", "brand"}.issubset(procurement_items.columns):
-        enriched["brand"] = enriched["brand"].replace("", "Не назначен")
-        return enriched
-
-    brand_lookup_source = procurement_items[["product", "brand"]].copy()
-    brand_lookup_source["product_lookup_key"] = brand_lookup_source["product"].map(
-        normalize_product_match_key
-    )
-    brand_lookup_source["brand"] = (
-        brand_lookup_source["brand"].fillna("").astype(str).str.strip()
-    )
-    brand_lookup_source = brand_lookup_source[
-        brand_lookup_source["product_lookup_key"].ne("")
-        & brand_lookup_source["brand"].ne("")
-    ]
-    if not brand_lookup_source.empty:
-        brand_lookup = (
-            brand_lookup_source.drop_duplicates("product_lookup_key", keep="last")
-            .set_index("product_lookup_key")["brand"]
-            .to_dict()
-        )
-        product_lookup = map_unique(enriched["product"], normalize_product_match_key)
-        mapped_brand = product_lookup.map(brand_lookup)
-        if "product_key" in enriched.columns:
-            product_key_lookup = map_unique(enriched["product_key"], normalize_product_match_key)
-            mapped_brand = mapped_brand.fillna(product_key_lookup.map(brand_lookup))
-
-        missing_brand = enriched["brand"].eq("") | enriched["brand"].str.casefold().eq("не назначен")
-        fill_mask = missing_brand & mapped_brand.fillna("").astype(str).str.strip().ne("")
-        enriched.loc[fill_mask, "brand"] = mapped_brand.loc[fill_mask].astype(str).str.strip()
-
-    enriched["brand"] = enriched["brand"].fillna("").astype(str).str.strip().replace("", "Не назначен")
-    return enriched
 
 
 def build_missing_supplier_assignment_candidates(data: pd.DataFrame) -> pd.DataFrame:
@@ -6720,24 +6530,6 @@ def default_supplier_rules_frame() -> pd.DataFrame:
         for keyword in keywords
     ]
     return pd.DataFrame(rows, columns=["supplier", "keyword"])
-
-
-def dataframe_cache_key(frame: pd.DataFrame) -> str:
-    if frame.empty:
-        return f"empty:{','.join(map(str, frame.columns))}"
-
-    try:
-        row_hashes = pd.util.hash_pandas_object(frame, index=True, categorize=True).values
-        digest = hashlib.blake2b(row_hashes.tobytes(), digest_size=16).hexdigest()
-    except (TypeError, ValueError):
-        digest_source = (
-            len(frame),
-            tuple(map(str, frame.columns)),
-            tuple(map(str, frame.dtypes)),
-            tuple(map(str, frame.index[[0, -1]])),
-        )
-        digest = hashlib.blake2b(repr(digest_source).encode("utf-8"), digest_size=16).hexdigest()
-    return f"{len(frame)}:{len(frame.columns)}:{digest}"
 
 
 @st.cache_data(show_spinner=False, max_entries=8, ttl=900)
@@ -10966,15 +10758,13 @@ if work_mode not in upload_modes:
 
     enriched_archive = cached_load_enriched_archive(
         tuple(selected_archive_salons),
-        supplier_rule_items,
-        ":".join(
-            dataframe_cache_key(frame)
-            for frame in (procurement_items, supplier_product_assignments, sku_attribute_overrides, sku_aliases)
+        SalesReferences(
+            procurement_items=procurement_items,
+            supplier_rule_items=supplier_rule_items,
+            supplier_product_assignments=supplier_product_assignments,
+            sku_attribute_overrides=sku_attribute_overrides,
+            sku_aliases=sku_aliases,
         ),
-        _procurement_items=procurement_items,
-        _supplier_product_assignments=supplier_product_assignments,
-        _sku_attribute_overrides=sku_attribute_overrides,
-        _sku_aliases=sku_aliases,
     )
     archive_result = enriched_archive.result
     manifest_view = archive_result.manifest.copy()

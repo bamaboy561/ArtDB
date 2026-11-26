@@ -7,7 +7,7 @@ from typing import Callable
 
 import pandas as pd
 
-from product_identity import normalize_product_match_key
+from product_identity import map_unique, normalize_product_match_key
 from sales_analytics import build_abc_analysis, build_product_summary, has_assigned_brand
 
 
@@ -145,7 +145,12 @@ def build_procurement_forecast(
     safe_safety_days = max(int(safety_days), 0)
     safe_min_active_months = max(int(min_active_months), 1)
 
-    working = frame.copy()
+    # Only the columns the forecast reads: the archive has many more, and this runs on every salon choice.
+    used = (
+        "date", "product", "product_key", "item_code", "month", "month_label",
+        "quantity", "revenue", "cost", "margin", "category", "supplier", "brand",
+    )
+    working = frame[[column for column in used if column in frame.columns]].copy()
     working["date"] = pd.to_datetime(working["date"], errors="coerce")
     working = working.dropna(subset=["date", "product"]).copy()
     working["product"] = working["product"].fillna("").astype(str).str.strip()
@@ -153,7 +158,7 @@ def build_procurement_forecast(
     if working.empty:
         return pd.DataFrame(columns=columns)
 
-    working["_product_key"] = working["product"].map(normalize_product_match_key)
+    working["_product_key"] = map_unique(working["product"], normalize_product_match_key)
     canonical_products = (
         working.sort_values("date")
         .drop_duplicates("_product_key", keep="last")

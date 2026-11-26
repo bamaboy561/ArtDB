@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import threading
 import time
 from typing import Any
 
@@ -22,6 +23,10 @@ PBKDF2_ITERATIONS = 120_000
 SUPPORTED_ROLES = {"admin", "manager", "salon"}
 ROLE_SORT_ORDER = {"admin": 0, "manager": 1, "salon": 2}
 SESSION_TTL_DAYS = 30
+# Signed in on a phone, a laptop and both sites at once is normal; the oldest beyond this are dropped.
+MAX_SESSIONS_PER_USER = 10
+# File mode: one process reads and rewrites the sessions file, one thread at a time.
+_sessions_lock = threading.RLock()
 
 
 def ensure_user_store() -> None:
@@ -348,24 +353,49 @@ def _public_user(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_auth_session(username: str, *, ttl_days: int = SESSION_TTL_DAYS) -> str:
+    """A new sign-in. The user's other devices and the other site stay signed in."""
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(days=ttl_days)
-    sessions = _cleanup_sessions()
-    sessions = [
-        record
-        for record in sessions
-        if str(record.get("username", "")).strip().casefold() != username.strip().casefold()
-    ]
-    sessions.append(
-        {
-            "token": token,
-            "username": username.strip(),
-            "created_at": now.isoformat(timespec="seconds"),
-            "expires_at": expires_at.isoformat(timespec="seconds"),
-        }
-    )
-    _save_raw_sessions(sessions)
+    record = {
+        "token": token,
+        "username": username.strip(),
+        # To the microsecond: the newest sign-ins are kept, and several can come in one second.
+        "created_at": now.isoformat(timespec="microseconds"),
+        "expires_at": (now + timedelta(days=ttl_days)).isoformat(timespec="seconds"),
+    }
+    username_key = record["username"].casefold()
+    if database_enabled():
+        ensure_user_store()
+        # Only this user's rows change: rewriting the whole table let two requests at once
+        # fail or wipe a sign-in made a moment earlier.
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM auth_sessions WHERE expires_at <= NOW()")
+                cursor.execute(
+                    "INSERT INTO auth_sessions (token, username, created_at, expires_at) VALUES (%s, %s, %s, %s)",
+                    (record["token"], record["username"], record["created_at"], record["expires_at"]),
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM auth_sessions
+                    WHERE LOWER(username) = %s
+                      AND token <> %s
+                      AND token NOT IN (
+                          SELECT token FROM auth_sessions
+                          WHERE LOWER(username) = %s
+                          ORDER BY created_at DESC, token
+                          LIMIT %s
+                      )
+                    """,
+                    (username_key, token, username_key, MAX_SESSIONS_PER_USER),
+                )
+        return token
+    with _sessions_lock:
+        sessions = _cleanup_sessions()
+        own = [item for item in sessions if str(item.get("username", "")).strip().casefold() == username_key]
+        others = [item for item in sessions if str(item.get("username", "")).strip().casefold() != username_key]
+        own = sorted(own, key=lambda item: str(item.get("created_at", "")))[-(MAX_SESSIONS_PER_USER - 1):]
+        _save_raw_sessions([*others, *own, record])
     return token
 
 
@@ -373,24 +403,38 @@ def revoke_auth_session(token: str) -> None:
     token = token.strip()
     if not token:
         return
-    sessions = _cleanup_sessions()
-    filtered = [record for record in sessions if str(record.get("token", "")).strip() != token]
-    if len(filtered) != len(sessions):
-        _save_raw_sessions(filtered)
+    if database_enabled():
+        ensure_user_store()
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM auth_sessions WHERE token = %s", (token,))
+        return
+    with _sessions_lock:
+        sessions = _cleanup_sessions()
+        filtered = [record for record in sessions if str(record.get("token", "")).strip() != token]
+        if len(filtered) != len(sessions):
+            _save_raw_sessions(filtered)
 
 
 def revoke_user_sessions(username: str) -> None:
     username_key = username.strip().casefold()
     if not username_key:
         return
-    sessions = _cleanup_sessions()
-    filtered = [
-        record
-        for record in sessions
-        if str(record.get("username", "")).strip().casefold() != username_key
-    ]
-    if len(filtered) != len(sessions):
-        _save_raw_sessions(filtered)
+    if database_enabled():
+        ensure_user_store()
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM auth_sessions WHERE LOWER(username) = %s", (username_key,))
+        return
+    with _sessions_lock:
+        sessions = _cleanup_sessions()
+        filtered = [
+            record
+            for record in sessions
+            if str(record.get("username", "")).strip().casefold() != username_key
+        ]
+        if len(filtered) != len(sessions):
+            _save_raw_sessions(filtered)
 
 
 def authenticate_session(token: str) -> dict[str, Any] | None:
@@ -398,18 +442,36 @@ def authenticate_session(token: str) -> dict[str, Any] | None:
     if not token:
         return None
 
-    sessions = _cleanup_sessions()
-    for record in sessions:
-        if str(record.get("token", "")).strip() != token:
-            continue
+    if database_enabled():
+        ensure_user_store()
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT username FROM auth_sessions WHERE token = %s AND expires_at > NOW()",
+                    (token,),
+                )
+                row = cursor.fetchone()
+        usernames = [str(_row_value(row, "username", 0))] if row else []
+    else:
+        with _sessions_lock:
+            sessions = _cleanup_sessions()
+        usernames = [
+            str(record.get("username", ""))
+            for record in sessions
+            if str(record.get("token", "")).strip() == token
+        ]
+    if not usernames:
+        return None
+    user = find_user(usernames[0])
+    if not user or not bool(user.get("is_active", True)):
+        revoke_auth_session(token)
+        return None
+    return _public_user(user)
 
-        user = find_user(str(record.get("username", "")))
-        if not user or not bool(user.get("is_active", True)):
-            revoke_auth_session(token)
-            return None
-        return _public_user(user)
 
-    return None
+def _row_value(row: Any, name: str, index: int) -> Any:
+    """A column of a database row, whether the driver returns tuples or dictionaries."""
+    return row[name] if isinstance(row, dict) else row[index]
 
 
 def list_users() -> list[dict[str, Any]]:

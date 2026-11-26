@@ -62,6 +62,24 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/orders/forms").status_code, 401)
         self.assertEqual(self.client.get("/api/auth/me").status_code, 401)
 
+    def test_the_supplier_file_is_read_and_shown(self) -> None:
+        self.sign_in("admin-token")
+        seen: list[bytes] = []
+
+        def preview(forecast, form, content):
+            seen.append(content)
+            return {"rows": []}, None, None
+
+        with patch.object(main.orders, "file_preview", preview):
+            answer = self.client.post(
+                "/api/orders/forms/wq/supplier-file",
+                files={"file": ("wq.xlsx", b"excel bytes")},
+                data={"salons": ""},
+            )
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(answer.json(), {"rows": []})
+        self.assertEqual(seen, [b"excel bytes"])
+
     def test_health_tells_when_the_server_started(self) -> None:
         answer = self.client.get("/api/health").json()
         self.assertTrue(answer["ok"])

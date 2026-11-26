@@ -13,9 +13,9 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+from sales_source import enrich_sales_with_brand, enrich_sales_with_supplier  # noqa: E402
 from telegram_bot import (
     TelegramReportMenu,
-    _enrich_sales_catalog,
     parse_date_range,
     resolve_report_period,
 )
@@ -170,10 +170,10 @@ class TelegramBotMenuTests(unittest.TestCase):
             [{"product_key": "A-1", "product": "Плита Дуб", "supplier": "Slotex"}]
         )
 
-        enriched = _enrich_sales_catalog(
-            self.sales,
-            procurement_items=catalog,
-            supplier_product_assignments=assignments,
+        # The bot shows sales enriched as the site does (sales_source).
+        enriched = enrich_sales_with_brand(
+            enrich_sales_with_supplier(self.sales, catalog, supplier_product_assignments=assignments),
+            catalog,
         )
 
         self.assertEqual(enriched.iloc[0]["supplier"], "Slotex")

@@ -36,6 +36,28 @@ class SessionStoreTest(unittest.TestCase):
             self.assertIsNotNone(auth_store.authenticate_session(token))
         save.assert_not_called()
 
+    def test_signing_in_on_a_second_device_keeps_the_first(self) -> None:
+        phone = auth_store.create_auth_session("anna")
+        laptop = auth_store.create_auth_session("anna")
+        self.assertIsNotNone(auth_store.authenticate_session(phone))
+        self.assertIsNotNone(auth_store.authenticate_session(laptop))
+
+    def test_only_the_oldest_sign_ins_beyond_the_limit_are_dropped(self) -> None:
+        tokens = [auth_store.create_auth_session("anna") for _ in range(auth_store.MAX_SESSIONS_PER_USER + 2)]
+        self.assertIsNone(auth_store.authenticate_session(tokens[0]))
+        self.assertIsNone(auth_store.authenticate_session(tokens[1]))
+        for token in tokens[2:]:
+            self.assertIsNotNone(auth_store.authenticate_session(token))
+
+    def test_signing_out_one_device_keeps_the_others(self) -> None:
+        phone = auth_store.create_auth_session("anna")
+        laptop = auth_store.create_auth_session("anna")
+        auth_store.revoke_auth_session(phone)
+        self.assertIsNone(auth_store.authenticate_session(phone))
+        self.assertIsNotNone(auth_store.authenticate_session(laptop))
+        auth_store.revoke_user_sessions("Anna")
+        self.assertIsNone(auth_store.authenticate_session(laptop))
+
     def test_requests_at_once_keep_the_user_signed_in(self) -> None:
         token = auth_store.create_auth_session("anna")
         failures: list[str] = []
