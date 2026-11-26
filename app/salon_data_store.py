@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import pickle
 import re
+import threading
+import time
 from typing import Any, Iterable
 import uuid
 
@@ -702,12 +704,68 @@ def _compact_string_columns(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+# One archive for the whole server process. The site, the new site, the Telegram bot and
+# the daily report used to build their own copies, and the 9:00 report alone built it about
+# five times; two builds at once do not fit in the server's 512 MB.
+ARCHIVE_SHARE_SECONDS = 300
+_archive_lock = threading.Lock()
+_shared_archive: tuple[tuple[object, ...], float, ArchiveLoadResult] | None = None
+
+
+def _detached(result: ArchiveLoadResult) -> ArchiveLoadResult:
+    """A caller's own view of the shared archive. With copy-on-write, shallow copies cost
+    almost nothing and a caller changing its tables never changes anyone else's."""
+    return ArchiveLoadResult(
+        data=result.data.copy(deep=False),
+        manifest=result.manifest.copy(deep=False),
+        warnings=list(result.warnings),
+        file_report=result.file_report.copy(deep=False),
+        exclusions=result.exclusions.copy(deep=False),
+        overlaps=result.overlaps.copy(deep=False),
+    )
+
+
+def forget_shared_archive() -> None:
+    global _shared_archive
+    with _archive_lock:
+        _shared_archive = None
+
+
 def load_archive_data(
     *,
     salons: list[str] | None = None,
     supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None = None,
 ) -> ArchiveLoadResult:
+    """The sales archive of the chosen salons, built once and shared until the uploads,
+    the salons or the supplier rules change."""
+    global _shared_archive
+    if supplier_rules is not None and not isinstance(supplier_rules, (tuple, list)):
+        supplier_rules = tuple(supplier_rules)
     manifest = load_manifest()
+    key = (
+        tuple(sorted(str(salon) for salon in salons or ())),
+        repr(supplier_rules),
+        tuple(manifest.astype(str).itertuples(index=False, name=None)),
+    )
+    # Callers wait for a build in progress instead of starting a second one.
+    with _archive_lock:
+        entry = _shared_archive
+        if entry is not None and entry[0] == key and time.monotonic() - entry[1] < ARCHIVE_SHARE_SECONDS:
+            return _detached(entry[2])
+        # Free the old archive before building the next one.
+        _shared_archive = None
+        entry = None
+        result = _build_archive_data(manifest, salons=salons, supplier_rules=supplier_rules)
+        _shared_archive = (key, time.monotonic(), result)
+        return _detached(result)
+
+
+def _build_archive_data(
+    manifest: pd.DataFrame,
+    *,
+    salons: list[str] | None,
+    supplier_rules: Iterable[dict[str, object] | tuple[object, object]] | None,
+) -> ArchiveLoadResult:
     warnings: list[str] = []
 
     if manifest.empty:

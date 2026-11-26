@@ -1259,7 +1259,7 @@ def _filter_targeted_sales_data(
     if start_date > end_date:
         raise ValueError("Дата начала отчёта не может быть позже даты окончания.")
 
-    filtered = data.copy()
+    filtered = data.copy(deep=False)
     parsed_dates = pd.to_datetime(filtered["date"], errors="coerce")
     date_values = parsed_dates.dt.date
     filtered = filtered[(date_values >= start_date) & (date_values <= end_date)].copy()
@@ -1410,7 +1410,7 @@ def build_daily_telegram_card() -> TelegramReportFile | None:
     if archive_result.data.empty:
         return None
 
-    data = archive_result.data.copy()
+    data = archive_result.data.copy(deep=False)
     monthly_summary = build_monthly_summary(data)
     if monthly_summary.empty:
         return None
@@ -1426,7 +1426,7 @@ def build_daily_telegram_card() -> TelegramReportFile | None:
         latest_mask = parsed_dates.dt.to_period("M") == latest_month.to_period("M")
         latest_data = data[latest_mask].copy()
     else:
-        latest_data = data.copy()
+        latest_data = data.copy(deep=False)
     overview = build_overview_metrics(latest_data)
     trend = monthly_summary.tail(10)[["month_label", "revenue"]].rename(
         columns={"month_label": "label"}
@@ -1991,7 +1991,7 @@ def build_telegram_report_files() -> list[TelegramReportFile]:
             )
         ]
 
-    data = archive_result.data.copy()
+    data = archive_result.data.copy(deep=False)
     overview = build_overview_metrics(data)
     monthly_summary = build_monthly_summary(data)
     product_summary = build_product_summary(data)

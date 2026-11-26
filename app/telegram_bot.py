@@ -187,7 +187,7 @@ def _enrich_sales_catalog(
     if data.empty:
         return data
 
-    enriched = data.copy()
+    enriched = data.copy(deep=False)
     for column in ("supplier", "brand"):
         enriched[column] = (
             enriched.get(column, pd.Series("", index=enriched.index))

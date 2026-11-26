@@ -4244,7 +4244,7 @@ def render_load_report_details(report: dict[str, object], current_user: dict[str
     file_display = file_report.drop(columns=["upload_id"], errors="ignore").rename(columns=LOAD_FILE_REPORT_NAMES)
     with files_tab:
         st.caption("Каждая строка — один загруженный файл: сколько строк в нём было, сколько принято и почему остальные исключены.")
-        st.dataframe(file_display, use_container_width=True, hide_index=True, height=min(460, 80 + len(file_display) * 36))
+        st.dataframe(file_display, width="stretch", hide_index=True, height=min(460, 80 + len(file_display) * 36))
 
     exclusion_display = pd.DataFrame(columns=list(LOAD_EXCLUSION_NAMES.values()))
     with rows_tab:
@@ -4297,7 +4297,7 @@ def render_load_report_details(report: dict[str, object], current_user: dict[str
             else:
                 st.dataframe(
                     exclusion_display,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=min(420, 80 + len(exclusion_display) * 36),
                 )
@@ -4308,7 +4308,7 @@ def render_load_report_details(report: dict[str, object], current_user: dict[str
             st.success("Повторных выгрузок за одни и те же даты нет.")
         else:
             st.caption("За эти даты продаж есть несколько файлов. В расчёт взят самый свежий, строки из более старого не учитываются, чтобы продажи не задвоились.")
-            st.dataframe(overlap_display, use_container_width=True, hide_index=True, height=min(420, 80 + len(overlap_display) * 36))
+            st.dataframe(overlap_display, width="stretch", hide_index=True, height=min(420, 80 + len(overlap_display) * 36))
 
     with notes_tab:
         if not notes:
@@ -4672,7 +4672,7 @@ def render_clickable_metric_cards(
                             key=f"kpi_open_{index}",
                             on_click=navigate_to_screen,
                             args=(target_screen, target_section),
-                            use_container_width=True,
+                            width="stretch",
                         )
 
 
@@ -5068,13 +5068,13 @@ def render_data_quality_report(report, current_user: dict[str, str]) -> None:
             }
             for issue in report.issues
         ]
-        st.dataframe(pd.DataFrame(issue_rows), use_container_width=True, hide_index=True, height=min(280, 62 + len(issue_rows) * 42))
+        st.dataframe(pd.DataFrame(issue_rows), width="stretch", hide_index=True, height=min(280, 62 + len(issue_rows) * 42))
 
     if not report.problem_rows.empty:
         with st.expander("Показать проблемные строки", expanded=False):
             st.dataframe(
                 format_display_frame_for_role(report.problem_rows, current_user),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=280,
             )
@@ -5370,7 +5370,7 @@ def render_mobile_bottom_navigation(active_screen: str, screen_options: list[str
                     icon=icon,
                     on_click=set_mobile_navigation_target,
                     args=(target_screen,),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
 
@@ -5648,7 +5648,7 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
             ]
         )
         st.code(credentials_text, language="text")
-        if st.button("Очистить карточку доступа", key="sidebar_clear_created_credentials", use_container_width=True):
+        if st.button("Очистить карточку доступа", key="sidebar_clear_created_credentials", width="stretch"):
             st.session_state.pop("sidebar_created_credentials", None)
             st.rerun()
 
@@ -5660,7 +5660,7 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
             key="sidebar_new_salon_name",
             placeholder="Например: Бишкек | Азия Молл",
         )
-        if st.button("Сохранить салон", key="sidebar_add_salon_button", use_container_width=True):
+        if st.button("Сохранить салон", key="sidebar_add_salon_button", width="stretch"):
             normalized_salon_name = new_salon_name.strip()
             existing_salons = {salon.casefold() for salon in current_salons}
 
@@ -5726,7 +5726,7 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
 
         generate_password_col, _ = st.columns([1, 1])
         with generate_password_col:
-            if st.button("Сгенерировать пароль", key="sidebar_generate_password", use_container_width=True):
+            if st.button("Сгенерировать пароль", key="sidebar_generate_password", width="stretch"):
                 generated_password = generate_temp_password()
                 st.session_state["sidebar_create_password"] = generated_password
                 st.session_state["sidebar_create_password_confirm"] = generated_password
@@ -5742,7 +5742,7 @@ def render_sidebar_admin_quick_actions(current_user: dict[str, str], registered_
         if st.button(
             "Создать пользователя",
             key="sidebar_create_user_button",
-            use_container_width=True,
+            width="stretch",
             disabled=create_user_disabled,
         ):
             if password != password_confirm:
@@ -5883,7 +5883,7 @@ def render_auth_gate() -> dict[str, str]:
                 phone = st.text_input("Телефон")
                 password = st.text_input("Пароль", type="password")
                 password_confirm = st.text_input("Подтверждение пароля", type="password")
-                submitted = st.form_submit_button("Создать руководителя", use_container_width=True)
+                submitted = st.form_submit_button("Создать руководителя", width="stretch")
 
             if submitted:
                 if password != password_confirm:
@@ -5926,7 +5926,7 @@ def render_auth_gate() -> dict[str, str]:
         with st.form("login_form"):
             identifier = st.text_input("Логин, email или телефон")
             password = st.text_input("Пароль", type="password")
-            submitted = st.form_submit_button("Войти", use_container_width=True)
+            submitted = st.form_submit_button("Войти", width="stretch")
 
         if submitted:
             user = authenticate_user(identifier, password)
@@ -8250,7 +8250,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
                     }
                 )
                 display_users["Роль"] = display_users["Роль"].map(role_label)
-                st.dataframe(display_users, use_container_width=True, hide_index=True)
+                st.dataframe(display_users, width="stretch", hide_index=True)
 
         if False:
             st.markdown('<div class="panel-title">Салоны</div>', unsafe_allow_html=True)
@@ -8261,7 +8261,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
             if salons_table.empty:
                 st.info("Салоны ещё не зарегистрированы.")
             else:
-                st.dataframe(salons_table, use_container_width=True, hide_index=True)
+                st.dataframe(salons_table, width="stretch", hide_index=True)
 
     with right_col:
         with st.container(border=True):
@@ -8279,7 +8279,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
                 salon_name = st.text_input("Салон", disabled=role_choice != "salon")
                 password = st.text_input("Пароль", type="password")
                 password_confirm = st.text_input("Подтверждение пароля", type="password")
-                submitted = st.form_submit_button("Создать пользователя", use_container_width=True)
+                submitted = st.form_submit_button("Создать пользователя", width="stretch")
 
             if submitted:
                 if password != password_confirm:
@@ -8313,7 +8313,7 @@ def render_access_tab(registered_salons: list[str]) -> None:
                 selected_username = st.selectbox("Пользователь", options=user_options) if user_options else st.selectbox("Пользователь", options=["Нет пользователей"], disabled=True)
                 new_password = st.text_input("Новый пароль", type="password")
                 new_password_confirm = st.text_input("Подтверждение нового пароля", type="password")
-                submitted = st.form_submit_button("Сменить пароль", use_container_width=True, disabled=not user_options)
+                submitted = st.form_submit_button("Сменить пароль", width="stretch", disabled=not user_options)
 
             if submitted:
                 if new_password != new_password_confirm:
@@ -8445,7 +8445,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                         st.caption(f"Показано записей: {format_number(len(audit_display))} (последние 500).")
                         st.dataframe(
                             audit_display,
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=min(560, 80 + len(audit_display) * 36),
                         )
@@ -8466,7 +8466,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                         placeholder="Например: Омск | Мега",
                         help="После создания этот салон появится в выборе при создании пользователя и загрузке данных.",
                     )
-                    if st.button("Добавить салон", key="admin_add_salon_button", use_container_width=True):
+                    if st.button("Добавить салон", key="admin_add_salon_button", width="stretch"):
                         normalized_salon_name = new_salon_name.strip()
                         existing_salons = {salon.casefold() for salon in registered_salons}
 
@@ -8497,7 +8497,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     if salons_table.empty:
                         st.info("Салоны пока не зарегистрированы.")
                     else:
-                        st.dataframe(salons_table, use_container_width=True, hide_index=True, height=200)
+                        st.dataframe(salons_table, width="stretch", hide_index=True, height=200)
 
                 with st.container(border=True):
                     render_panel_header(
@@ -8539,7 +8539,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                         if st.button(
                             "Удалить салон",
                             key="admin_delete_salon_button",
-                            use_container_width=True,
+                            width="stretch",
                             type="secondary",
                         ):
                             if salon_confirm_text.strip() != str(salon_to_delete).strip():
@@ -8645,7 +8645,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                 if st.button(
                     "Создать пользователя",
                     key="admin_create_user_button",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=create_user_disabled,
                 ):
                     if password != password_confirm:
@@ -8702,7 +8702,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                 if display_users.empty:
                     st.info("Пользователи пока не созданы.")
                 else:
-                    st.dataframe(display_users, use_container_width=True, hide_index=True)
+                    st.dataframe(display_users, width="stretch", hide_index=True)
 
             with st.container(border=True):
                 st.markdown('<div class="panel-title">Перевести администраторов в руководители</div>', unsafe_allow_html=True)
@@ -8745,7 +8745,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                 if st.button(
                     "Перевести в руководители",
                     key="admin_bulk_demote_button",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not bool(eligible_admin_usernames),
                 ):
                     if not selected_admins_to_demote:
@@ -8852,7 +8852,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     if st.button(
                         "Сохранить роль",
                         key="admin_update_role_button",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=role_change_disabled,
                     ):
                         proposed_salon = role_salon_value if new_role_value == "salon" else ""
@@ -8941,7 +8941,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     if st.button(
                         "Перевести в другой салон",
                         key="admin_reassign_salon_button",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         if not current_transfer_salon:
                             st.error("У выбранного пользователя нет текущей привязки к салону.")
@@ -9006,7 +9006,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                     if st.button(
                         "Удалить пользователя",
                         key="admin_delete_user_button",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         disabled=str(selected_user_to_delete).strip().casefold() == current_user["username"].strip().casefold(),
                     ):
@@ -9065,7 +9065,7 @@ def render_admin_tab(current_user: dict[str, str], registered_salons: list[str])
                 if st.button(
                     "Сменить пароль",
                     key="admin_reset_password_button",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not user_options,
                 ):
                     if new_password != new_password_confirm:
@@ -9408,7 +9408,7 @@ def render_overview_action_center(
                         key=f"signal_open_{index}",
                         on_click=navigate_to_screen,
                         args=target,
-                        use_container_width=True,
+                        width="stretch",
                     )
 
 
@@ -10640,7 +10640,7 @@ with st.sidebar:
             render_sidebar_admin_quick_actions(current_user, registered_salons)
     sidebar_tools_slot = st.container()
 
-    if st.button("Выйти", key="main_logout_button", use_container_width=True):
+    if st.button("Выйти", key="main_logout_button", width="stretch"):
         revoke_auth_session(get_persistent_auth_token())
         clear_persistent_auth_token()
         st.session_state.pop("auth_user", None)
@@ -10840,7 +10840,7 @@ if work_mode in upload_modes:
                     file_name=f"data_quality_{upload_fingerprint}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"download_quality_protocol_{upload_fingerprint}",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             if work_mode in {"Новая выгрузка", "Загрузка салона"}:
@@ -10888,7 +10888,7 @@ if work_mode in upload_modes:
                     if st.button(
                         "🚀 Сохранить в архив",
                         key="main_save_upload_button",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary",
                         disabled=save_disabled,
                     ):
@@ -11267,7 +11267,7 @@ with sidebar_tools_slot:
                     )
                     telegram_settings_submitted = st.form_submit_button(
                         "Сохранить настройки",
-                        use_container_width=True,
+                        width="stretch",
                     )
 
                 if telegram_settings_submitted:
@@ -11313,7 +11313,7 @@ with sidebar_tools_slot:
                         remove_connected_chat = st.button(
                             "Отключить",
                             key="telegram_remove_connected_chat_button",
-                            use_container_width=True,
+                            width="stretch",
                         )
                     if remove_connected_chat:
                         try:
@@ -11345,7 +11345,7 @@ with sidebar_tools_slot:
                     if st.button(
                         "Найти чат",
                         key="telegram_discover_chat_button",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=not bool(telegram_settings.bot_token),
                     ):
                         try:
@@ -11358,7 +11358,7 @@ with sidebar_tools_slot:
                     if st.button(
                         "Отправить тест",
                         key="telegram_send_test_button",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=not telegram_settings.configured,
                     ):
                         try:
@@ -11383,7 +11383,7 @@ with sidebar_tools_slot:
                     if st.button(
                         "Подключить выбранный чат",
                         key="telegram_connect_discovered_chat_button",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         try:
                             updated_chat_ids = add_telegram_chat_id(
@@ -11690,7 +11690,7 @@ with main_col:
                 unsafe_allow_html=True,
             )
         with filter_reset_col:
-            if st.button("Сбросить", key="reset_global_filters", use_container_width=True):
+            if st.button("Сбросить", key="reset_global_filters", width="stretch"):
                 for filter_key in (
                     "main_selected_dates",
                     "main_applied_dates",
@@ -12068,7 +12068,7 @@ with sidebar_health_slot:
             key="sidebar_health_open_procurement",
             on_click=navigate_to_screen,
             args=("Закупки",),
-            use_container_width=True,
+            width="stretch",
         )
 
 if load_report is not None:
@@ -12862,7 +12862,7 @@ if active_screen == "Карточка SKU":
                         disabled=sku_position == 0,
                         on_click=select_product_by_offset,
                         args=(sku_option_ids, -1),
-                        use_container_width=True,
+                        width="stretch",
                         help="Товар выше в рейтинге по выручке",
                     )
                 with sku_next_col:
@@ -12872,7 +12872,7 @@ if active_screen == "Карточка SKU":
                         disabled=sku_position >= len(sku_option_ids) - 1,
                         on_click=select_product_by_offset,
                         args=(sku_option_ids, 1),
-                        use_container_width=True,
+                        width="stretch",
                         help="Товар ниже в рейтинге по выручке",
                     )
 
@@ -13159,7 +13159,7 @@ if active_screen == "Карточка SKU":
                             yaxis_title=trend_metric_options[selected_trend_metric],
                         )
                         polish_figure(sku_trend_chart, height=360)
-                        st.plotly_chart(sku_trend_chart, use_container_width=True)
+                        st.plotly_chart(sku_trend_chart, width="stretch")
 
                         monthly_detail_columns = [
                             "month_label",
@@ -13194,7 +13194,7 @@ if active_screen == "Карточка SKU":
                                 rename_map=monthly_detail_rename,
                                 columns=monthly_detail_columns,
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=260,
                         )
@@ -13237,7 +13237,7 @@ if active_screen == "Карточка SKU":
                             stock_balance_chart.update_layout(showlegend=False, xaxis_title="шт", yaxis_title="")
                             stock_balance_chart.update_yaxes(autorange="reversed")
                             polish_figure(stock_balance_chart, height=230)
-                            st.plotly_chart(stock_balance_chart, use_container_width=True)
+                            st.plotly_chart(stock_balance_chart, width="stretch")
                         if not is_missing(stock_coverage_days):
                             if stock_coverage_days > 365:
                                 st.warning("Запаса хватит больше чем на год: товар почти не продаётся, деньги заморожены в остатке.")
@@ -13261,7 +13261,7 @@ if active_screen == "Карточка SKU":
                                 key="sku_go_to_procurement",
                                 on_click=navigate_to_screen,
                                 args=("Закупки",),
-                                use_container_width=True,
+                                width="stretch",
                             )
 
             with st.container(border=True):
@@ -13341,7 +13341,7 @@ if active_screen == "Карточка SKU":
                             polish_figure(sku_breakdown_chart, height=300)
                             st.plotly_chart(
                                 sku_breakdown_chart,
-                                use_container_width=True,
+                                width="stretch",
                                 key=f"sku_breakdown_chart_{sku_breakdown_column}",
                             )
 
@@ -13392,7 +13392,7 @@ if active_screen == "Карточка SKU":
                             },
                             columns=sales_columns,
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=380,
                     )
@@ -13430,7 +13430,7 @@ if active_screen == "Карточка SKU":
                                 "margin",
                             ],
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=260,
                     )
@@ -13565,7 +13565,7 @@ if active_screen == "Карточка SKU":
                 data=partial(to_excel_report_bytes, sku_export_sheets, report_title=f"Карточка SKU: {product_title}"),
                 file_name=f"sku_card_{safe_file_token}.xlsx",
                 mime=EXCEL_MIME,
-                use_container_width=True,
+                width="stretch",
             )
 
 if active_screen == "Финансы":
@@ -13727,7 +13727,7 @@ if active_screen == "Финансы":
                                 "comment": "Комментарий",
                             },
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=270,
                     )
@@ -13766,7 +13766,7 @@ if active_screen == "Финансы":
                     )
                     waterfall_chart.update_layout(yaxis_title="Сумма", xaxis_title="", showlegend=False)
                     polish_figure(waterfall_chart, height=330)
-                    st.plotly_chart(waterfall_chart, use_container_width=True)
+                    st.plotly_chart(waterfall_chart, width="stretch")
 
             with st.container(border=True):
                 render_panel_header(
@@ -13827,7 +13827,7 @@ if active_screen == "Финансы":
                             ),
                         )
                         polish_figure(finance_monthly_chart, height=340)
-                        st.plotly_chart(finance_monthly_chart, use_container_width=True, key="finance_monthly_chart")
+                        st.plotly_chart(finance_monthly_chart, width="stretch", key="finance_monthly_chart")
                         st.dataframe(
                             format_display_frame(
                                 finance_monthly,
@@ -13841,7 +13841,7 @@ if active_screen == "Финансы":
                                 },
                                 columns=["month_label", "revenue", "cost", "margin", "margin_pct", "quantity"],
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=min(320, 80 + len(finance_monthly) * 36),
                         )
@@ -13871,7 +13871,7 @@ if active_screen == "Финансы":
                                 },
                                 columns=["group_name", "revenue", "margin", "margin_pct", "quantity"],
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=min(420, 80 + min(len(weak_margin_products), 30) * 36),
                         )
@@ -13903,7 +13903,7 @@ if active_screen == "Финансы":
                         )
                         category_finance_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
                         polish_figure(category_finance_chart, height=340)
-                        st.plotly_chart(category_finance_chart, use_container_width=True)
+                        st.plotly_chart(category_finance_chart, width="stretch")
                     else:
                         st.info("Категории не найдены в текущем наборе данных.")
 
@@ -13932,7 +13932,7 @@ if active_screen == "Финансы":
                         )
                         stock_value_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
                         polish_figure(stock_value_chart, height=340)
-                        st.plotly_chart(stock_value_chart, use_container_width=True)
+                        st.plotly_chart(stock_value_chart, width="stretch")
 
             detail_left, detail_right = st.columns(2, gap="medium")
             with detail_left:
@@ -13969,7 +13969,7 @@ if active_screen == "Финансы":
                                 },
                                 columns=category_table_columns,
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=360,
                         )
@@ -14016,7 +14016,7 @@ if active_screen == "Финансы":
                                     "sales_lines",
                                 ],
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=360,
                         )
@@ -14050,7 +14050,7 @@ if active_screen == "Финансы":
                                 "stock_status": "Статус остатка",
                             },
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=430,
                     )
@@ -14136,7 +14136,7 @@ if active_screen == "Финансы":
                 data=partial(to_excel_report_bytes, finance_export_sheets, report_title="Финансовый контроль"),
                 file_name="financial_control_report.xlsx",
                 mime=EXCEL_MIME,
-                use_container_width=True,
+                width="stretch",
             )
 
 if active_screen == "Обзор":
@@ -14267,7 +14267,7 @@ if active_screen == "Обзор":
                     )
                 trend_chart.update_layout(legend_title="", xaxis_title="", yaxis_title="", bargap=0.24)
                 polish_figure(trend_chart, height=340)
-                st.plotly_chart(trend_chart, use_container_width=True)
+                st.plotly_chart(trend_chart, width="stretch")
                 if show_forecast:
                     st.caption(f"Прогноз на {len(forecast_data)} мес. по линейному тренду.")
 
@@ -14285,7 +14285,7 @@ if active_screen == "Обзор":
                     st.button(
                         f"⚠️ Заказы в работе ({_sidebar_overdue} просрочено)",
                         key="overview_go_to_orders",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         on_click=navigate_to_screen,
                         args=("Закупки",),
@@ -14294,7 +14294,7 @@ if active_screen == "Обзор":
                     st.button(
                         f"📦 Закупить срочно ({procurement_overview.get('critical_stock_count', 0)} SKU)",
                         key="overview_go_to_procurement",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         on_click=navigate_to_screen,
                         args=("Закупки",),
@@ -14341,7 +14341,7 @@ if active_screen == "Обзор":
                     )
                 salon_chart.update_layout(xaxis_tickangle=-20, bargap=0.26)
                 polish_figure(salon_chart, height=360)
-                st.plotly_chart(salon_chart, use_container_width=True)
+                st.plotly_chart(salon_chart, width="stretch")
 
     if show_supplier_breakdown:
         with breakdown_tabs["Поставщики"]:
@@ -14385,7 +14385,7 @@ if active_screen == "Обзор":
                         supplier_sales_chart.update_layout(yaxis_title="")
                     supplier_sales_chart.update_yaxes(automargin=True)
                     polish_figure(supplier_sales_chart, height=compact_bar_chart_height(max(len(supplier_chart_data), 3)))
-                    st.plotly_chart(supplier_sales_chart, use_container_width=True)
+                    st.plotly_chart(supplier_sales_chart, width="stretch")
                 with supplier_table_col:
                     st.dataframe(
                         format_display_frame_for_role(
@@ -14412,7 +14412,7 @@ if active_screen == "Обзор":
                                 "sales_lines",
                             ],
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=max(260, min(420, 86 + len(supplier_table) * 34)),
                     )
@@ -14480,11 +14480,11 @@ if active_screen == "Обзор":
                         hovertemplate="%{label}<br>%{value:,.0f}<br>%{percent}<extra></extra>",
                     )
                     polish_figure(category_share_chart, height=max(overview_breakdown_height, 320))
-                    st.plotly_chart(category_share_chart, use_container_width=True)
+                    st.plotly_chart(category_share_chart, width="stretch")
                 elif all_categories:
                     st.plotly_chart(
                         category_chart,
-                        use_container_width=True,
+                        width="stretch",
                         key="overview_category_chart",
                         selection_mode="points",
                         on_select=partial(
@@ -14496,7 +14496,7 @@ if active_screen == "Обзор":
                     )
                     st.caption("Нажмите на столбец, чтобы отфильтровать весь отчёт по этой категории. Вернуть всё — кнопка «Сбросить» в фильтрах.")
                 else:
-                    st.plotly_chart(category_chart, use_container_width=True)
+                    st.plotly_chart(category_chart, width="stretch")
 
         with second_right:
             with st.container():
@@ -14523,7 +14523,7 @@ if active_screen == "Обзор":
                 if all_managers:
                     st.plotly_chart(
                         manager_chart,
-                        use_container_width=True,
+                        width="stretch",
                         key="overview_manager_chart",
                         selection_mode="points",
                         on_select=partial(
@@ -14535,7 +14535,7 @@ if active_screen == "Обзор":
                     )
                     st.caption("Нажмите на столбец, чтобы отфильтровать весь отчёт по этому менеджеру. Вернуть всё — кнопка «Сбросить» в фильтрах.")
                 else:
-                    st.plotly_chart(manager_chart, use_container_width=True)
+                    st.plotly_chart(manager_chart, width="stretch")
 
         with breakdown_tabs["Топ товаров"]:
             render_panel_header("Топ товаров", "Лидеры по выручке.")
@@ -14557,7 +14557,7 @@ if active_screen == "Обзор":
                 top_products_chart,
                 height=compact_bar_chart_height(max(len(top_products_chart_data), 3)),
             )
-            st.plotly_chart(top_products_chart, use_container_width=True)
+            st.plotly_chart(top_products_chart, width="stretch")
             top_products_display = format_display_frame_for_role(
                 top_products,
                 current_user,
@@ -14571,7 +14571,7 @@ if active_screen == "Обзор":
             )
             st.dataframe(
                 top_products_display,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=300,
             )
@@ -14681,7 +14681,7 @@ if active_screen == "ABC-анализ":
                 )
                 fig_abc.update_layout(yaxis_title="", coloraxis_showscale=False)
                 polish_figure(fig_abc, height=450)
-                st.plotly_chart(fig_abc, use_container_width=True)
+                st.plotly_chart(fig_abc, width="stretch")
 
         with abc_chart_r:
             with st.container(border=True):
@@ -14697,7 +14697,7 @@ if active_screen == "ABC-анализ":
                     color_discrete_map={"A": PRIMARY_COLOR, "B": CHART_ACCENT_COLOR, "C": "#7B8796"},
                 )
                 polish_figure(fig_treemap, height=450)
-                st.plotly_chart(fig_treemap, use_container_width=True)
+                st.plotly_chart(fig_treemap, width="stretch")
 
         with st.container(border=True):
             render_panel_header(
@@ -14864,7 +14864,7 @@ if active_screen == "ABC-анализ":
             )
             st.dataframe(
                 abc_display,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=400,
             )
@@ -14976,7 +14976,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                     )
                     fig_margin.update_layout(coloraxis_showscale=False, yaxis_title="")
                     polish_figure(fig_margin, height=520)
-                    st.plotly_chart(fig_margin, use_container_width=True)
+                    st.plotly_chart(fig_margin, width="stretch")
 
             with leaders_right:
                 with st.container(border=True):
@@ -14996,7 +14996,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                     )
                     fig_low.update_layout(coloraxis_showscale=False, yaxis_title="")
                     polish_figure(fig_low, height=520)
-                    st.plotly_chart(fig_low, use_container_width=True)
+                    st.plotly_chart(fig_low, width="stretch")
 
             with st.container(border=True):
                 render_panel_header(
@@ -15044,7 +15044,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                     )
                     margin_bucket_chart.update_layout(showlegend=False, xaxis_title="Маржинальность товара", yaxis_title="")
                     polish_figure(margin_bucket_chart, height=340)
-                    st.plotly_chart(margin_bucket_chart, use_container_width=True, key="margin_bucket_chart")
+                    st.plotly_chart(margin_bucket_chart, width="stretch", key="margin_bucket_chart")
                     low_bucket_share = float(margin_bucket_summary["revenue"].iloc[:2].sum()) / margin_bucket_total * 100
                     st.caption(
                         f"Товары с маржой ниже 10% дают {format_percent(low_bucket_share)} выручки."
@@ -15072,7 +15072,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                     )
                     scatter_fig.add_hline(y=20, line_dash="dash", line_color=CHART_DANGER_COLOR, annotation_text="Порог 20%")
                     polish_figure(scatter_fig, height=560)
-                    st.plotly_chart(scatter_fig, use_container_width=True)
+                    st.plotly_chart(scatter_fig, width="stretch")
                 else:
                     st.info("Недостаточно данных для построения скаттер-плота.")
 
@@ -15094,7 +15094,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Мар�
                             "margin_pct": "Маржа, %",
                         },
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=640,
                 )
@@ -15225,7 +15225,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                             "Какие позиции выросли или просели между периодами.",
                         )
                         movement_chart = build_movement_chart(month_comparison, selected_left_month, selected_right_month)
-                        st.plotly_chart(movement_chart, use_container_width=True)
+                        st.plotly_chart(movement_chart, width="stretch")
 
                 with chart_right:
                     with st.container(border=True):
@@ -15270,7 +15270,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                         )
                         wf_fig.update_layout(title="")
                         polish_figure(wf_fig, height=460)
-                        st.plotly_chart(wf_fig, use_container_width=True)
+                        st.plotly_chart(wf_fig, width="stretch")
 
                 with st.container(border=True):
                     render_panel_header(
@@ -15294,7 +15294,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
                     }
                     st.dataframe(
                         format_display_frame_for_role(month_comparison, current_user, rename_map),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=520,
                     )
@@ -15343,7 +15343,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Сра�
             )
             yoy_fig.update_xaxes(tickmode="array", tickvals=list(range(1, 13)), ticktext=["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"])
             polish_figure(yoy_fig, height=420)
-            st.plotly_chart(yoy_fig, use_container_width=True)
+            st.plotly_chart(yoy_fig, width="stretch")
 
 if active_screen == "Поставщики":
     render_section_intro(
@@ -15446,7 +15446,7 @@ if active_screen == "Поставщики":
                 supplier_overview_chart,
                 height=compact_bar_chart_height(max(len(supplier_chart_frame), 3)),
             )
-            st.plotly_chart(supplier_overview_chart, use_container_width=True, key="supplier_overview_chart")
+            st.plotly_chart(supplier_overview_chart, width="stretch", key="supplier_overview_chart")
 
     if not can_edit_suppliers:
         st.info("Редактировать справочник поставщиков может только администратор. Руководитель видит текущие правила и проблемные позиции.")
@@ -15468,7 +15468,7 @@ if active_screen == "Поставщики":
 
             edited_keyword_rules = st.data_editor(
                 keyword_rules_editor_source[visible_rule_columns],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=320,
                 num_rows="dynamic" if can_edit_suppliers else "fixed",
@@ -15485,7 +15485,7 @@ if active_screen == "Поставщики":
             if can_edit_suppliers and st.button(
                 "Сохранить правила поставщиков",
                 key="supplier_keyword_rules_save_button",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
             ):
                 saved_count = replace_supplier_keyword_rules(
@@ -15506,7 +15506,7 @@ if active_screen == "Поставщики":
             st.caption("Эти правила работают всегда. Ваши правила из таблицы слева имеют приоритет выше встроенных.")
             st.dataframe(
                 default_rules.rename(columns={"supplier": "Поставщик", "keyword": "Ключевое слово"}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=320,
             )
@@ -15583,7 +15583,7 @@ if active_screen == "Поставщики":
                 if st.button(
                     "Назначить",
                     key="supplier_quick_assignment_save_button",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                     disabled=not can_edit_suppliers,
                 ):
@@ -15705,7 +15705,7 @@ if active_screen == "Поставщики":
 
                     edited_supplier_catalog = st.data_editor(
                         supplier_catalog_editor_source,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=min(560, max(260, 92 + len(supplier_catalog_editor_source) * 34)),
                         disabled=[
@@ -15732,7 +15732,7 @@ if active_screen == "Поставщики":
 
                     submitted_supplier_catalog = st.form_submit_button(
                         "Назначить поставщика отмеченным строкам",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary",
                         disabled=not can_edit_suppliers,
                     )
@@ -15780,7 +15780,7 @@ if active_screen == "Поставщики":
             with st.form("supplier_missing_assignment_form", clear_on_submit=False):
                 edited_missing_suppliers = st.data_editor(
                     missing_supplier_candidates,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=min(520, max(260, 96 + len(missing_supplier_candidates) * 34)),
                     disabled=["product_key", "product", "category", "revenue", "quantity", "line_count"] if can_edit_suppliers else list(missing_supplier_candidates.columns),
@@ -15797,7 +15797,7 @@ if active_screen == "Поставщики":
                 )
                 submitted_missing_suppliers = st.form_submit_button(
                     "Сохранить ручные назначения",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                     disabled=not can_edit_suppliers,
                 )
@@ -15932,7 +15932,7 @@ if active_screen == "Поставщики":
                         if st.button(
                             "Изменить поставщика",
                             key="supplier_assignment_fix_save_button",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary",
                             disabled=not can_edit_suppliers,
                         ):
@@ -15970,7 +15970,7 @@ if active_screen == "Поставщики":
                         if st.button(
                             "Снять ручное назначение",
                             key="supplier_assignment_fix_remove_button",
-                            use_container_width=True,
+                            width="stretch",
                             disabled=not can_edit_suppliers,
                         ):
                             deleted_count = delete_supplier_product_assignments([str(selected_assignment_fix_key)])
@@ -15999,7 +15999,7 @@ if active_screen == "Поставщики":
                 existing_assignments[column] = ""
         edited_assignments = st.data_editor(
             existing_assignments[visible_assignment_columns],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=320,
             num_rows="dynamic" if can_edit_suppliers else "fixed",
@@ -16016,7 +16016,7 @@ if active_screen == "Поставщики":
         if can_edit_suppliers and st.button(
             "Сохранить таблицу назначений",
             key="supplier_existing_assignments_save_button",
-            use_container_width=True,
+            width="stretch",
         ):
             assignment_rows = edited_assignments[
                 edited_assignments["supplier"].fillna("").astype(str).str.strip().ne("")
@@ -16352,7 +16352,7 @@ if active_screen == "Закупки":
                                             )
                                             st.dataframe(
                                                 inventory_preview,
-                                                use_container_width=True,
+                                                width="stretch",
                                                 hide_index=True,
                                                 height=260,
                                             )
@@ -16514,7 +16514,7 @@ if active_screen == "Закупки":
                                                 if has_order_arrivals
                                                 else "Сохранить остатки из файла",
                                                 key="procurement_stock_upload_save_button",
-                                                use_container_width=True,
+                                                width="stretch",
                                                 type="primary",
                                             ):
                                                 # Arrivals go first: if the stock fails to save, loading the
@@ -16694,7 +16694,7 @@ if active_screen == "Закупки":
                             bulk_brand_submit = st.form_submit_button(
                                 "Назначить бренд",
                                 type="primary",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         if bulk_brand_submit:
                             normalized_brand_name = bulk_brand_name.strip()
@@ -16768,7 +16768,7 @@ if active_screen == "Закупки":
                     ].copy()
                     procurement_editor = st.data_editor(
                         procurement_editor_source,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=460,
                         key="procurement_editor_table",
@@ -16787,7 +16787,7 @@ if active_screen == "Закупки":
                             "notes": st.column_config.TextColumn("Примечание"),
                         },
                     )
-                    if st.button("Сохранить параметры закупки", key="procurement_save_button", use_container_width=True, type="primary"):
+                    if st.button("Сохранить параметры закупки", key="procurement_save_button", width="stretch", type="primary"):
                         procurement_editor_to_save = procurement_editor.rename(
                             columns={"manual_stock_in_transit": "stock_in_transit"}
                         )[
@@ -16977,7 +16977,7 @@ if active_screen == "Закупки":
                 )
                 st.dataframe(
                     stock_risk_display,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=height,
                 )
@@ -17036,7 +17036,7 @@ if active_screen == "Закупки":
                             "recommended_order_qty": "К заказу, шт",
                         },
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=min(420, 46 + max(len(brand_summary), 1) * 35),
                 )
@@ -17123,7 +17123,7 @@ if active_screen == "Закупки":
                             showlegend=False,
                         )
                         polish_figure(stock_status_chart, height=280)
-                        st.plotly_chart(stock_status_chart, use_container_width=True)
+                        st.plotly_chart(stock_status_chart, width="stretch")
 
                 with urgent_col:
                     st.markdown("**Самые срочные позиции**")
@@ -17357,7 +17357,7 @@ if active_screen == "Закупки":
                                 row_step=28,
                             ),
                         )
-                        st.plotly_chart(procurement_bar, use_container_width=True)
+                        st.plotly_chart(procurement_bar, width="stretch")
 
             with procurement_right:
                 with st.container(border=True):
@@ -17403,7 +17403,7 @@ if active_screen == "Закупки":
                             yaxis_title="Покрытие остатком, дней",
                         )
                         polish_figure(procurement_scatter, height=420)
-                        st.plotly_chart(procurement_scatter, use_container_width=True)
+                        st.plotly_chart(procurement_scatter, width="stretch")
 
             supplier_reorder_summary = procurement_supplier_summary[
                 procurement_supplier_summary["recommended_order_qty"].fillna(0) > 0
@@ -17473,7 +17473,7 @@ if active_screen == "Закупки":
                                 row_step=28,
                             ),
                         )
-                        st.plotly_chart(supplier_bar, use_container_width=True)
+                        st.plotly_chart(supplier_bar, width="stretch")
 
             with supplier_summary_right:
                 with st.container(border=True):
@@ -17483,7 +17483,7 @@ if active_screen == "Закупки":
                     )
                     st.dataframe(
                         supplier_reorder_summary.rename(columns=supplier_summary_rename_map),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=390,
                     )
@@ -17590,7 +17590,7 @@ if active_screen == "Закупки":
                         with order_editor_col:
                             order_editor = st.data_editor(
                                 selected_order_source,
-                                use_container_width=True,
+                                width="stretch",
                                 hide_index=True,
                                 height=430,
                                 key=f"procurement_order_editor_{selected_order_supplier}",
@@ -17675,7 +17675,7 @@ if active_screen == "Закупки":
                             if st.button(
                                 "Создать заказ поставщику",
                                 key="procurement_create_order_button",
-                                use_container_width=True,
+                                width="stretch",
                                 type="primary",
                             ):
                                 try:
@@ -17869,7 +17869,7 @@ if active_screen == "Закупки":
                         )
                         polish_figure(orders_timeline, height=compact_bar_chart_height(len(_timeline_source), maximum=460))
                         st.caption("Сроки активных заказов: от даты заказа до ожидаемой поставки.")
-                        st.plotly_chart(orders_timeline, use_container_width=True, key="procurement_orders_timeline")
+                        st.plotly_chart(orders_timeline, width="stretch", key="procurement_orders_timeline")
 
                     order_summary_col, order_detail_col = st.columns([1.08, 0.92], gap="medium")
                     with order_summary_col:
@@ -17908,7 +17908,7 @@ if active_screen == "Закупки":
                         orders_table_event = st.dataframe(
                             order_table_for_display,
                             column_config=order_table_column_config,
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=430,
                             on_select="rerun",
@@ -18094,7 +18094,7 @@ if active_screen == "Закупки":
                                 )
                                 st.dataframe(
                                     selected_order_lines_page,
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                     height=min(
                                         460,
@@ -18115,7 +18115,7 @@ if active_screen == "Закупки":
                                 mime=EXCEL_MIME,
                                 key=f"procurement_order_export_{selected_order_id}",
                                 icon=":material/download:",
-                                use_container_width=True,
+                                width="stretch",
                             )
                             if is_swiss_krono_supplier(selected_order_row["supplier"]) and swiss_krono_template_ready():
                                 st.download_button(
@@ -18127,7 +18127,7 @@ if active_screen == "Закупки":
                                     file_name=f"swiss_krono_zakaz_{str(selected_order_id)[-12:]}.xlsx",
                                     mime=EXCEL_MIME,
                                     key=f"procurement_order_krono_export_{selected_order_id}",
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
                             supplier_form = (
                                 None
@@ -18153,7 +18153,7 @@ if active_screen == "Закупки":
                                     mime=EXCEL_MIME,
                                     key=f"procurement_order_form_export_{selected_order_id}",
                                     icon=":material/download:",
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
 
                             if can_manage_procurement(current_user):
@@ -18162,7 +18162,7 @@ if active_screen == "Закупки":
                                     f"Перевести в статус «{PROCUREMENT_ORDER_STATUS_LABELS.get(_next_status, _next_status)}»",
                                     key=f"procurement_order_advance_{selected_order_id}",
                                     type="primary",
-                                    use_container_width=True,
+                                    width="stretch",
                                 ):
                                     try:
                                         update_procurement_order(
@@ -18233,7 +18233,7 @@ if active_screen == "Закупки":
                                     if st.button(
                                         action_label,
                                         key=f"procurement_order_update_{selected_order_id}",
-                                        use_container_width=True,
+                                        width="stretch",
                                         disabled=(updated_status_value == "received" and not _receive_confirmed),
                                     ):
                                         try:
@@ -18380,7 +18380,7 @@ if active_screen == "Закупки":
                         current_user,
                         rename_map=procurement_rename_map,
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=680,
                 )
@@ -18507,7 +18507,7 @@ if active_screen == "План / факт":
                     )
                 plan_chart.update_layout(xaxis_title="Месяц", yaxis_title="Сумма", legend_title="")
                 polish_figure(plan_chart, height=440)
-                st.plotly_chart(plan_chart, use_container_width=True)
+                st.plotly_chart(plan_chart, width="stretch")
 
         with plan_chart_right:
             with st.container(border=True):
@@ -18625,7 +18625,7 @@ if active_screen == "План / факт":
 
                 save_plan_col, delete_plan_col = st.columns([1, 1], gap="medium")
                 with save_plan_col:
-                    if st.button("Сохранить план", key="plan_save_button", use_container_width=True):
+                    if st.button("Сохранить план", key="plan_save_button", width="stretch"):
                         try:
                             revenue_plan_value = parse_plan_input(revenue_plan_text)
                             margin_plan_value = parse_plan_input(margin_plan_text)
@@ -18661,7 +18661,7 @@ if active_screen == "План / факт":
                     if st.button(
                         "Удалить план",
                         key="plan_delete_button",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                         disabled=existing_plan_record is None,
                     ):
@@ -18729,7 +18729,7 @@ if active_screen == "План / факт":
                         "quantity_execution_pct": "Выполнение количества, %",
                     },
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=480,
             )
@@ -18801,7 +18801,7 @@ if active_screen == "План / факт":
                                 "quantity_execution_pct": "Выполнение количества, %",
                             },
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=420,
                     )
@@ -18872,7 +18872,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         )
                         rfm_scatter.update_xaxes(autorange="reversed")
                         polish_figure(rfm_scatter, height=460)
-                        st.plotly_chart(rfm_scatter, use_container_width=True)
+                        st.plotly_chart(rfm_scatter, width="stretch")
 
                 with rfm_right:
                     with st.container(border=True):
@@ -18896,7 +18896,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                             title="",
                         )
                         polish_figure(seg_pie, height=340)
-                        st.plotly_chart(seg_pie, use_container_width=True)
+                        st.plotly_chart(seg_pie, width="stretch")
 
                 rfm_display = rfm_data[["group_name", "recency", "frequency", "monetary", "rfm_score", "segment"]].copy()
                 rfm_display.columns = ["Позиция", "Давность (дней)", "Активность (мес.)", "Выручка", "RFM-балл", "Сегмент"]
@@ -18905,7 +18905,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         "Таблица RFM",
                         "Подробный список сегментов.",
                     )
-                    st.dataframe(rfm_display, use_container_width=True, hide_index=True, height=420)
+                    st.dataframe(rfm_display, width="stretch", hide_index=True, height=420)
 
     if active_advanced_screen == "Тепловая карта":
         heatmap_df = build_heatmap_data(data)
@@ -18943,7 +18943,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         yaxis=dict(title=""),
                     )
                     polish_figure(heatmap_fig, height=320)
-                    st.plotly_chart(heatmap_fig, use_container_width=True)
+                    st.plotly_chart(heatmap_fig, width="stretch")
                     st.caption("Чем темнее ячейка, тем выше выручка в этот день и неделю.")
 
     if active_advanced_screen == "Прогноз":
@@ -19011,7 +19011,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         )
                     forecast_fig.update_layout(xaxis_title="Месяц", yaxis_title="Сумма", legend_title="")
                     polish_figure(forecast_fig, height=480)
-                    st.plotly_chart(forecast_fig, use_container_width=True)
+                    st.plotly_chart(forecast_fig, width="stretch")
 
                     st.info(
                         f"Прогноз построен на основе линейного тренда по {len(monthly_summary)} месяцам."
@@ -19029,7 +19029,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                         "Таблица прогноза",
                         "Помесячная расшифровка прогнозных значений.",
                     )
-                    st.dataframe(forecast_table, use_container_width=True, hide_index=True)
+                    st.dataframe(forecast_table, width="stretch", hide_index=True)
 
     if active_advanced_screen == "Возвраты":
         return_product_summary = build_return_groups(data, product_analysis_column)
@@ -19103,7 +19103,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                                 yaxis2=dict(title="Доля возвратов, %", overlaying="y", side="right"),
                             )
                             polish_figure(monthly_returns_chart, height=420)
-                            st.plotly_chart(monthly_returns_chart, use_container_width=True)
+                            st.plotly_chart(monthly_returns_chart, width="stretch")
 
                     with returns_right:
                         with st.container(border=True):
@@ -19124,7 +19124,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                             )
                             return_chart.update_layout(coloraxis_showscale=False, yaxis_title="")
                             polish_figure(return_chart, height=420)
-                            st.plotly_chart(return_chart, use_container_width=True)
+                            st.plotly_chart(return_chart, width="stretch")
 
                     with st.container(border=True):
                         render_panel_header(
@@ -19150,7 +19150,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                                     "last_return_date": "Последний возврат",
                                 },
                             ),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             height=460,
                         )
@@ -19199,7 +19199,7 @@ if active_screen == "Аналитика" and active_analytics_screen == "Рас�
                                         "last_return_date": "Последний возврат",
                                     },
                                 ),
-                                use_container_width=True,
+                                width="stretch",
                                 hide_index=True,
                                 height=360,
                             )
@@ -19413,7 +19413,7 @@ if active_screen == "Данные":
                         str(action["label"]),
                         icon=str(action["icon"]),
                         key=f"data_center_action_{action['label']}",
-                        use_container_width=True,
+                        width="stretch",
                         on_click=open_data_workflow,
                         args=action["args"],
                     )
@@ -19422,7 +19422,7 @@ if active_screen == "Данные":
                     "Обновить статусы",
                     icon=":material/refresh:",
                     key="data_center_refresh",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     clear_application_caches()
                     st.rerun()
@@ -20097,7 +20097,7 @@ if active_screen == "Данные":
                         rename_map=cleanup_rename_map,
                         columns=cleanup_display_columns,
                     ),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=420,
                 )
@@ -20136,7 +20136,7 @@ if active_screen == "Данные":
                     ),
                     file_name="sku_cleanup_queue.xlsx",
                     mime=EXCEL_MIME,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         with st.container(border=True):
@@ -20148,7 +20148,7 @@ if active_screen == "Данные":
                 st.caption(f"Распознано и привязано полей: {mapping_count}. Если что-то не совпало, ищите причину сначала здесь.")
                 st.dataframe(
                     build_download_frame(visible_mapping),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=420,
                 )
@@ -20166,7 +20166,7 @@ if active_screen == "Данные":
                 if visible_columns:
                     st.dataframe(
                         format_display_frame(manifest_table, columns=visible_columns),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=320,
                     )
@@ -20203,7 +20203,7 @@ if active_screen == "Данные":
                         "margin_change_pct",
                     ],
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=360,
             )
@@ -20241,7 +20241,7 @@ if active_screen == "Данные":
                 ),
                 file_name="monthly_summary.xlsx",
                 mime=EXCEL_MIME,
-                use_container_width=True,
+                width="stretch",
             )
 
 if active_screen == "Управление" and can_manage_access(current_user):
