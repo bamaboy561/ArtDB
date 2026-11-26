@@ -2982,11 +2982,192 @@ WORKSPACE_UI_CSS = f"""
 """
 
 
+# The calm look of the new site (variant A), laid over the older styles: a light menu,
+# white cards with a thin border, no gradients or glow, one deep blue accent.
+CALM_THEME_CSS = """
+<style>
+    :root {
+        --calm-brand: #003461;
+        --calm-brand-soft: #e6eef7;
+        --calm-bg: #f3f5f8;
+        --calm-surface: #ffffff;
+        --calm-surface-2: #f8fafc;
+        --calm-surface-3: #eef2f6;
+        --calm-line: #e3e8ef;
+        --calm-line-strong: #cfd7e2;
+        --calm-text: #13202e;
+        --calm-text-2: #475569;
+        --calm-muted: #5a6879;
+        --calm-ok: #067647;
+        --calm-warn: #9a5b00;
+        --calm-late: #c0261a;
+        --calm-shadow: 0 1px 2px rgba(16, 32, 52, 0.06);
+    }
+
+    .stApp, [data-testid="stAppViewContainer"] { background: var(--calm-bg) !important; color: var(--calm-text); }
+    [data-testid="stHeader"] { background: rgba(243, 245, 248, 0.85) !important; border-bottom: 1px solid var(--calm-line) !important; }
+
+    /* ---- Menu: white, dark text, the open section marked with a soft blue and a bar ---- */
+    section[data-testid="stSidebar"] {
+        background: var(--calm-surface) !important;
+        border-right: 1px solid var(--calm-line) !important;
+    }
+    section[data-testid="stSidebar"] :is(p, span, label, li, small, div, h1, h2, h3, h4, summary) { color: var(--calm-text) !important; }
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p,
+    section[data-testid="stSidebar"] .nav-title,
+    section[data-testid="stSidebar"] .sidebar-section-label,
+    section[data-testid="stSidebar"] .sidebar-brand-meta { color: var(--calm-muted) !important; }
+    section[data-testid="stSidebar"] .sidebar-section-label { letter-spacing: 0.08em; font-weight: 600 !important; }
+    section[data-testid="stSidebar"] hr { border-color: var(--calm-line) !important; }
+    section[data-testid="stSidebar"] .sidebar-brand { border-bottom-color: var(--calm-line) !important; }
+    section[data-testid="stSidebar"] .sidebar-brand-avatar { background: var(--calm-brand) !important; color: #ffffff !important; }
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:hover { background: var(--calm-surface-3) !important; }
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:has(input:checked),
+    section[data-testid="stSidebar"] .st-key-sidebar_main_nav label[data-baseweb="radio"]:has(input:checked) {
+        background: var(--calm-brand-soft) !important;
+        box-shadow: inset 3px 0 0 var(--calm-brand) !important;
+    }
+    section[data-testid="stSidebar"] label[data-baseweb="radio"]:has(input:checked) p { color: var(--calm-brand) !important; font-weight: 600 !important; }
+    section[data-testid="stSidebar"] .nav-shell { background: var(--calm-surface-2) !important; border-color: var(--calm-line) !important; }
+    section[data-testid="stSidebar"] .nav-item { color: var(--calm-text-2) !important; }
+    section[data-testid="stSidebar"] .nav-item.active { color: var(--calm-brand) !important; background: var(--calm-brand-soft) !important; }
+    section[data-testid="stSidebar"] :is([data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"]),
+    section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+        background: var(--calm-surface) !important;
+        border-color: var(--calm-line-strong) !important;
+    }
+    section[data-testid="stSidebar"] :is(input, textarea) {
+        color: var(--calm-text) !important;
+        -webkit-text-fill-color: var(--calm-text) !important;
+        caret-color: var(--calm-text);
+    }
+    section[data-testid="stSidebar"] :is(input, textarea)::placeholder {
+        color: var(--calm-muted) !important;
+        -webkit-text-fill-color: var(--calm-muted) !important;
+    }
+    section[data-testid="stSidebar"] svg { color: var(--calm-muted) !important; }
+    section[data-testid="stSidebar"] [data-baseweb="tag"] { background: var(--calm-brand-soft) !important; border: 1px solid #c9d9ec !important; }
+    section[data-testid="stSidebar"] :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button,
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
+        background: var(--calm-surface) !important;
+        border: 1px solid var(--calm-line-strong) !important;
+        color: var(--calm-text) !important;
+    }
+    section[data-testid="stSidebar"] :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button:hover {
+        background: var(--calm-surface-3) !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"],
+    section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+    section[data-testid="stSidebar"] :is([data-testid="stAlert"], [data-testid="stAlertContainer"]) {
+        background: var(--calm-surface-2) !important;
+        border-color: var(--calm-line) !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover { background: var(--calm-surface-3) !important; }
+    section[data-testid="stSidebar"] .sidebar-health-item.danger { background: #fdecea !important; color: var(--calm-late) !important; border-color: #f3c7c2 !important; }
+    section[data-testid="stSidebar"] .sidebar-health-item.warning { background: #fff4e0 !important; color: var(--calm-warn) !important; border-color: #f1d7a8 !important; }
+    section[data-testid="stSidebar"] .sidebar-health-item.ok { background: #e7f7ee !important; color: var(--calm-ok) !important; border-color: #bfe6cf !important; }
+    section[data-testid="stSidebar"] .sidebar-health-item.info { background: #e8f1fb !important; color: #1d5fa8 !important; border-color: #c4dbf3 !important; }
+    section[data-testid="stSidebar"] .sidebar-health-item :is(span, div, p) { color: inherit !important; }
+
+    /* ---- Cards: white, a thin line, no stripes, tints or lifting on hover ---- */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: var(--calm-line) !important;
+        box-shadow: var(--calm-shadow) !important;
+    }
+    .metric-card,
+    .metric-card.info, .metric-card.success, .metric-card.warning, .metric-card.danger {
+        background: var(--calm-surface) !important;
+        border: 1px solid var(--calm-line) !important;
+        border-radius: 14px !important;
+        box-shadow: var(--calm-shadow) !important;
+    }
+    .metric-card::before { display: none !important; }
+    .metric-card:hover,
+    [class*="st-key-kpi_card_"]:has(.stButton):hover .metric-card {
+        transform: none !important;
+        border-color: var(--calm-line-strong) !important;
+        box-shadow: 0 1px 2px rgba(16, 32, 52, 0.05), 0 6px 20px -8px rgba(16, 32, 52, 0.12) !important;
+    }
+    .metric-label { color: var(--calm-muted) !important; }
+    .metric-value { font-weight: 800 !important; font-size: 1.85rem !important; color: var(--calm-text) !important; }
+    .metric-card.info .metric-value { color: var(--calm-text) !important; }
+    .metric-card.success .metric-value { color: var(--calm-ok) !important; }
+    .metric-card.warning .metric-value { color: var(--calm-warn) !important; }
+    .metric-card.danger .metric-value { color: var(--calm-late) !important; }
+    .metric-spark { color: #8aa4c2 !important; opacity: 0.8; }
+    .metric-card.success .metric-spark { color: #2a9d6f !important; }
+    .metric-card.warning .metric-spark { color: #d88a14 !important; }
+    .metric-card.danger .metric-spark { color: var(--calm-late) !important; }
+
+    .snapshot-card, .insight-item, .insight-compact-item, .overview-command-panel, .overview-focus-card {
+        background: var(--calm-surface) !important;
+        border-color: var(--calm-line) !important;
+        box-shadow: var(--calm-shadow) !important;
+    }
+    .snapshot-card.success, .insight-compact-item.success, .overview-focus-card.success { background: #f3fbf7 !important; }
+    .snapshot-card.warning, .insight-compact-item.warning, .overview-focus-card.warning { background: #fffaf0 !important; }
+    .snapshot-card.danger, .insight-compact-item.danger, .overview-focus-card.danger { background: #fef6f5 !important; }
+
+    /* ---- Headline banners: one solid deep blue, no glow ---- */
+    .overview-hero-banner, .dashboard-hero, .login-shell {
+        background: var(--calm-brand) !important;
+        box-shadow: none !important;
+        border-radius: 16px !important;
+    }
+    .overview-hero-banner::after, .login-shell::before, .login-shell::after { display: none !important; }
+    .overview-hero-eyebrow { color: #c9d8ea !important; }
+    .overview-hero-meta, .overview-hero-stat-label { color: #c9d8ea !important; }
+    .overview-hero-stat-value { font-weight: 800 !important; }
+
+    /* ---- Charts: a plain white surface ---- */
+    [data-testid="stPlotlyChart"] {
+        background: var(--calm-surface) !important;
+        border: 1px solid var(--calm-line) !important;
+        border-radius: 14px !important;
+        box-shadow: var(--calm-shadow) !important;
+    }
+    [data-testid="stPlotlyChart"]::before { display: none !important; }
+    [data-testid="stPlotlyChart"]:hover { transform: none !important; box-shadow: var(--calm-shadow) !important; }
+
+    /* ---- Tabs as a segmented control, like on the new site ---- */
+    .stTabs [data-baseweb="tab-list"] { background: var(--calm-surface-3) !important; border: 0 !important; border-radius: 11px !important; padding: 3px !important; gap: 2px !important; }
+    .stTabs [data-baseweb="tab"] { color: var(--calm-text-2) !important; font-weight: 500 !important; }
+    .stTabs [aria-selected="true"] { background: var(--calm-surface) !important; color: var(--calm-text) !important; font-weight: 600 !important; box-shadow: var(--calm-shadow) !important; }
+    .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display: none !important; }
+
+    /* ---- Buttons and fields ---- */
+    :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button[kind="primary"],
+    :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button[data-testid="stBaseButton-primary"],
+    :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button[data-testid="stBaseButton-primaryFormSubmit"] {
+        background: var(--calm-brand) !important;
+        border-color: var(--calm-brand) !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+    }
+    :is(.stButton, .stDownloadButton, [data-testid="stFormSubmitButton"]) > button:is([kind="primary"], [data-testid^="stBaseButton-primary"]):hover {
+        background: #0a4a85 !important;
+        border-color: #0a4a85 !important;
+    }
+    [data-testid="stFileUploaderDropzone"], [data-testid="stFileUploaderDropzone"]:hover {
+        background: var(--calm-surface-2) !important;
+        border-color: var(--calm-line-strong) !important;
+    }
+
+    /* ---- Progress bars: solid colours ---- */
+    .plan-pace-fill { background: var(--calm-brand) !important; }
+    .plan-pace-fill.success { background: #2a9d6f !important; }
+    .plan-pace-fill.warning { background: #d88a14 !important; }
+    .plan-pace-fill.danger { background: var(--calm-late) !important; }
+    .plan-pace-track { background: var(--calm-surface-3) !important; }
+</style>
+"""
+
+
 _script_run_context = get_script_run_ctx()
 if _script_run_context is not None:
     release_previous_run(_script_run_context.session_id, globals())
 
-st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS + WORKSPACE_UI_CSS, unsafe_allow_html=True)
+st.markdown(DASHBOARD_CSS + REFERENCE_THEME_CSS + WORKSPACE_UI_CSS + CALM_THEME_CSS, unsafe_allow_html=True)
 
 
 def inject_pwa_shell() -> None:
