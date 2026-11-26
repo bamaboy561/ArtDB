@@ -91,6 +91,13 @@ class SupplierSelectionTest(unittest.TestCase):
         rows = build_order_form_rows(forecast((MUFFIN, 20), (BISCUIT, 30, "Высокий", "Другой поставщик")))
         self.assertEqual(rows["name"].tolist(), ["Маффин"])
 
+    def test_other_goods_with_one_code_keep_their_own_lines(self) -> None:
+        thick, thin = "PGR4201 Маффин 2*22мм", "PGR4201 Маффин 0.4*22мм"
+        rows = build_order_form_rows(forecast((thick, 100), (thin, 300)))
+        self.assertEqual(sorted(zip(rows["product"], rows["edge_or_sheets"])), sorted([(thick, 100), (thin, 300)]))
+        ordered = order_items_from_form(rows).set_index("product")["quantity"].to_dict()
+        self.assertEqual(ordered, {thick: 100.0, thin: 300.0})
+
     def test_no_goods_of_this_supplier_gives_an_empty_form(self) -> None:
         self.assertTrue(build_order_form_rows(forecast((MUFFIN, 20), supplier="Другой")).empty)
         self.assertTrue(build_order_form_rows(pd.DataFrame()).empty)

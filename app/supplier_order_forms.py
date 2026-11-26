@@ -299,7 +299,9 @@ def build_order_form_rows(
         section = SECTION_HPL if kind == "hpl" else SECTION_BOARDS if kind in ("board", "edge") else SECTION_OTHER
         # A board and its edge band of one decor share a line; "US77301/PGR4201" and "PGR4201" are one article.
         decor = _normalize(name if form.group_by_name or not code else code.split("/")[-1])
-        row_id = f"{section}:{text if form.goods_only else decor}"
+        # Other goods are not board and edge pairs: each is its own line. Keyed by the code,
+        # two edge bands of one decor in different sizes became one line with one product.
+        row_id = f"{section}:{text if form.goods_only or section == SECTION_OTHER else decor}"
         row = grouped.setdefault(
             row_id,
             {

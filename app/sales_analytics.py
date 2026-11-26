@@ -1186,8 +1186,10 @@ def prepare_sales_data(
     prepared["quantity"] = quantity.fillna(0)
     prepared["revenue"] = revenue
 
-    supplier_group_hint = supplier_from_product.where(prepared["date"].isna() & supplier_from_product.ne(""))
-    supplier_group_hint = supplier_group_hint.replace("", pd.NA).ffill().fillna("")
+    # A group row (no date) names the supplier of the goods under it. Every group row starts
+    # over: one naming no supplier used to pass the previous group's supplier on to its goods.
+    supplier_group_hint = supplier_from_product.where(prepared["date"].isna())
+    supplier_group_hint = supplier_group_hint.ffill().fillna("")
     missing_supplier = prepared["supplier"].fillna("").astype(str).str.strip()
     missing_supplier = missing_supplier.eq("") | missing_supplier.str.casefold().eq("не назначен")
     has_supplier_group_hint = supplier_group_hint.fillna("").astype(str).str.strip().ne("")
@@ -1383,10 +1385,11 @@ def build_product_summary(frame: pd.DataFrame, group_column: str = "product") ->
     return summary
 
 
-def _classify_abc(cumulative_pct: float) -> str:
-    if cumulative_pct <= 80:
+def _classify_abc(share_before_pct: float) -> str:
+    """By the share of the goods ranked above: the one that crosses 80% is still A."""
+    if share_before_pct < 80:
         return "A"
-    if cumulative_pct <= 95:
+    if share_before_pct < 95:
         return "B"
     return "C"
 
@@ -1404,7 +1407,9 @@ def build_abc_analysis(product_summary: pd.DataFrame, metric: str = "revenue") -
         abc["share_pct"] = 0.0
         abc["cum_share_pct"] = 0.0
 
-    abc["abc_class"] = abc["cum_share_pct"].map(_classify_abc)
+    # Classified by the share before each item: by the share including it, a product with 85%
+    # of the sales was B and the network had no A goods at all.
+    abc["abc_class"] = (abc["cum_share_pct"] - abc["share_pct"]).map(_classify_abc)
     return abc
 
 
