@@ -78,6 +78,10 @@ def _round_order_quantity(
     return target_qty
 
 
+# Fewer days of the month in progress than this and only whole months make the forecast.
+PARTIAL_MONTH_MIN_DAYS = 15
+
+
 def build_procurement_forecast(
     frame: pd.DataFrame,
     *,
@@ -195,8 +199,23 @@ def build_procurement_forecast(
     if history.empty:
         return pd.DataFrame(columns=columns)
 
+    # The month in progress is not a whole month: counted as one, its low total pulled the
+    # average and the trend down and orders early in a month came out far too small. With
+    # half a month or more it is scaled to a whole month; with less, only whole months count.
+    series_months = list(selected_months)
+    month_scale = {month: 1.0 for month in series_months}
+    last_month = pd.Timestamp(series_months[-1])
+    covered_days = int((working["date"].max().normalize() - last_month).days) + 1
+    if covered_days < last_month.days_in_month:
+        if covered_days < PARTIAL_MONTH_MIN_DAYS and len(month_order) > 1:
+            series_months = month_order[:-1][-safe_history_months:]
+            month_scale = {month: 1.0 for month in series_months}
+        else:
+            month_scale[series_months[-1]] = last_month.days_in_month / covered_days
+    series_rows = working[working["month"].isin(series_months)]
+
     monthly_by_product = (
-        history.groupby(["product", "month"], as_index=False)
+        series_rows.groupby(["product", "month"], as_index=False)
         .agg(
             quantity=("quantity", "sum"),
             revenue=("revenue", "sum"),
@@ -207,8 +226,9 @@ def build_procurement_forecast(
     )
     quantity_pivot = (
         monthly_by_product.pivot(index="product", columns="month", values="quantity")
-        .reindex(columns=selected_months, fill_value=0.0)
+        .reindex(columns=series_months, fill_value=0.0)
         .fillna(0.0)
+        * [month_scale[month] for month in series_months]
     )
 
     category_summary = pd.DataFrame(columns=["product", "category"])
@@ -266,7 +286,7 @@ def build_procurement_forecast(
         .rename(columns={"group_name": "product"})
     )
 
-    history_months_used = len(selected_months)
+    history_months_used = len(series_months)
     records: list[dict[str, object]] = []
 
     for product_name, quantity_series in quantity_pivot.iterrows():

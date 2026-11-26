@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from io import BytesIO
 import re
 from typing import Iterable
+import warnings
 
 import pandas as pd
 
@@ -230,9 +231,22 @@ def find_total_revenue_column(columns: Iterable[object]) -> object | None:
 
 def prefer_total_revenue_column(frame: pd.DataFrame, mapping: dict[str, object | None]) -> None:
     total_revenue_column = find_total_revenue_column(frame.columns)
+    if total_revenue_column is None:
+        return
 
-    if total_revenue_column is not None:
-        mapping["revenue"] = total_revenue_column
+    def filled(column: object) -> int:
+        values = frame[column]
+        return int((values.notna() & values.astype(str).str.strip().ne("")).sum())
+
+    # The 1C reader always adds "Всего", empty when the report has no such column; taking it
+    # then threw away every row. It wins only when it is filled at least as fully.
+    current = mapping.get("revenue")
+    if current in frame.columns and current != total_revenue_column:
+        if filled(total_revenue_column) < filled(current):
+            return
+    elif filled(total_revenue_column) == 0:
+        return
+    mapping["revenue"] = total_revenue_column
 
 
 _SUPPLIER_LOOKUP_SEPARATORS = re.compile(r"[^0-9a-zа-я]+")
@@ -1014,21 +1028,40 @@ def _series_from_mapping(frame: pd.DataFrame, mapping: dict[str, str | None], ke
     return frame[column_name]
 
 
+_ISO_DATE = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$")
+_EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+
+
+def _parse_date_value(value: object) -> pd.Timestamp:
+    """One cell: a real date, an ISO date (with or without time), a day-first date or an Excel day number."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return pd.NaT
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        stamp = pd.Timestamp(value)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Excel keeps dates as day numbers when a cell is formatted as a number.
+        stamp = _EXCEL_EPOCH + pd.Timedelta(days=float(value)) if 20_000 <= value <= 80_000 else pd.NaT
+    else:
+        text = str(value).strip()
+        if not text:
+            return pd.NaT
+        # A year first is never day-first: reading "2026-11-05 10:30" day-first made it 11 May.
+        stamp = pd.to_datetime(text, errors="coerce", dayfirst=not _ISO_DATE.match(text))
+    if pd.isna(stamp):
+        return pd.NaT
+    return stamp.tz_localize(None) if stamp.tzinfo is not None else stamp
+
+
 def parse_dates(series: pd.Series) -> pd.Series:
     if pd.api.types.is_datetime64_any_dtype(series):
         return pd.to_datetime(series, errors="coerce")
-
-    as_text = series.astype(str).str.strip()
-    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
-    iso_mask = as_text.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$", na=False)
-
-    if iso_mask.any():
-        parsed.loc[iso_mask] = pd.to_datetime(as_text.loc[iso_mask], errors="coerce")
-
-    if (~iso_mask).any():
-        parsed.loc[~iso_mask] = pd.to_datetime(as_text.loc[~iso_mask], errors="coerce", dayfirst=True)
-
-    return parsed
+    # Each distinct value once: a report repeats the same few dates on thousands of rows.
+    codes, uniques = pd.factorize(pd.Series(series.to_numpy(dtype=object), index=series.index))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        stamps = [_parse_date_value(value) for value in uniques]
+    parsed = pd.to_datetime(pd.Series([*stamps, pd.NaT], dtype=object), errors="coerce").to_numpy(dtype="datetime64[ns]")
+    return pd.Series(parsed[codes], index=series.index, dtype="datetime64[ns]")
 
 
 def prepare_sales_data(

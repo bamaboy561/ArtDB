@@ -503,7 +503,20 @@ def apply_procurement_receipts(frame: pd.DataFrame, *, updated_by: str) -> int:
 
     existing["product"] = existing["product"].fillna("").astype(str).str.strip()
     existing = existing[existing["product"] != ""].copy()
-    merged = existing.merge(receipt_totals, on="product", how="outer")
+    # Goods arrive under the name the sales use, the catalogue may spell it a little
+    # differently: match like the forecast does, so the stock lands on the item and its
+    # supplier, minimum order and lead time stay.
+    existing["_key"] = existing["product"].map(normalize_product_match_key)
+    receipt_totals["_key"] = receipt_totals["product"].map(normalize_product_match_key)
+    receipt_totals = receipt_totals.groupby("_key", as_index=False).agg(
+        product=("product", "first"), quantity=("quantity", "sum")
+    )
+    known = existing.drop_duplicates("_key", keep="last").set_index("_key")["product"]
+    receipt_totals["product"] = receipt_totals["_key"].map(known).fillna(receipt_totals["product"])
+    # Only the items that received goods change: re-saving every item moved their stock
+    # dates, and the next stock file then counted arrivals wrongly.
+    existing = existing[existing["_key"].isin(receipt_totals["_key"])]
+    merged = existing.drop(columns="_key").merge(receipt_totals.drop(columns="_key"), on="product", how="outer")
 
     for text_column in ("supplier", "brand", "notes", "updated_by", "updated_at"):
         if text_column not in merged.columns:
